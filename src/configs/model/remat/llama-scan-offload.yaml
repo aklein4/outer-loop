@@ -1,0 +1,7 @@
+defaults:
+ - llama-scan
+ - _self_
+
+# save memory by offloading these activations to the host RAM
+offload_tensors:
+ - decoder_input

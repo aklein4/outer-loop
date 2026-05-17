@@ -1,0 +1,9 @@
+defaults:
+ - torchprime
+ - _self_
+
+activation_checkpoint_layers:
+ - LlamaDecoderLayer
+
+optimization_barrier_layers:
+ - LlamaDecoderLayer

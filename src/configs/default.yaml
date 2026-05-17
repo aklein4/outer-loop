@@ -1,0 +1,55 @@
+# The default config file. You may override configs with `key=value` arguments on the CLI
+# according to https://hydra.cc/docs/advanced/override_grammar/basic/.
+
+# This defines the order in which configs are loaded. The latter configs override the earlier ones.
+# See these configs for more information about the expected structure of the model, dataset, and trainer configs.
+defaults:
+  - _self_ # refers to this config file
+  - model: tinyllama-test 
+  - data: fineweb-tinyllama-1024
+  - trainer: lm-test
+
+
+# PRNG random seed
+seed: 42
+
+# the default dtype, should be float32 for now
+torch_dtype: float32
+# The precision to use for matrix multiplications.
+# See https://docs.pytorch.org/xla/master/tutorials/precision_tutorial.html
+matmul_precision: default # [default, high, highest]
+
+
+# if true, disable logging to W&B and checkpoint saving
+debug: false
+
+# Information about the W&B run where metrics will be logged.
+project: easy-torch-tpu
+name: default-run
+notes: null
+
+
+# The virtual device mesh shape to use within a TPU slice. This is also called
+# the "ICI mesh", since devices within a slice enjoy a faster network called
+# "Inter-Chip Interconnect".
+ici_mesh:
+  data: 1
+  fsdp: 8
+  tensor: 1
+  expert: 1
+  context: 1 # context parallelism may not work at this time
+
+
+# Shape of the logical mesh where each element is a TPU slice. This is called
+# "Data Center Network (DCN) mesh" because TPU slices are usually connected
+# together with slower data center networking, with the faster ICI network
+# used within a slice.
+#
+# As an example, to enable 2-way data parallelism across 2 TPU slices, you may
+# specify `dcn_mesh.data=2`.
+dcn_mesh:
+  data: 1
+  fsdp: 1
+  tensor: 1
+  expert: 1
+  context: 1 # context parallelism may not work at this time
