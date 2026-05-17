@@ -1,3 +1,4 @@
+import torch
 
 import os
 import dotenv
@@ -21,6 +22,12 @@ REPO_PATH = os.path.dirname(BASE_PATH)
 # load environment variables from .env file
 dotenv.load_dotenv(os.path.join(REPO_PATH, ".env"))
 
+# cuda device
+if not XLA_AVAILABLE:
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+else:
+    DEVICE = None
+
 # id of the current device
 PROCESS_INDEX = lambda: xr.process_index()
 
@@ -29,6 +36,12 @@ PROCESS_IS_MAIN = lambda: xr.process_index() == 0
 
 # total number of processes/devices
 PROCESS_COUNT = lambda: xr.process_count()
+
+# best dtype given device
+def DT():
+    if XLA_AVAILABLE or torch.cuda.is_available():
+        return torch.bfloat16
+    return torch.float32
 
 # path to local data folder
 LOCAL_DATA_PATH = os.path.join(BASE_PATH, "local_data")

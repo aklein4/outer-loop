@@ -2,6 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import utils.constants as constants
+if constants.XLA_AVAILABLE:
+    from torch_xla.experimental.scan import scan
+
 """
 A collection of PyTorch utility functions that might be useful.
 """
@@ -45,6 +49,9 @@ class _ScaleGradient(torch.autograd.Function):
 
         if isinstance(scale, dict):
             scale = scale["value"]
+
+        if isinstance(scale, torch.Tensor):
+            scale = scale.to(grad_output.dtype)
 
         return grad_output * scale, None
 
@@ -275,22 +282,14 @@ def safe_copy_state(
     dst.load_state_dict(state, strict=strict)
 
 
-def safe_finite(x: torch.Tensor) -> torch.Tensor:
+def safe_finite(x: torch.Tensor, safe=False) -> torch.Tensor:
     # `torch.nan_to_num` has historically been spotty on some backends/dtypes (e.g. XLA+bfloat16).
     # `where(isfinite)` is the most portable way to guarantee non-finite values become zeros.
-    return torch.where(torch.isfinite(x), x, torch.zeros_like(x))
+    if safe:
+        return torch.where(torch.isfinite(x), x, torch.zeros_like(x))
+    else:
+        return torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
 
-
-class NewtonSchulzModule(nn.Module):
-
-    def __init__(self, steps=5, eps=1e-7):
-        super().__init__()
-        self.steps = steps
-        self.eps = eps
-
-    def forward(self, G):
-        return newton_schulz(G, self.steps, self.eps)
-    
 
 def newton_schulz(G, steps=5, eps=1e-7):
     """
@@ -306,23 +305,98 @@ def newton_schulz(G, steps=5, eps=1e-7):
         torch.Tensor: Spectrally whitened tensor of shape [n, m].
     """
     assert G.ndim >= 2 
-
-    a, b, c = (3.4445, -4.7750,  2.0315)
     
     X = G
     if G.size(-2) > G.size(-1):
-        X = X.mT
+        X = X.transpose(-2, -1)
 
     # Ensure spectral norm is at most 1
     X = X / (X.norm(dim=(-2, -1), keepdim=True) + eps)
 
     # Perform the NS iterations
-    for _ in range(steps):
-        A = X @ X.mT
-        B = b * A + c * A @ A
-        X = a * X + B @ X
-    
+    if constants.XLA_AVAILABLE and False:
+        ts = torch.arange(steps, device=X.device)
+        X, _ = scan(
+            _newton_schulz_inner, X, ts,
+            # is_fn_pure=True
+        )
+    else:
+        for t in range(steps):
+            X, _ = _newton_schulz_inner(X, t)
+        
     if G.size(-2) > G.size(-1):
-        X = X.mT
+        X = X.transpose(-2, -1)
 
     return X
+
+
+def _newton_schulz_inner(X, t):
+    a, b, c = (3.4445, -4.7750,  2.0315)
+
+    A = X @ X.transpose(-2, -1)
+    B = b * A + c * A @ A
+    X = a * X + B @ X
+
+    return X, X
+
+
+_cuda_newton_schulz = None
+def cuda_newton_schulz():
+    global _cuda_newton_schulz
+    if _cuda_newton_schulz is None:
+        _cuda_newton_schulz = torch.compile(
+            newton_schulz,
+            mode="reduce-overhead",
+            fullgraph=True,
+        ) 
+    return _cuda_newton_schulz
+
+
+def shift(
+    x: torch.Tensor,
+    n: int,
+    dim: int,
+    direction: str,
+    narrow: bool,
+):
+
+    zero_shape = list(x.shape)
+    zero_shape[dim] = n
+    z = torch.zeros(*zero_shape, device=x.device, dtype=x.dtype)
+
+    if direction == 'right':
+        if narrow:
+            x = torch.narrow(x, dim, 0, x.shape[dim] - n)
+        
+        l = [z, x]
+
+    elif direction == 'left':
+        if narrow:
+            x = torch.narrow(x, dim, n, x.shape[dim] - n)
+        
+        l = [x, z]
+
+    else:
+        raise ValueError(f"Invalid direction: {direction}")
+    
+    return torch.cat(l, dim=dim)
+
+
+def gaussian_init(module: nn.Module):
+
+    if isinstance(module, nn.Linear):
+        module.weight.data.normal_(mean=0.0, std=1/module.in_features**0.5)
+        if module.bias is not None:
+            module.bias.data.zero_()
+
+    elif isinstance(module, nn.Embedding):
+        module.weight.data.normal_(mean=0.0, std=1)
+
+
+def safe_repeat(
+    x: torch.Tensor, n_repeats: int, dim: int=0
+) -> torch.Tensor:
+    return torch.cat(
+        [x] * n_repeats,
+        dim=dim
+    )

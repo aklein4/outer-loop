@@ -73,11 +73,13 @@ class AdamW(Optimizer):
         """
         loss = None
         if closure is not None:
-            loss = closure()
+            with torch.enable_grad():
+                loss = closure()
 
         grad_nan = torch.tensor([False], device=self.param_groups[0]['params'][0].device)
         update_nan = torch.tensor([False], device=self.param_groups[0]['params'][0].device)
         param_nan = torch.tensor([False], device=self.param_groups[0]['params'][0].device)
+        post_param_nan = torch.tensor([False], device=self.param_groups[0]['params'][0].device)
         for group in self.param_groups:
             for p in group["params"]:
                 
@@ -91,52 +93,54 @@ class AdamW(Optimizer):
                     raise RuntimeError("AdamW does not support sparse gradients.")
 
                 # handle nan gradients
-                grad_nan = grad_nan | (~torch.isfinite(grad)).any()
+                finite = torch.isfinite(grad).all()
+                grad_nan = grad_nan | (~finite)
                 if group["fix_nan"]:
                     grad = safe_finite(grad)
 
-                og_p = p.clone()
+                param_nan = param_nan | (~torch.isfinite(p)).any()
 
                 state = self.state[p]
                 state_dtype = group["state_dtype"]
 
                 # State initialization
                 if len(state) == 0:
-                    state["step"] = 0
+                    state["step"] = torch.zeros(1, device=grad.device, dtype=torch.long)
                     # Exponential moving average of gradient values
                     state["exp_avg"] = torch.zeros_like(grad, dtype=state_dtype)
                     # Exponential moving average of squared gradient values
                     state["exp_avg_sq"] = torch.zeros_like(grad, dtype=state_dtype)
                 else:
+                    state["step"] = state["step"].to(grad.device, dtype=torch.long)
                     state["exp_avg"] = state["exp_avg"].to(grad.device, dtype=state_dtype)
                     state["exp_avg_sq"] = state["exp_avg_sq"].to(grad.device, dtype=state_dtype)
 
                 exp_avg, exp_avg_sq = state["exp_avg"], state["exp_avg_sq"]
                 beta1, beta2 = group["betas"]
 
-                state["step"] += 1
+                state["step"].add_(finite.to(state["step"].dtype))
 
                 # Decay the first and second moment running average coefficient
                 # In-place operations to update the averages at the same time
-                exp_avg.mul_(beta1).add_(
+                exp_avg.lerp_(
                     grad.to(exp_avg.dtype),
-                    alpha=1.0 - beta1
+                    (1.0 - beta1) * finite.to(exp_avg.dtype)
                 )
-                exp_avg_sq.mul_(beta2).add_(
-                    grad.pow(2).to(exp_avg_sq.dtype),
-                    alpha=1.0 - beta2
+                exp_avg_sq.lerp_(
+                    grad.to(exp_avg_sq.dtype).pow(2),
+                    (1.0 - beta2) * finite.to(exp_avg_sq.dtype)
                 )
-                exp_avg_sq.clamp_(min=group["eps"]**2)
-
-                denom = exp_avg_sq.to(p.dtype).sqrt()
 
                 step_size = group["lr"]
                 if group["correct_bias"]:  # No bias correction for Bert
-                    bias_correction1 = 1.0 - beta1 ** state["step"]
-                    bias_correction2 = 1.0 - beta2 ** state["step"]
-                    step_size = step_size * math.sqrt(bias_correction2) / bias_correction1
+                    bias_correction1 = 1.0 - beta1 ** state["step"].to(p.dtype)
+                    bias_correction2 = 1.0 - beta2 ** state["step"].to(p.dtype)
+                    step_size = step_size * torch.sqrt(bias_correction2) / bias_correction1
 
-                update = exp_avg.to(p.dtype) / denom
+                update = (
+                    exp_avg.to(p.dtype) /
+                    torch.clamp(exp_avg_sq.to(p.dtype), min=group["eps"]**2).sqrt()
+                )
                 if group["update_clip"] is not None:
                     update = torch.clamp(update, -group["update_clip"], group["update_clip"])
 
@@ -145,17 +149,15 @@ class AdamW(Optimizer):
                     update = safe_finite(update)
 
                 if group["weight_decay"] > 0.0:
-                    p.add_(p, alpha=-group["lr"] * group["weight_decay"])
+                    p.add_(-group["lr"] * group["weight_decay"] * finite.to(p.dtype) * p)
+                p.add_(-step_size * finite.to(p.dtype) * update)
 
-                p.add_(update, alpha=-step_size)
-
-                param_nan = param_nan | (~torch.isfinite(p)).any()
-                if group["fix_nan"]:
-                    p.copy_(torch.where(torch.isfinite(p), p.clone(), og_p))
+                post_param_nan = post_param_nan | (~torch.isfinite(p)).any()
 
         return {
             "grad_nan": grad_nan.long(),
             "update_nan": update_nan.long(),
             "param_nan": param_nan.long(),
+            "post_param_nan": post_param_nan.long()
         }
     

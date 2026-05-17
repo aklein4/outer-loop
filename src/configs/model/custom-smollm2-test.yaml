@@ -1,12 +1,12 @@
 defaults:
   - _self_  # refers to this config file
   - sharding: llama-fsdp  # refers to sharding/llama-fsdp.yaml
-  - remat: llama-scan-offload  # refers to remat/llama-scan.yaml
+  - remat: custom-llama  # refers to remat/llama-scan.yaml
 
 
 # Used to import the model from this class
 # should contain the path within the model folder and the class name
-type: llama.LlamaForCausalLM
+type: custom_llama.CustomLlamaForCausalLM
 
 # HuggingFace URL of the checkpoint to load, or null if initializing from scratch
 pretrained_url: null
@@ -21,10 +21,10 @@ torch_dtype: float32
 
 
 # vocab information
-vocab_size: 32000
-bos_token_id: 1
-eos_token_id: 2
-pad_token_id: 32000 # not actually in the embeddings
+vocab_size: 49152
+bos_token_id: 0
+eos_token_id: 0
+pad_token_id: 49152
 
 # architecture size
 hidden_size: 128
@@ -49,6 +49,10 @@ initializer_range: 0.02
 attention_dropout: false
 attention_bias: false
 rms_norm_eps: 1.0e-05
+
+# value added to pad token attention scores
+# only used when elementwise_pad_mask is passed
+pad_attention_bias_value: -100.0
 
 # choose attention_kernel from: [flash_attention, nan_safe_flash_attention, splash_attention, null]
 attention_kernel: flash_attention
