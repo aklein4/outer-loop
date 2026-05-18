@@ -14,16 +14,36 @@ class OLoopTrainer(BaseTrainer):
 
 
     def post_init(self):
-        self.model.model.embed_tokens.weight.no_muon = True
-        try:
-            self.model.lm_head.weight.no_muon = True
-        except:
-            # ShardedModule
-            self.model.lm_head._orig_mod.weight.no_muon = True
-
         self.model.init_state(
             self.global_batch_size, self.device
         )
+
+
+    def get_trainable_parameters(self, model):
+        
+        slow = []
+        fast = []
+        embeddings = []
+        for name, param in model.named_parameters():
+
+            if "embed_tokens" in name or "lm_head" in name:
+                embeddings.append(param)
+
+            elif "log_lr" in name or "fast_out_proj" in name:
+                fast.append(param)
+
+            else:
+                slow.append(param)
+
+        out = {
+            "slow": slow,
+            "fast": fast,
+            "embeddings": embeddings,
+        }
+        if "embeddings" not in self.config.trainer.multiple_optimizers.keys():
+            out.pop("embeddings")
+        
+        return out
 
 
     def loss(self, labels, logits):
@@ -90,11 +110,9 @@ class OLoopTrainer(BaseTrainer):
         # regular optimization step
         grad_norm = self.clip_gradients()
 
-        aux = self.optimizers['main'].step()       
+        aux = self.optimization_step()
+        
         self.model.zero_grad(set_to_none=False)
-
-        aux['lr'] = self.lr_schedulers['main'].get_last_lr()[0]
-        self.lr_schedulers['main'].step()
 
         return aux, grad_norm
 

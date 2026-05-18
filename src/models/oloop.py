@@ -79,7 +79,7 @@ class FastWeightLoRA(nn.Module):
         self.log_lr = nn.Parameter(
             torch.zeros(self.rank, self.in_features)
         )
-        self.out_proj = nn.Linear(
+        self.fast_out_proj = nn.Linear(
             self.rank, self.out_features, bias=False
         )
 
@@ -89,7 +89,7 @@ class FastWeightLoRA(nn.Module):
         self.prev_whitened: nn.Buffer
 
         # weight initialization
-        self.out_proj.weight.data.normal_(
+        self.fast_out_proj.weight.data.normal_(
             std=1/math.sqrt(self.rank)
         )
 
@@ -99,7 +99,7 @@ class FastWeightLoRA(nn.Module):
 
         u, s, v = torch.linalg.svd(weight, full_matrices=False)
 
-        self.out_proj.weight.copy_(
+        self.fast_out_proj.weight.copy_(
             u[:, :self.rank]
         )
 
@@ -128,7 +128,7 @@ class FastWeightLoRA(nn.Module):
         y = torch.einsum("boi,bli->blo", s, x)
         y = FastWeightFunction.apply(x, y, self.momentum)
 
-        y = self.out_proj(y)
+        y = self.fast_out_proj(y)
 
         return y
 

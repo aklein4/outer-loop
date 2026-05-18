@@ -27,10 +27,10 @@
 - [ ] Supervised standard trainer
     - [ ] Freeze embeddings
     - [ ] Higher lr for new parameters
-- [ ] Supervised OLoop trainer
+- [x] Supervised OLoop trainer
     - [ ] Do not overlap chunks? (Currently overlapping)
-    - [ ] Freeze embeddings
-    - [ ] Higher lr for new parameters
+    - [x] Freeze embeddings
+    - [x] Higher lr for new parameters
 - [ ] Offline RL OLoop Trainer
     - [ ] Optional KL regularization
     - [ ] Freeze embeddings/teacher

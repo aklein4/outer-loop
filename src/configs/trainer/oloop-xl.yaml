@@ -1,6 +1,6 @@
 
 # vvvvvvvvvv Don't forget to change this for new experiments vvvvvvvvvv
-type: ittt_trainer.ItttTrainer  # Used to import the trainer from this class
+type: oloop_trainer.OLoopTrainer  # Used to import the trainer from this class
 
 # This config is similar to the hyperparameters of GPT-3 XL which had 1.3B parameters.
 
@@ -19,42 +19,56 @@ checkpoint_interval: 250
 use_autocast: true
 
 
-# optimizer configuration
-optimizer:
+# use multiple different optimizers for different parameters
+multiple_optimizers:
 
-  # Used to import the optimizer from this class.
-  type: muon.ScaledMuon
+  # weights related to the OLoop architecture
+  fast:
 
-  # kwargs passed to the optimizer constructor
-  kwargs:
+    optimizer:
+      type: muon.ScaledMuon
 
-    lr: 4.0e-4
+      kwargs:
+        lr: 4.0e-4
+        betas: [0.9, 0.95]
+        eps: 1e-6
+        weight_decay: 0.1
 
-    betas: [0.9, 0.95]
-    
-    eps: 1e-6 # GPT-3 used 1e-8
+    lr_scheduler:
+      type: warmup_stable_decay
 
-    weight_decay: 0.1
+      num_warmup_steps: 125
+      kwargs:
+        num_stable_steps: 1000000 # Currently never decays
+        num_decay_steps: 2500
+        min_lr_ratio: 0.0
+        warmup_type: linear
+        decay_type: linear
 
+  # original transformer weights
+  slow:
 
-# Learning rate scheduler configuration
-# Currently never decays
-lr_scheduler:
+    optimizer:
+      type: muon.ScaledMuon
 
-  type: warmup_stable_decay
+      kwargs:
+        lr: 4.0e-5
+        betas: [0.9, 0.95]
+        eps: 1e-6
+        weight_decay: 0.01
 
-  # get_scheduler requires this outside of kwargs
-  num_warmup_steps: 125
+    lr_scheduler:
+      type: warmup_stable_decay
 
-  kwargs:
-
-    num_stable_steps: 1000000
-    num_decay_steps: 2500
-
-    min_lr_ratio: 0.0
-
-    warmup_type: linear
-    decay_type: linear
+      num_warmup_steps: 125
+      kwargs:
+        num_stable_steps: 1000000 # Currently never decays
+        num_decay_steps: 2500
+        min_lr_ratio: 0.0
+        warmup_type: linear
+        decay_type: linear
+  
+  # No embeddings optimizer defined -> embeddings frozen
 
 
 # Defaults to clip the L2 norm of gradients to 1.0.
@@ -67,3 +81,5 @@ max_grad_value: null
 
 # You can add any additional configuration options for your trainer here
 # They will appear as attributes of config.trainer
+
+chunk_size: 1024
