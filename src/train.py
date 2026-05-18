@@ -91,6 +91,9 @@ def main(config: omegaconf.DictConfig):
             config.model.pretrained_step,
             strict=config.model.pretrained_strict,
         )
+        
+        if hasattr(model, "post_load"):
+            model.post_load()
 
     # TODO: initialize the model weights directly on the XLA device
     model = model.to(torch_xla.device())

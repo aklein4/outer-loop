@@ -352,6 +352,13 @@ def cuda_newton_schulz():
     return _cuda_newton_schulz
 
 
+def select_newton_schulz():
+    if constants.XLA_AVAILABLE or not torch.cuda.is_available():
+        return newton_schulz
+    else:
+        return cuda_newton_schulz()
+
+
 def shift(
     x: torch.Tensor,
     n: int,

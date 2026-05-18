@@ -1,3 +1,9 @@
+"""
+This is an old version of the iTTT architecture that computes some of the higher order gradients.
+
+Left here for reference.
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

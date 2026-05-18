@@ -46,3 +46,7 @@
 
 ### Baselines
 - [ ] Strong standard LoRA model 
+
+
+### Utilities
+- [ ] Automatic weight sharding based on shape
