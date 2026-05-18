@@ -13,8 +13,8 @@
 
 ## Models
 - [x] Llama 3 RoPE frequencies
-- [ ] Standard RL Model
-    - [ ] Tanh-constrained V-head
+- [x] Standard RL Model
+    - [x] Tanh-constrained V-head
 - [x] OLoop RL model
     - [x] Frozen teacher
     - [x] SVD Init
@@ -24,12 +24,18 @@
 
 
 ## Training
-- [ ] Supervised trainer
+- [ ] Supervised standard trainer
+    - [ ] Freeze embeddings
+    - [ ] Higher lr for new parameters
+- [ ] Supervised OLoop trainer
+    - [ ] Do not overlap chunks? (Currently overlapping)
+    - [ ] Freeze embeddings
+    - [ ] Higher lr for new parameters
 - [ ] Offline RL OLoop Trainer
     - [ ] Optional KL regularization
     - [ ] Freeze embeddings/teacher
     - [ ] Higher lr for new parameters
-- [ ] Standard Offline RL Trainer
+- [ ] Standard offline RL trainer
     - [ ] Optional KL regularization
     - [ ] Freeze embeddings/teacher
  
@@ -48,5 +54,5 @@
 - [ ] Strong standard LoRA model 
 
 
-### Utilities
-- [ ] Automatic weight sharding based on shape
+## Utilities
+- [x] Automatic weight sharding based on shape

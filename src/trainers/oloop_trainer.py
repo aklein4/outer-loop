@@ -3,15 +3,14 @@ import torch
 import torch_xla
 
 from trainers.base_trainer import BaseTrainer
-from models.ittt import ItttModel
+from models.oloop import OLoopModel
 from utils.loss_utils import lm_loss_fn
-import utils.constants as constants
 from utils.logging_utils import master_print
 
 
-class ItttTrainer(BaseTrainer):
+class OLoopTrainer(BaseTrainer):
     
-    model: ItttModel
+    model: OLoopModel
 
 
     def post_init(self):
@@ -104,7 +103,7 @@ class ItttTrainer(BaseTrainer):
 
         input_ids: torch.LongTensor = batch["input_ids"]
         chunks = torch.split(
-            input_ids, self.config.model.chunk_size,
+            input_ids, self.config.trainer.chunk_size,
             dim=-1
         )
 
