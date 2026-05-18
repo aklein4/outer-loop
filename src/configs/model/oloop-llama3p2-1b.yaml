@@ -1,6 +1,6 @@
 defaults:
   - _self_  # refers to this config file
-  - sharding: ittt-fsdp  # refers to sharding/llama-fsdp.yaml
+  - sharding: oloop-fsdp  # refers to sharding/llama-fsdp.yaml
   - remat: llama-scan-offload  # refers to remat/llama-scan.yaml
 
 

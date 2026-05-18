@@ -1,6 +1,6 @@
 defaults:
   - _self_  # refers to this config file
-  - sharding: ittt-fsdp  # refers to sharding/llama-fsdp.yaml
+  - sharding: oloop-fsdp  # refers to sharding/llama-fsdp.yaml
   - remat: llama-scan-offload  # refers to remat/llama-scan.yaml
 
 
@@ -58,8 +58,6 @@ pure_modules: []
 
 # You can add any additional configuration options for your model here
 # They will appear as attributes of config.model
-
-chunk_size: 1024
 
 fast_weight_rank: 256
 

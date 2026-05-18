@@ -1,12 +1,12 @@
 defaults:
   - _self_  # refers to this config file
-  - sharding: ittt-fsdp  # refers to sharding/llama-fsdp.yaml
+  - sharding: oloop-fsdp  # refers to sharding/llama-fsdp.yaml
   - remat: llama-scan-offload  # refers to remat/llama-scan.yaml
 
 
 # Used to import the model from this class
 # should contain the path within the model folder and the class name
-type: ittt.ItttModel
+type: oloop.OLoopModel
 
 # HuggingFace URL of the checkpoint to load, or null if initializing from scratch
 pretrained_url: null
@@ -21,10 +21,10 @@ torch_dtype: float32
 
 
 # vocab information
-vocab_size: 32001
-bos_token_id: 1
-eos_token_id: 2
-pad_token_id: 32000
+vocab_size: 49152
+bos_token_id: 0
+eos_token_id: 0
+pad_token_id: 49152
 
 # architecture size
 hidden_size: 128
@@ -59,12 +59,10 @@ pure_modules: []
 # You can add any additional configuration options for your model here
 # They will appear as attributes of config.model
 
-chunk_size: 256
-
-rank: 64
+fast_weight_rank: 64
 
 base_lr: 1.0e-2
-momentum_beta: 0.75
+momentum_beta: 0.90
 
 momentum_dtype: bfloat16
 state_dtype: float32

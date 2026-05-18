@@ -1,0 +1,9 @@
+# See docs/sharding.md for more details about sharding configuration.
+
+# Weights
+# all implied
+
+
+# Activations
+model.layers.*: [[data, fsdp], null, null]
+lm_head: [[data, fsdp], null, null]

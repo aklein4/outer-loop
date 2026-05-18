@@ -59,6 +59,17 @@ Internally, this is implemented as a call to
 `xs.mark_sharding(weight, mesh, partition_spec)`. See
 [`shard_torch_xla_model_from_config`][shard_torch_xla_model_from_config].
 
+If a name is *not* found in the sharding config, a parameter is automatically
+sharded along the fsdp mesh axis on its largest dimension (earlier dimension if tied).
+If the parameter has a 0-dimensional shape, it is not sharded. If you want a parameter
+to actually not be sharded, set its spec to null:
+
+```yaml
+# Do not shard the embedding weight
+model.embed_tokens.weight: null
+```
+
+
 ## How to shard activations
 
 Besides sharding weights, you can also shard module outputs, also called

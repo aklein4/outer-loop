@@ -142,9 +142,16 @@ class BaseTrainer:
             logger.info("All model parameters have sharding spec.")
 
         # Setup SPMD mesh and shard the model.
-        model, self.input_sharding_spec, self.minibatch = setup_sharding_and_mesh(
+        model, self.input_sharding_spec, self.minibatch, shard_info = setup_sharding_and_mesh(
             model, config
         )
+        logger.info("Sharding info:")
+        logger.info(f"    Seen params:      {len(shard_info['seen_params'])}")
+        logger.info(f"    Implied params:   {len(shard_info['implied_params'])}")
+        logger.info(f"    Seen modules:     {len(shard_info['seen_modules'])}")
+        logger.info(f"    Unused names:     {len((config_names - shard_info['seen_params']) - shard_info['seen_modules'])}")
+        logger.info(f"    Unsharded params: {len(shard_info['unsharded_params'])}")
+
         model = mark_pure_modules(model, config)
 
         model = advanced_remat(model, config)
