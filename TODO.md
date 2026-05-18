@@ -12,26 +12,26 @@
 
 
 ## Models
-- [ ] Llama 3 RoPE frequencies
+- [x] Llama 3 RoPE frequencies
 - [ ] Standard RL Model
     - [ ] Tanh-constrained V-head
-- [ ] OLoop RL model
-    - [ ] Frozen teacher
-    - [ ] SVD Init
-    - [ ] Tanh-constrained V-head
-- [ ] OLoop Supervised Model
-    - [ ] SVD Init
+- [x] OLoop RL model
+    - [x] Frozen teacher
+    - [x] SVD Init
+    - [x] Tanh-constrained V-head
+- [x] OLoop Supervised Model
+    - [x] SVD Init
 
 
 ## Training
 - [ ] Supervised trainer
 - [ ] Offline RL OLoop Trainer
     - [ ] Optional KL regularization
-    - [ ] Freeze embeddings
+    - [ ] Freeze embeddings/teacher
     - [ ] Higher lr for new parameters
 - [ ] Standard Offline RL Trainer
     - [ ] Optional KL regularization
-    - [ ] Freeze embeddings
+    - [ ] Freeze embeddings/teacher
  
 
 ## Evaluation

@@ -250,19 +250,19 @@ class OLoopModel(LlamaForCausalLM):
             layer.mlp = FastWeightMLP(config)
 
 
-    @torch.no_grad()
     def load_state_dict(self, state_dict, strict = True, assign = False):
         nn.Module.load_state_dict(self, state_dict, strict, assign)
 
         # svd init if no fast weights in state dict (loading from pretrained LLM)
         if not any(k.endswith("log_lr") for k in state_dict.keys()):
+            with torch.no_grad():
 
-            for layer in self.model.layers:
-                layer: LlamaDecoderLayer
+                for layer in self.model.layers:
+                    layer: LlamaDecoderLayer
 
-                layer.mlp.down_fast.svd_init(
-                    layer.mlp.down_proj.weight.data
-                )
+                    layer.mlp.down_fast.svd_init(
+                        layer.mlp.down_proj.weight.data
+                    )
 
 
     @torch.no_grad()

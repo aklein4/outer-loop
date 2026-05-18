@@ -405,7 +405,7 @@ class LlamaModel(nn.Module):
             ).unsqueeze(0).float()
 
         # Create a causal attention mask
-        if "lash" in self.config.attention_kernel:
+        if self.config.attention_kernel is not None and "lash" in self.config.attention_kernel:
             assert attention_mask is None, "Custom attention mask not compatible with flash attention"
 
             # dummy value
