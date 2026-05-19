@@ -100,11 +100,7 @@ class FastWeightLoRA(nn.Module):
         u, s, v = torch.linalg.svd(weight, full_matrices=False)
 
         self.fast_out_proj.weight.copy_(
-            u[:, :self.rank]
-        )
-
-        self.log_lr.data.add_(
-            torch.log(s[:self.rank, None]) / self.scalar_scaler
+            u[:, :self.rank] * s[None, :self.rank]
         )
                     
 
