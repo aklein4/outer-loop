@@ -49,8 +49,6 @@ class LongLMTrainer(BaseTrainer):
     @torch_xla.compile(full_graph=True)
     def grad_accum(self, input_ids):
 
-        input_ids = maybe_shard_with_gradients(input_ids)
-
         with torch.autocast(
             "xla",
             dtype=torch.bfloat16,
@@ -125,6 +123,8 @@ class LongLMTrainer(BaseTrainer):
 
         losses = []
         for i, b in enumerate(batches):
+
+            b = maybe_shard_with_gradients(b)
 
             loss = self.grad_accum(b)
             losses.append(loss)
