@@ -19,7 +19,7 @@ from utils.import_utils import import_model
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-NAME = "lr=3e-3"
+NAME = "lr=1e-2" 
 
 MODEL_TYPE = "oloop.OLoopModel"
 CONFIG_PATH = "configs/model/oloop-llama3p2-1b.yaml"
@@ -31,7 +31,7 @@ MODEL_KWARGS = {
     "attention_kernel": "gpu_flash_attention",
     "chunk_size": 1024,
     "momentum_beta": 0.75,
-    "base_lr": 3e-3,
+    "base_lr": 1e-2,
 }
 
 DATA_URL = "aklein4/longattn-Llama3-32K"
@@ -118,7 +118,9 @@ def analyze_results():
         "oloop": load_loss("oloop"),
         "simple": load_loss("simple"),
         "alpha": load_loss("alpha"),
-        "lr=3e-3": load_loss("lr=3e-3"),
+        # "lr=3e-3": load_loss("lr=3e-3"),
+        "no-svd": load_loss("no-svd"),
+        "lr=1e-2": load_loss("lr=1e-2"),
     })
 
     print("\n === Average Losses === ")
