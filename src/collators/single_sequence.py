@@ -30,7 +30,7 @@ class SingleSequenceCollator:
             in_ids = torch.tensor(x["input_ids"]).long().flatten()
             input_ids.append(in_ids)
 
-        # pad to length
+        # pad to ragged length
         input_ids = torch.nn.utils.rnn.pad_sequence(
             input_ids,
             batch_first=True,
