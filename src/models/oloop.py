@@ -248,10 +248,11 @@ class OLoopModel(LlamaForCausalLM):
 
 
     def load_state_dict(self, state_dict, strict = True, assign = False):
-        nn.Module.load_state_dict(self, state_dict, strict, assign)
 
         # svd init if no fast weights in state dict (loading from pretrained LLM)
         if not any(k.endswith("log_lr") for k in state_dict.keys()):
+            nn.Module.load_state_dict(self, state_dict, False, assign)
+
             with torch.no_grad():
 
                 for layer in self.model.layers:
@@ -260,6 +261,9 @@ class OLoopModel(LlamaForCausalLM):
                     layer.mlp.down_fast.svd_init(
                         layer.mlp.down_proj.weight.data
                     )
+
+        else:
+            nn.Module.load_state_dict(self, state_dict, strict, assign)
 
 
     @torch.no_grad()
@@ -329,10 +333,11 @@ class OLoopModel(LlamaForCausalLM):
             new_momentums, eps=ref.eps
         )
 
-        deltas = (
-            (new_whiteneds - prev_whiteneds * ref.momentum_beta) /
-            (1 - ref.momentum_beta)
-        )
+        # deltas = (
+        #     (new_whiteneds - prev_whiteneds * ref.momentum_beta) /
+        #     (1 - ref.momentum_beta)
+        # )
+        deltas = new_whiteneds
 
         deltas = deltas * math.sqrt(max(ref.in_features, ref.rank))
 
@@ -383,7 +388,7 @@ class OLoopModel(LlamaForCausalLM):
                 chunks[0],
                 logits_to_keep=slice(0, -1)
             )[0]
-            all_logits.append(logits.detach().cpu())
+            all_logits.append(logits.detach())
 
             loss = lm_loss_fn(
                 logits, chunks[0],
@@ -408,7 +413,7 @@ class OLoopModel(LlamaForCausalLM):
                     all_chunk,
                     logits_to_keep=slice(first_chunk.shape[-1]-1, -1)
                 )[0]
-                all_logits.append(logits.detach().cpu())
+                all_logits.append(logits.detach())
 
                 loss = lm_loss_fn(
                     logits,
