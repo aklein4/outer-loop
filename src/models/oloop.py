@@ -187,10 +187,11 @@ class FastWeightLoRA(nn.Module):
 
         # approximates newton_schulz as a linear function:
         # f(ax) = af(x), f(x+y) = f(x) + f(y)
-        delta = (
-            (new_whitened - self.prev_whitened * self.momentum_beta) /
-            (1 - self.momentum_beta)
-        )
+        # delta = (
+        #     (new_whitened - self.prev_whitened * self.momentum_beta) /
+        #     (1 - self.momentum_beta)
+        # )
+        delta = new_whitened
 
         # scale delta to element-wise scale of 1
         delta = delta * math.sqrt(max(self.in_features, self.rank))
