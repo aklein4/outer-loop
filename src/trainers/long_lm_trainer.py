@@ -67,19 +67,25 @@ class LongLMTrainer(BaseTrainer):
 
         loss_for_backward.backward()
 
-        return loss
+        return loss.detach()
 
 
     @torch_xla.compile(full_graph=True)
-    def post_forward(self, input_ids, losses):
+    def post_forward(self):
 
         # regular optimization step
         grad_norm = self.clip_gradients()
         aux = self.optimization_step()
         self.model.zero_grad(set_to_none=False)
 
+        return aux, grad_norm
+
+
+    def compute_loss_metrics(self, losses):
+        
         # compute chunk metrics
         losses = torch.cat(losses, dim=0).mean(0)
+        aux = {}
 
         chunks = (
             [losses[:self.config.trainer.chunk_size-1]] +
@@ -105,9 +111,7 @@ class LongLMTrainer(BaseTrainer):
         for decade, values in decades.items():
             aux[f"grouped_lm_loss/decade_{decade:02d}"] = torch.stack(values).mean()
 
-        aux["atom_count"] = input_ids.numel()
-
-        return losses.mean(), aux, grad_norm
+        return losses.mean(), aux
 
 
     def train_step(self, batch):
@@ -128,5 +132,10 @@ class LongLMTrainer(BaseTrainer):
             torch_xla.sync()
             master_print(f"Minibatch {i:02d} completed.")
 
-        return self.post_forward(input_ids, losses)
-        
+        aux, grad_norm = self.post_forward()
+        loss, loss_aux = self.compute_loss_metrics(losses)
+        aux.update(loss_aux)
+
+        aux["atom_count"] = input_ids.numel()
+
+        return loss, aux, grad_norm
