@@ -24,13 +24,17 @@
 
 
 ## Training
-- [ ] Supervised standard trainer
-    - [ ] Freeze embeddings
-    - [ ] Higher lr for new parameters
-- [x] Supervised OLoop trainer
+
+### Long-context
+- [x] Supervised long-context standard trainer
+    - [x] Freeze embeddings
+- [x] Supervised long-context OLoop trainer
     - [ ] Do not overlap chunks? (Currently overlapping)
+    - [ ] Fix Llama expecting BOS token at later chunks
     - [x] Freeze embeddings
     - [x] Higher lr for new parameters
+
+### Offline RL
 - [ ] Offline RL OLoop Trainer
     - [ ] Optional KL regularization
     - [ ] Freeze embeddings/teacher
@@ -38,20 +42,31 @@
 - [ ] Standard offline RL trainer
     - [ ] Optional KL regularization
     - [ ] Freeze embeddings/teacher
+
+### Supervised
+- [ ] Supervised standard trainer
+    - [ ] Freeze embeddings
+- [ ] Supervised OLoop trainer
+    - [ ] Freeze embeddings
+    - [ ] Higher lr for new parameters
  
 
 ## Evaluation
 
+### Baselines
+- [ ] Strong standard LoRA model
+
 ### Benchmarks
-- [ ] ManyICLBench (supervised learning)
+
+#### Offline RL
 - [ ] google/rfm-rm-as-user-dataset (personalized RL)
     - [ ] Cluster by similarity
     - [ ] Random RM combination
 - [ ] JinaLeejnl/AlignX (personalized RL)
     - [ ] Cluster by personality
 
-### Baselines
-- [ ] Strong standard LoRA model 
+#### Supervised
+- [ ] ManyICLBench (supervised learning)
 
 
 ## Utilities

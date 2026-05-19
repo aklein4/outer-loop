@@ -1,12 +1,12 @@
 defaults:
   - _self_  # refers to this config file
-  - sharding: oloop-fsdp  # refers to sharding/llama-fsdp.yaml
+  - sharding: llama-fsdp  # refers to sharding/llama-fsdp.yaml
   - remat: llama-scan-offload  # refers to remat/llama-scan.yaml
 
 
 # Used to import the model from this class
 # should contain the path within the model folder and the class name
-type: oloop.OLoopModel
+type: llama.LlamaForCausalLM
 
 # HuggingFace URL of the checkpoint to load, or null if initializing from scratch
 pretrained_url: null
@@ -63,11 +63,3 @@ pure_modules: []
 
 # You can add any additional configuration options for your model here
 # They will appear as attributes of config.model
-
-fast_weight_rank: 512
-
-base_lr: 1.0e-2
-momentum_beta: 0.90
-
-momentum_dtype: bfloat16
-state_dtype: float32

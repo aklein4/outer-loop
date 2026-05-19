@@ -150,13 +150,13 @@ class OLoopTrainer(BaseTrainer):
 
         # finalize outputs
         final_loss = total_loss / len(chunks)
-        aux["num_atoms"] = input_ids.numel()
+        aux["atom_count"] = input_ids.numel()
 
         decades = {}
         for key, value in aux.items():
 
             if "chunk_" in key:
-                if key.endswith("00"):
+                if key.endswith("00"): # skip because it is outlier
                     continue
 
                 decade = int(key.split("_")[-1][0])
