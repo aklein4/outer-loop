@@ -86,7 +86,7 @@ class LongLMTrainer(BaseTrainer):
             list(torch.split(losses[self.config.trainer.chunk_size-1:], self.config.trainer.chunk_size, dim=-1))
         )
         for i, chunk in enumerate(chunks):
-            aux[f"grouped_lm_loss/chunk_{i:02d}"] = chunk.mean()
+            aux[f"lm_loss/chunk_{i:02d}"] = chunk.mean()
 
         # compute decade metrics
         decades = {}
