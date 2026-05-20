@@ -19,7 +19,7 @@ from utils.import_utils import import_model
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-NAME = "lr=1e-2" 
+NAME = "hyper-init" 
 
 MODEL_TYPE = "oloop.OLoopModel"
 CONFIG_PATH = "configs/model/oloop-llama3p2-1b.yaml"
@@ -30,8 +30,8 @@ CHECKPOINT_STEP = 0
 MODEL_KWARGS = {
     "attention_kernel": "gpu_flash_attention",
     "chunk_size": 1024,
-    "momentum_beta": 0.75,
-    "base_lr": 1e-2,
+    # "momentum_beta": 0.75,
+    # "base_lr": 1e-2,
 }
 
 DATA_URL = "aklein4/longattn-Llama3-32K"
@@ -61,7 +61,7 @@ def main():
     model = import_model(MODEL_TYPE)(config).to(DEVICE)
     print("Model initialized.")
     model = load_checkpoint_state(
-        model, CHECKPOINT_URL, CHECKPOINT_STEP
+        model, CHECKPOINT_URL, CHECKPOINT_STEP, strict=False
     )
     print("Checkpoint loaded.")
 
@@ -116,11 +116,13 @@ def analyze_results():
         "sliding": load_loss("sliding"),
         "llama": load_loss("llama"),
         "oloop": load_loss("oloop"),
-        "simple": load_loss("simple"),
+        # "simple": load_loss("simple"),
         "alpha": load_loss("alpha"),
         # "lr=3e-3": load_loss("lr=3e-3"),
-        "no-svd": load_loss("no-svd"),
-        "lr=1e-2": load_loss("lr=1e-2"),
+        # "no-svd": load_loss("no-svd"),
+        # "lr=1e-2": load_loss("lr=1e-2"),
+        "hyper": load_loss("hyper"),
+        "hyper-init": load_loss("hyper-init"),
     })
 
     print("\n === Average Losses === ")

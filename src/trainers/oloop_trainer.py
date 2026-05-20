@@ -29,7 +29,7 @@ class OLoopTrainer(BaseTrainer):
             if "embed_tokens" in name or "lm_head" in name:
                 embeddings.append(param)
 
-            elif "log_lr" in name or "fast_out_proj" in name:
+            elif "fast" in name:
                 fast.append(param)
 
             else:
