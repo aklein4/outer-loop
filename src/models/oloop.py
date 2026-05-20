@@ -225,6 +225,10 @@ class OLoopModel(LlamaForCausalLM):
     def __init__(self, config):
         super().__init__(config)
 
+        self.disable_fast_weights = config.get("disable_fast_weights", False)
+        if self.disable_fast_weights:
+            return
+
         for layer in self.model.layers:
             layer: LlamaDecoderLayer
 
@@ -234,7 +238,7 @@ class OLoopModel(LlamaForCausalLM):
     def load_state_dict(self, state_dict, strict = True, assign = False):
 
         # svd init if no fast weights in state dict (loading from pretrained LLM)
-        if not any(k.endswith("log_lr") for k in state_dict.keys()):
+        if not any(k.endswith("log_lr") for k in state_dict.keys()) and not self.disable_fast_weights:
             nn.Module.load_state_dict(self, state_dict, False, assign)
 
             with torch.no_grad():

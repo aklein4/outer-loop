@@ -19,13 +19,13 @@ from utils.import_utils import import_model
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-NAME = "hyper-init" 
+NAME = "hyper-trained" 
 
 MODEL_TYPE = "oloop.OLoopModel"
 CONFIG_PATH = "configs/model/oloop-llama3p2-1b.yaml"
 
-CHECKPOINT_URL = 'aklein4/Llama-3.2-1B-TPU'
-CHECKPOINT_STEP = 0
+CHECKPOINT_URL = 'aklein4/outer-loop_oloop-hyper' # 'aklein4/Llama-3.2-1B-TPU'
+CHECKPOINT_STEP = 500
 
 MODEL_KWARGS = {
     "attention_kernel": "gpu_flash_attention",
@@ -121,8 +121,9 @@ def analyze_results():
         # "lr=3e-3": load_loss("lr=3e-3"),
         # "no-svd": load_loss("no-svd"),
         # "lr=1e-2": load_loss("lr=1e-2"),
-        "hyper": load_loss("hyper"),
-        "hyper-init": load_loss("hyper-init"),
+        # "hyper": load_loss("hyper"),
+        "hyper": load_loss("hyper-init"),
+        "hyper-trained": load_loss("hyper-trained"),
     })
 
     print("\n === Average Losses === ")

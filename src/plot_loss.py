@@ -6,35 +6,52 @@ import pandas as pd
 FILE = "losses.csv"
 
 RUNS = {
-    "mlp-base-1b": "iTTT",
-    "attn-baseline-theta-1b": "Dense Attn"
+    "oloop-alpha": "LoRA",
+    "oloop-hyper": "Hyper"
 }
+
+KEY = "grouped_lm_loss/decade_03"
 
 
 def main():
     
     df = pd.read_csv(FILE)
 
+    lines = {}
     for name, label in RUNS.items():
-        data = list(df[f"{name} - loss"].dropna())
 
-        if "attn" in label.lower():
-            roll = pd.DataFrame({"k": data}).rolling(100).mean()
-            x = (np.arange(len(roll["k"])) + 100) * 32 * (1024 * 32)
-        else:
-            roll = pd.DataFrame({"k": data}).rolling(25).mean()
-            x = (np.arange(len(roll["k"])) + 25) * 128 * (1024 * 32)
+        data = list(df[f"{name} - {KEY}"].dropna())
 
-        plt.plot(x, roll, label=label)
+        roll = pd.DataFrame({"k": data}).rolling(200, min_periods=25).mean()
+        lines[label] = roll
+
+        plt.plot(roll, label=label)
     
-    plt.xlabel("Tokens Seen")
-    plt.ylabel("Training Loss")
+    plt.xlabel("Training Step")
+    plt.ylabel(KEY)
+
     plt.legend()
     plt.grid()
-    plt.ylim(1.6, 3.0)
-    plt.title("Training Loss Over Tokens Seen")
+
+    plt.title("Training Progress")
+
     plt.tight_layout()
     plt.savefig("training_loss.png")
+
+    plt.clf()
+    plt.plot(
+        lines["Hyper"] - lines["LoRA"]
+    )
+
+    plt.xlabel("Training Step")
+    plt.ylabel("Hyper - LoRA Loss")
+
+    plt.grid()
+    
+    plt.title("Relative Loss")
+
+    plt.tight_layout()
+    plt.savefig("relative_loss.png")
     
 
 if __name__ == "__main__":
