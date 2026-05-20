@@ -183,6 +183,10 @@ class BaseTrainer:
             lr_schedulers = {}
 
             for key, c in config.trainer.multiple_optimizers.items():
+                if len(list(params[key])) == 0:
+                    logger.warning(f"No parameters found for optimizer {key}!")
+                    continue
+                
                 optimizer_config = c.optimizer
                 lr_scheduler_config = c.lr_scheduler
 
