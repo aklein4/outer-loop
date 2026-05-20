@@ -18,18 +18,29 @@ from utils.torch_utils import select_newton_schulz
 from utils.loss_utils import lm_loss_fn
 
 
-
-class FastWeightFunction(torch.autograd.Function):
+class FirstFastWeightFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(
         ctx,
         x: torch.FloatTensor,
         y: torch.FloatTensor,
-        buffer: torch.FloatTensor,
+        grad_buffer: torch.FloatTensor,
+        state_buffer: torch.FloatTensor,
+        eps: float,
     ) -> torch.FloatTensor:
+        """
+        Args:
+            x: input to the fast weights [B, S, I]
+            y: output of the fast weights [B, S, O]
+            grad_buffer: buffer to store gradients for fast weights [B, O, I]
+            state_buffer: buffer to store fast weight state [B, O, I]
+            eps: epsilon for numerical stability in Newton-Schulz
+        """
         ctx.save_for_backward(x)
-        ctx.dtype = buffer.dtype
+        ctx.grad_dtype = grad_buffer.dtype
+        ctx.state_dtype = state_buffer.dtype
+        ctx.eps = eps
         return y.clone()
 
 
@@ -40,15 +51,81 @@ class FastWeightFunction(torch.autograd.Function):
     ) -> tuple[None, torch.FloatTensor, None]:
 
         x, = ctx.saved_tensors
-        dtype: torch.dtype = ctx.dtype
+        grad_dtype = ctx.grad_dtype
+        state_dtype = ctx.state_dtype
 
         # [b, r, i]
-        update = (
-            grad.to(dtype).transpose(-2, -1) @
-            x.to(dtype)
+        G = (
+            grad.to(torch.bfloat16).transpose(-2, -1) @
+            x.to(torch.bfloat16)
+        )
+
+        update = -select_newton_schulz()(
+            G, steps=3, eps=ctx.eps
         )
     
-        return None, grad, update
+        return None, grad, G.to(grad_dtype), update.to(state_dtype), None
+
+
+class SecondFastWeightFunction(torch.autograd.Function):
+
+    @staticmethod
+    def forward(
+        ctx,
+        x: torch.FloatTensor,
+        y: torch.FloatTensor,
+        grad_buffer: torch.FloatTensor,
+        state_buffer: torch.FloatTensor,
+        eps: float,
+        final_grad: torch.FloatTensor,
+        out_weight: torch.FloatTensor,
+        lr: torch.FloatTensor,
+    ) -> torch.FloatTensor:
+        """
+        Args:
+            x: input to the fast weights [B, S, I]
+            y: output of the *projection after the fast weights* [B, S, O']
+            grad_buffer: buffer to store gradients for fast weights [B, O, I]
+            state_buffer: buffer to store fast weight state [B, O, I]
+            eps: epsilon for numerical stability in Newton-Schulz
+            final_grad: the total gradient of the fast weights from the end of the sequence
+            out_weight: the weight of the projection after the fast weights [O', O]
+            lr: the learning rate for the fast weight update [O, I] 
+        """
+        ctx.save_for_backward(x, grad_buffer, final_grad, out_weight, lr)
+        ctx.grad_dtype = grad_buffer.dtype
+        ctx.state_dtype = state_buffer.dtype
+        ctx.eps = eps
+        return y.clone()
+
+
+    @staticmethod
+    def backward(
+        ctx,
+        out_grad: torch.FloatTensor
+    ) -> tuple[None, torch.FloatTensor, None]:
+
+        x, grad_buffer, final_grad, out_weight = ctx.saved_tensors
+        grad_dtype = ctx.grad_dtype
+        state_dtype = ctx.state_dtype
+
+        # [b, r, i]
+        G = (
+            grad.to(torch.bfloat16).transpose(-2, -1) @
+            x.to(torch.bfloat16)
+        )
+        G_future = final_grad - G.to(final_grad.dtype)
+
+        with torch.set_grad_enabled(True):
+
+            x_leaf = x.to(torch.bfloat16).detach().clone().requires_grad_(True)
+            g = grad.to(torch.bfloat16)
+
+        update = -select_newton_schulz()(
+            G, steps=3, eps=ctx.eps
+        )
+    
+        return None, grad, G.to(grad_dtype), update.to(state_dtype), None
 
         
 class FastWeight(nn.Module):
