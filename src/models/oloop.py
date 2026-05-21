@@ -128,7 +128,7 @@ class SecondFastWeightFunction(torch.autograd.Function):
             )
             G_future = (
                 final_grad -
-                (G.to(final_grad.dtype) + grad_buffer)
+                (G + grad_buffer.to(final_grad.dtype))
             ).detach().to(torch.bfloat16)
 
             update = -select_newton_schulz()(
@@ -251,7 +251,7 @@ class FastWeight(nn.Module):
             state, dtype=torch.float32
         )
         final_grad_buffer = torch.zeros_like(
-            state, dtype=torch.float32
+            state, dtype=torch.bfloat16
         )
 
         state = maybe_shard_with_gradients(state)
@@ -280,7 +280,9 @@ class FastWeight(nn.Module):
         self.state.zero_()
         self.state.grad.zero_()
 
-        self.final_grad_buffer.copy_(self.grad_buffer)
+        self.final_grad_buffer.copy_(
+            self.grad_buffer.to(self.final_grad_buffer.dtype)
+        )
         
         self.grad_buffer.zero_()
         self.grad_buffer.grad.zero_()
@@ -312,7 +314,7 @@ class FastWeight(nn.Module):
     def relative_grad_error(self):
 
         est = self.grad_buffer
-        target = self.final_grad_buffer
+        target = self.final_grad_buffer.to(est.dtype)
 
         err = (est - target).norm()
         denom = target.norm() + self.eps
