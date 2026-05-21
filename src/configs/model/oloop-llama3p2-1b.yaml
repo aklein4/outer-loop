@@ -67,7 +67,5 @@ pure_modules: []
 fast_weight_size: 2048
 
 base_lr: 1.0e-3
-momentum_beta: 0.9
 
-momentum_dtype: bfloat16
 state_dtype: float32

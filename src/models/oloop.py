@@ -60,8 +60,9 @@ class FirstFastWeightFunction(torch.autograd.Function):
             x.to(torch.bfloat16)
         )
 
+        # gradient DESCENT
         update = -select_newton_schulz()(
-            G, steps=3, eps=ctx.eps
+            G, eps=ctx.eps
         )
     
         return None, grad, G.to(grad_dtype), update.to(state_dtype), None
@@ -73,7 +74,7 @@ class SecondFastWeightFunction(torch.autograd.Function):
     def forward(
         ctx,
         x: torch.FloatTensor,
-        y: torch.FloatTensor,
+        out: torch.FloatTensor,
         grad_buffer: torch.FloatTensor,
         state_buffer: torch.FloatTensor,
         eps: float,
@@ -84,19 +85,19 @@ class SecondFastWeightFunction(torch.autograd.Function):
         """
         Args:
             x: input to the fast weights [B, S, I]
-            y: output of the *projection after the fast weights* [B, S, O']
+            out: output of the *projection after the fast weights* [B, S, P]
             grad_buffer: buffer to store gradients for fast weights [B, O, I]
             state_buffer: buffer to store fast weight state [B, O, I]
             eps: epsilon for numerical stability in Newton-Schulz
             final_grad: the total gradient of the fast weights from the end of the sequence
-            out_weight: the weight of the projection after the fast weights [O', O]
+            out_weight: the weight of the projection after the fast weights [P, O]
             lr: the learning rate for the fast weight update [O, I] 
         """
         ctx.save_for_backward(x, grad_buffer, final_grad, out_weight, lr)
         ctx.grad_dtype = grad_buffer.dtype
         ctx.state_dtype = state_buffer.dtype
         ctx.eps = eps
-        return y.clone()
+        return out.clone()
 
 
     @staticmethod
@@ -105,27 +106,53 @@ class SecondFastWeightFunction(torch.autograd.Function):
         out_grad: torch.FloatTensor
     ) -> tuple[None, torch.FloatTensor, None]:
 
-        x, grad_buffer, final_grad, out_weight = ctx.saved_tensors
+        x, grad_buffer, final_grad, out_weight, lr = ctx.saved_tensors
         grad_dtype = ctx.grad_dtype
         state_dtype = ctx.state_dtype
-
-        # [b, r, i]
-        G = (
-            grad.to(torch.bfloat16).transpose(-2, -1) @
-            x.to(torch.bfloat16)
-        )
-        G_future = final_grad - G.to(final_grad.dtype)
 
         with torch.set_grad_enabled(True):
 
             x_leaf = x.to(torch.bfloat16).detach().clone().requires_grad_(True)
-            g = grad.to(torch.bfloat16)
+            out_weight_leaf = out_weight.to(torch.bfloat16).detach().clone().requires_grad_(True)
 
-        update = -select_newton_schulz()(
-            G, steps=3, eps=ctx.eps
-        )
+            grad = torch.einsum(
+                "bsp,bpo->bso",
+                out_grad.to(torch.bfloat16),
+                out_weight_leaf[None]
+            )
+
+            # [b, r, i]
+            G = (
+                grad.transpose(-2, -1) @
+                x_leaf
+            )
+            G_future = (
+                final_grad -
+                (G.to(final_grad.dtype) + grad_buffer)
+            ).detach().to(torch.bfloat16)
+
+            update = -select_newton_schulz()(
+                G, eps=ctx.eps
+            )
+
+            update_lr = update * lr[None].detach()
+
+            x_grad, out_weight_grad = torch.autograd.grad(
+                update_lr,
+                (x_leaf, out_weight_leaf),
+                grad_outputs=G_future
+            )
     
-        return None, grad, G.to(grad_dtype), update.to(state_dtype), None
+        return (
+            x_grad.to(x.dtype),
+            out_grad,
+            G.to(grad_dtype),
+            update.to(state_dtype),
+            None,
+            None,
+            out_weight_grad.to(out_weight.dtype),
+            None,
+        )
 
         
 class FastWeight(nn.Module):
@@ -143,29 +170,33 @@ class FastWeight(nn.Module):
         self.out_features = out_features
 
         self.base_lr = config.base_lr
-        self.momentum_beta = config.momentum_beta
 
         self.eps = config.rms_norm_eps
         self.scalar_scaler = math.sqrt(self.in_features)
 
-        self.momentum_dtype = getattr(torch, config.momentum_dtype)
         self.state_dtype = getattr(torch, config.state_dtype)
         
-        # ittt params
+        # params
         self.log_lr = nn.Parameter(
             torch.zeros(self.out_features, self.in_features)
         )
+        self.out_proj = nn.Linear(self.out_features, self.out_features, bias=False)
 
         # ephemeral state
         self.state: nn.Buffer
-        self.momentum: nn.Buffer
-        self.prev_whitened: nn.Buffer
+        self.grad_buffer: nn.Buffer
+        self.final_grad_buffer: nn.Buffer
+
+        # first_pass: run the arch like normal
+        # second_pass: run the arch with a duplicated mlp forward and estimate the first-order gradients of the state
+        self.second_pass = False
                     
 
     def get_lr(self):
         return (
             self.base_lr *
-            torch.exp(self.log_lr * self.scalar_scaler) /
+            torch.exp(self.log_lr * self.scalar_scaler) *
+            math.sqrt(max(self.in_features, self.out_features)) /
             math.sqrt(self.in_features)
         )
 
@@ -173,16 +204,40 @@ class FastWeight(nn.Module):
     def forward(
         self,
         x: torch.FloatTensor,
+        x_mlp: torch.FloatTensor = None,
     ) -> torch.FloatTensor:
 
         assert x.ndim == 3, "x must be 3D (batch, seq_len, dim)"
+        if x_mlp is not None:
+            assert x_mlp.shape == x.shape, "x_mlp must have the same shape as x"
 
-        s = self.get_lr()[None] * self.state.detach()
+        lr = self.get_lr()
+
+        s = lr[None] * self.state.detach()
 
         y = torch.einsum("boi,bli->blo", s, x)
-        y = FastWeightFunction.apply(x, y, self.momentum)
 
-        return y
+        if not self.second_pass:
+            y = FirstFastWeightFunction.apply(
+                x, y,
+                self.grad_buffer, self.state,
+                self.eps,
+            )
+            out = self.out_proj(y)
+
+        else:
+            assert x_mlp is not None, "x_mlp must be provided for second pass"
+
+            out = self.out_proj(y)
+            out = SecondFastWeightFunction.apply(
+                x_mlp, out,
+                self.grad_buffer, self.state,
+                self.eps,
+                self.final_grad_buffer,
+                self.out_proj.weight, lr,
+            )
+
+        return out
 
 
     @torch.no_grad()
@@ -192,71 +247,77 @@ class FastWeight(nn.Module):
             bs, self.out_features, self.in_features,
             device=device, dtype=self.state_dtype,
         )
-        momentum = torch.zeros_like(
-            state, dtype=self.momentum_dtype
+        grad_buffer = torch.zeros_like(
+            state, dtype=torch.float32
         )
-        prev_whitened = torch.zeros_like(
-            state, dtype=self.momentum_dtype
+        final_grad_buffer = torch.zeros_like(
+            state, dtype=torch.float32
         )
 
         state = maybe_shard_with_gradients(state)
-        momentum = maybe_shard_with_gradients(momentum)
-        prev_whitened = maybe_shard_with_gradients(prev_whitened)
-    
+        grad_buffer = maybe_shard_with_gradients(grad_buffer)
+        final_grad_buffer = maybe_shard_with_gradients(final_grad_buffer)
+
         self.register_buffer("state", state, persistent=False)
-        self.register_buffer("momentum", momentum, persistent=False)
-        self.register_buffer("prev_whitened", prev_whitened, persistent=False)
+        self.register_buffer("grad_buffer", grad_buffer, persistent=False)
+        self.register_buffer("final_grad_buffer", final_grad_buffer, persistent=False)
+
+        self.state.requires_grad_(True)
+        self.grad_buffer.requires_grad_(True)
+        self.final_grad_buffer.requires_grad_(False)
+
+        self.state.grad = torch.zeros_like(self.state)
+        self.state.grad = maybe_shard_with_gradients(self.state.grad)
+
+        self.grad_buffer.grad = torch.zeros_like(self.grad_buffer)
+        self.grad_buffer.grad = maybe_shard_with_gradients(self.grad_buffer.grad)
+
+
+    @torch.no_grad()
+    def finalize_gradients(self):
+        self.update_state()
+
+        self.state.zero_()
+        self.state.grad.zero_()
+
+        self.final_grad_buffer.copy_(self.grad_buffer)
         
-        self.state.requires_grad_(False)
-
-        self.momentum.requires_grad_(True)
-        self.momentum.grad = torch.zeros_like(self.momentum)
-        self.momentum.grad = maybe_shard_with_gradients(self.momentum.grad)
-
-        self.prev_whitened.requires_grad_(False)
+        self.grad_buffer.zero_()
+        self.grad_buffer.grad.zero_()
 
 
     @torch.no_grad()
     def empty_state(self):
 
         self.state.zero_()
+        self.state.grad.zero_()
 
-        self.momentum.zero_()
-        self.momentum.grad.zero_()
+        self.grad_buffer.zero_()
+        self.grad_buffer.grad.zero_()
 
-        self.prev_whitened.zero_()
+        self.final_grad_buffer.zero_()
 
     
     @torch.no_grad()
     def update_state(self):
         
-        update = self.momentum.grad
+        self.state.add_(self.state.grad)
+        self.state.grad.zero_()
 
-        new_momentum = torch.lerp(
-            self.momentum,
-            update,
-            1 - self.momentum_beta
-        )
-        new_whitened = select_newton_schulz()(
-            new_momentum, eps=self.eps
-        )
+        self.grad_buffer.add_(self.grad_buffer.grad)
+        self.grad_buffer.grad.zero_()
 
-        # approximates newton_schulz as a linear function:
-        # f(ax) = af(x), f(x+y) = f(x) + f(y)
-        delta = (
-            (new_whitened - self.prev_whitened * self.momentum_beta) /
-            (1 - self.momentum_beta)
-        )
 
-        # scale delta to element-wise scale of 1
-        delta = delta * math.sqrt(max(self.in_features, self.out_features))
-        
-        self.state.add_(-delta.to(self.state_dtype))
-        
-        self.momentum.copy_(new_momentum.detach())
-        self.momentum.grad.zero_()
+    @torch.no_grad()
+    def relative_grad_error(self):
 
-        self.prev_whitened.copy_(new_whitened.detach())
+        est = self.grad_buffer
+        target = self.final_grad_buffer
+
+        err = (est - target).norm()
+        denom = target.norm() + self.eps
+
+        return err / denom
 
 
 class FastWeightMLP(nn.Module):
@@ -278,10 +339,9 @@ class FastWeightMLP(nn.Module):
 
         self.gate_fast = nn.Linear(self.hidden_size, self.fast_weight_size, bias=False)
         self.up_fast = nn.Linear(self.hidden_size, self.fast_weight_size, bias=False)
-        self.fast = FastWeight(
-            self.fast_weight_size, self.fast_weight_size, config
+        self.down_fast = FastWeight(
+            self.fast_weight_size, self.hidden_size, config
         )
-        self.down_fast = nn.Linear(self.fast_weight_size, self.hidden_size, bias=False)
 
 
     def forward(self, x):
@@ -290,8 +350,13 @@ class FastWeightMLP(nn.Module):
         y_base = self.down_proj(h_base)
 
         h_fast = self.act_fn(self.gate_fast(x)) * self.up_fast(x)
-        h_fast = self.fast(h_fast)
-        y_fast = self.down_fast(h_fast)
+
+        h_mlp = None
+        if self.down_fast.second_pass:
+            x_mlp = x.detach()
+            h_mlp = self.act_fn(self.gate_fast(x_mlp)) * self.up_fast(x_mlp)
+
+        y_fast = self.down_fast(h_fast, h_mlp)
 
         return y_base + y_fast
 
@@ -329,7 +394,9 @@ class OLoopModel(LlamaForCausalLM):
                     mlp.up_fast.weight.data.copy_(
                         mlp.up_proj.weight.data[:mlp.fast_weight_size, :]
                     )
-                    mlp.down_fast.weight.data.copy_(
+
+                    assert mlp.fast_weight_size == mlp.hidden_size, "for svd init, fast_weight_size must be equal to hidden_size"
+                    mlp.down_fast.out_proj.weight.data.copy_(
                         mlp.down_proj.weight.data[:, :mlp.fast_weight_size]
                     )
 
@@ -345,88 +412,40 @@ class OLoopModel(LlamaForCausalLM):
 
 
     @torch.no_grad()
+    def set_second_pass(self, value):
+        for m in self.modules():
+            if isinstance(m, FastWeight):
+                m.second_pass = value
+
+
+    @torch.no_grad()
+    def finalize_gradients(self):
+        for m in self.modules():
+            if isinstance(m, FastWeight):
+                m.finalize_gradients()
+
+
+    @torch.no_grad()
     def empty_state(self):
         for m in self.modules():
             if isinstance(m, FastWeight):
                 m.empty_state()
     
-
+    
     @torch.no_grad()
     def update_state(self):
+        for m in self.modules():
+            if isinstance(m, FastWeight):
+                m.update_state()
 
-        to_update = []
-        for name, mod in self.model.layers[0].named_modules():
-            if isinstance(mod, FastWeight):
-                to_update.append(name)
-
-        for name in to_update:
-            self.update_state_named(name)
-
-
+    
     @torch.no_grad()
-    def update_state_named(self, name: str):
-        # updates named module across all layers in parallel
-        
-        try:
-            ref: FastWeight = self.model.layers[0].get_submodule(name)
-        except:
-            ref: FastWeight = self.model.layers[0]._orig_mod.get_submodule(name)
-
-        updates = []
-        momentums = []
-        prev_whiteneds = []
-        for layer in self.model.layers:
-            layer: LlamaDecoderLayer
-
-            try:
-                m: FastWeight = layer.get_submodule(name)
-            except:
-                m: FastWeight = layer._orig_mod.get_submodule(name)
-
-            updates.append(m.momentum.grad)
-            momentums.append(m.momentum)
-            prev_whiteneds.append(m.prev_whitened)
-        
-        updates = torch.stack(updates, dim=1)
-        momentums = torch.stack(momentums, dim=1)
-        prev_whiteneds = torch.stack(prev_whiteneds, dim=1)
-
-        updates = maybe_shard_with_gradients(updates)
-        momentums = maybe_shard_with_gradients(momentums)
-        prev_whiteneds = maybe_shard_with_gradients(prev_whiteneds)
-
-        new_momentums = torch.lerp(
-            momentums,
-            updates,
-            1 - ref.momentum_beta
-        )
-        new_whiteneds = select_newton_schulz()(
-            new_momentums, eps=ref.eps
-        )
-
-        deltas = (
-            (new_whiteneds - prev_whiteneds * ref.momentum_beta) /
-            (1 - ref.momentum_beta)
-        )
-
-        deltas = deltas * math.sqrt(max(ref.in_features, ref.out_features))
-
-        state_deltas = -deltas.to(ref.state_dtype)
-
-        for i, layer in enumerate(self.model.layers):
-            layer: LlamaDecoderLayer
-
-            try:
-                m: FastWeight = layer.get_submodule(name)
-            except:
-                m: FastWeight = layer._orig_mod.get_submodule(name)
-
-            m.state.add_(state_deltas[:, i].detach())
-
-            m.momentum.copy_(new_momentums[:, i].detach())
-            m.momentum.grad.zero_()
-
-            m.prev_whitened.copy_(new_whiteneds[:, i].detach())
+    def relative_grad_error(self):
+        errors = []
+        for m in self.modules():
+            if isinstance(m, FastWeight):
+                errors.append(m.relative_grad_error())
+        return torch.stack(errors).mean()
 
 
     def compute_logits(

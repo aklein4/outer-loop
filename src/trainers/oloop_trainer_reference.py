@@ -105,15 +105,12 @@ class OLoopTrainer(BaseTrainer):
     def post_forward(self):
 
         # clear state
-        self.model.update_state()
-        err = self.model.relative_grad_error()
         self.model.empty_state()
 
         # regular optimization step
         grad_norm = self.clip_gradients()
 
         aux = self.optimization_step()
-        aux["relative_grad_error"] = err
         
         self.model.zero_grad(set_to_none=False)
 
@@ -128,36 +125,13 @@ class OLoopTrainer(BaseTrainer):
             dim=-1
         )
 
-        """ First Pass """
-        self.model.set_second_pass(False)
-
-        # first chunk
-        self.first_chunk(chunks[0])
-        torch_xla.sync()
-        master_print("First chunk 00 completed.")
-
-        # remaining chunks
-        for i in range(1, len(chunks)):
-            in_chunk = chunks[i-1]
-            out_chunk = chunks[i]
-            
-            self.looped_chunks(in_chunk, out_chunk)
-
-            torch_xla.sync()
-            master_print(f"First chunk {i:02d} completed.")
-        
-        """ Second Pass """
-        self.model.set_second_pass(True)
-        self.model.finalize_gradients()
-        self.model.zero_grad(set_to_none=False)
-
         # first chunk
         total_loss = self.first_chunk(chunks[0])
         aux = {
             "lm_loss/chunk_00": total_loss,
         }
         torch_xla.sync()
-        master_print("Second chunk 00 completed.")
+        master_print("Chunk 00 completed.")
 
         # remaining chunks
         for i in range(1, len(chunks)):
@@ -169,7 +143,7 @@ class OLoopTrainer(BaseTrainer):
             aux[f"lm_loss/chunk_{i:02d}"] = loss
             total_loss = total_loss + loss
             torch_xla.sync()
-            master_print(f"Second chunk {i:02d} completed.")
+            master_print(f"Chunk {i:02d} completed.")
         
         post_aux, grad_norm = self.post_forward()
         aux.update(post_aux)
