@@ -62,7 +62,7 @@ class FirstFastWeightFunction(torch.autograd.Function):
 
         # gradient DESCENT
         update = -select_newton_schulz()(
-            G, eps=ctx.eps
+            G, steps=3, eps=ctx.eps
         )
     
         return None, grad, G.to(grad_dtype), update.to(state_dtype), None
@@ -132,7 +132,7 @@ class SecondFastWeightFunction(torch.autograd.Function):
             ).detach().to(torch.bfloat16)
 
             update = -select_newton_schulz()(
-                G, eps=ctx.eps
+                G, steps=3, eps=ctx.eps
             )
 
             update_lr = update * lr[None].detach()
