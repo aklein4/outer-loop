@@ -22,7 +22,7 @@ class BaseBenchmark:
     subset: str = None
     split: str = None
 
-    is_train = False
+    is_default = False
 
 
     def __init__(
@@ -194,6 +194,8 @@ class BaseBenchmark:
 
 class MCQABenchmark(BaseBenchmark):
 
+    is_default = True
+
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,
@@ -300,6 +302,8 @@ class MCQABenchmark(BaseBenchmark):
 
 
 class MathBenchmark(BaseBenchmark):
+
+    is_default = True
 
     def __init__(
         self,
@@ -425,14 +429,14 @@ class arc_e_train(arc_e):
     name = "ARC-E-Train"
     split = "train"
 
-    is_train = True
+    is_default = False
 
 class arc_c_train(arc_c):
 
     name = "ARC-C-Train"
     split = "train"
 
-    is_train = True
+    is_default = False
 
 
 class sciq(MCQABenchmark):
@@ -659,14 +663,354 @@ class svamp(MathBenchmark):
         )
 
 
+class ManyICLBench(BaseBenchmark):
+
+    name = "ManyICLBench"
+
+    url = "launch/ManyICLBench"
+    subset = None
+    split = None
+    context_length = None
+
+    requires_batch_size_one = True
+
+
+    def __init__(
+        self,
+        tokenizer: PreTrainedTokenizer,
+        max_input_length: int,
+        max_output_length: int,
+        max_examples: int | None = None,
+        **kwargs,
+    ):
+        if tokenizer.pad_token_id is None:
+            if tokenizer.eos_token is None:
+                raise ValueError("ManyICLBench requires a tokenizer pad token or eos token.")
+            tokenizer.pad_token = tokenizer.eos_token
+
+        super().__init__(
+            tokenizer,
+            max_input_length,
+            max_output_length,
+            max_examples,
+            **kwargs,
+        )
+
+
+    def get_dataset(self):
+        available_subsets = self.get_subsets()
+        selected_subsets = self.selected_values(
+            getattr(self, "subsets", self.subset),
+            available_subsets,
+            "subset",
+        )
+
+        rows = {
+            "input_text": [],
+            "output_text": [],
+            "subset": [],
+            "seed": [],
+            "context_length": [],
+            "keep": [],
+        }
+        skip_targetless = "subset" not in self.benchmark_kwargs and "subsets" not in self.benchmark_kwargs
+
+        for subset in selected_subsets:
+            available_seeds = self.get_seeds(subset)
+            selected_seeds = self.selected_values(
+                getattr(self, "seeds", self.split),
+                available_seeds,
+                "seed",
+            )
+            targetless_seeds = [
+                seed for seed in selected_seeds
+                if not self.has_targets(subset, seed)
+            ]
+            if targetless_seeds and skip_targetless:
+                selected_seeds = tuple(
+                    seed for seed in selected_seeds
+                    if seed not in targetless_seeds
+                )
+            elif targetless_seeds:
+                self.add_dataset_rows(rows, subset, targetless_seeds[0], None, skip_targetless)
+
+            if len(selected_seeds) == 0:
+                continue
+
+            available_context_lengths = self.get_context_lengths(subset, selected_seeds[0])
+            context_length = self.context_length
+            if context_length is None:
+                context_length = available_context_lengths[0]
+            elif context_length not in available_context_lengths:
+                raise ValueError(
+                    f"Unsupported ManyICLBench context length {context_length}. "
+                    f"Choose one of {', '.join(available_context_lengths)}."
+                )
+
+            for seed in selected_seeds:
+                self.add_dataset_rows(rows, subset, seed, context_length, skip_targetless)
+
+        if len(rows["input_text"]) == 0:
+            raise ValueError(f"No examples were loaded for {self.name}.")
+
+        data = datasets.Dataset.from_dict(rows)
+
+        data = data.map(
+            self.data_map_fn,
+            batched=True,
+            batch_size=1,
+            load_from_cache_file=False,
+        )
+        data = data.filter(
+            self.data_filter_fn,
+            batched=True,
+            batch_size=BS,
+            load_from_cache_file=False,
+        )
+
+        if len(data) == 0:
+            raise ValueError(
+                f"No {self.name} examples fit max_input_length={self.max_input_length} "
+                f"and max_output_length={self.max_output_length}."
+            )
+
+        data = data.remove_columns("keep")
+
+        self.dataset = data
+        data = data.map(
+            self.truncate_map_fn,
+            batched=True,
+            batch_size=1,
+            load_from_cache_file=False,
+        )
+        self.dataset = None
+
+        return data
+
+
+    def get_subsets(self):
+        return tuple(datasets.get_dataset_config_names(self.url))
+
+
+    def get_seeds(self, subset):
+        return tuple(datasets.get_dataset_split_names(self.url, subset))
+
+
+    def get_context_lengths(self, subset, seed):
+        data = datasets.load_dataset(
+            self.url,
+            name=subset,
+            split=seed,
+            streaming=False,
+        )
+        if len(data) != 1:
+            raise ValueError(
+                f"Expected one row for {self.name}:{subset}:{seed}, got {len(data)} rows."
+            )
+
+        row = data[0]
+        return tuple(
+            column for column, value in row.items()
+            if isinstance(value, str)
+        )
+
+
+    def has_targets(self, subset, seed):
+        data = datasets.load_dataset(
+            self.url,
+            name=subset,
+            split=seed,
+            streaming=False,
+        )
+        if len(data) != 1:
+            raise ValueError(
+                f"Expected one row for {self.name}:{subset}:{seed}, got {len(data)} rows."
+            )
+
+        return "Test Target" in data[0]
+
+
+    def selected_values(self, selected, default, label):
+        if selected is None:
+            selected = default
+        elif isinstance(selected, str):
+            selected = (selected,)
+        else:
+            selected = tuple(selected)
+
+        invalid = [value for value in selected if value not in default]
+        if invalid:
+            raise ValueError(
+                f"Unsupported ManyICLBench {label}: {', '.join(invalid)}. "
+                f"Choose from {', '.join(default)}."
+            )
+
+        return selected
+
+
+    def add_dataset_rows(self, rows, subset, seed, context_length, skip_targetless):
+        data = datasets.load_dataset(
+            self.url,
+            name=subset,
+            split=seed,
+            streaming=False,
+        )
+
+        if len(data) != 1:
+            raise ValueError(
+                f"Expected one row for {self.name}:{subset}:{seed}, got {len(data)} rows."
+            )
+
+        row = data[0]
+        if "Test Target" not in row:
+            if skip_targetless:
+                return
+            raise ValueError(
+                f"{self.name} cannot be built directly from {self.url}: "
+                f"{subset} stores MATH file names but not target text."
+            )
+
+        if context_length is None:
+            context_lengths = self.get_context_lengths(subset, seed)
+            context_length = context_lengths[0] if len(context_lengths) > 0 else None
+
+        if context_length not in row:
+            context_lengths = self.get_context_lengths(subset, seed)
+            raise ValueError(
+                f"Unsupported ManyICLBench context length {context_length}. "
+                f"Choose one of {', '.join(context_lengths)}."
+            )
+
+        context = row[context_length]
+        if not isinstance(context, str):
+            raise ValueError(
+                f"{self.name} expected text in column {context_length}, "
+                f"got {type(context).__name__}."
+            )
+
+        test_data = row["Test Data"]
+        test_targets = row["Test Target"]
+        if len(test_data) != len(test_targets):
+            raise ValueError(
+                f"{self.name} has {len(test_data)} test prompts but "
+                f"{len(test_targets)} targets."
+            )
+
+        if self.max_examples is not None:
+            max_examples = min(self.max_examples, len(test_data))
+            test_data = test_data[:max_examples]
+            test_targets = test_targets[:max_examples]
+
+        rows["input_text"].extend(context + prompt for prompt in test_data)
+        rows["output_text"].extend(str(target) for target in test_targets)
+        rows["subset"].extend([subset] * len(test_data))
+        rows["seed"].extend([seed] * len(test_data))
+        rows["context_length"].extend([context_length] * len(test_data))
+        rows["keep"].extend([True] * len(test_data))
+
+
+    def tokenize_target(self, text):
+        ids = self.tokenizer(
+            text,
+            add_special_tokens=False,
+            return_tensors="np",
+            padding="max_length",
+            truncation=True,
+            max_length=self.max_output_length + 1,
+        ).input_ids
+
+        keep = ids[:, -1] == self.tokenizer.pad_token_id
+
+        return ids[:, :-1], keep
+
+
+    def data_map_fn(self, batch):
+        input_ids, keep_input = self.tokenize(batch["input_text"], "input")
+        output_ids, keep_output = self.tokenize_target(batch["output_text"])
+
+        keep = (
+            keep_input & keep_output & np.array(batch["keep"], dtype=bool)
+        )
+
+        batch.update({
+            "input_ids": input_ids,
+            "output_ids": output_ids,
+            "keep": keep,
+        })
+
+        return batch
+
+
+    def collate_fn(self, batch):
+        if len(batch) != 1:
+            raise ValueError(f"{self.name} requires batch_size=1.")
+
+        d = super().collate_fn(batch)
+        pad_token_id = self.tokenizer.pad_token_id
+
+        input_length = int((d["input_ids"][0] != pad_token_id).sum().item())
+        output_length = int((d["output_ids"][0] != pad_token_id).sum().item())
+
+        d["input_ids"] = d["input_ids"][:, :input_length]
+        d["output_ids"] = d["output_ids"][:, :output_length]
+
+        return d
+
+
+    def grade(self, batch, logits):
+        pad_token_id = self.tokenizer.pad_token_id
+        target_ids = batch["output_ids"].to(logits.device)
+        target_mask = target_ids != pad_token_id
+
+        if logits.shape[1] == target_ids.shape[1]:
+            pred_ids = torch.argmax(logits, dim=-1)
+            return self.grade_predictions(pred_ids, target_ids, target_mask)
+
+        pred_ids = torch.full_like(target_ids, pad_token_id)
+        input_length = batch["input_ids"].shape[1]
+        for i in range(target_ids.shape[0]):
+            target_length = int(target_mask[i].sum().item())
+            if target_length == 0:
+                continue
+
+            start = input_length - 1
+            end = start + target_length
+            if start < 0 or end > logits.shape[1]:
+                raise ValueError(
+                    f"{self.name} received logits with sequence length {logits.shape[1]}, "
+                    f"but needs positions [{start}, {end})."
+                )
+
+            pred_ids[i, :target_length] = torch.argmax(logits[i, start:end], dim=-1)
+
+        return self.grade_predictions(pred_ids, target_ids, target_mask)
+
+
+    def grade_predictions(self, pred_ids, target_ids, target_mask):
+        correct = []
+        for i in range(target_ids.shape[0]):
+            target_length = int(target_mask[i].sum().item())
+            pred_text = self.tokenizer.decode(
+                pred_ids[i, :target_length].detach().cpu().tolist(),
+                skip_special_tokens=True,
+            ).strip()
+            target_text = self.tokenizer.decode(
+                target_ids[i, :target_length].detach().cpu().tolist(),
+                skip_special_tokens=True,
+            ).strip()
+            correct.append(pred_text == target_text)
+
+        return torch.tensor(correct, device=pred_ids.device, dtype=torch.bool)
+
+
 BENCHMARK_DICT = {
     cls[1].name: cls[1]
     for cls in inspect.getmembers(sys.modules[__name__], inspect.isclass)
-    if issubclass(cls[1], BaseBenchmark) and cls[1].name is not None and not cls[1].is_train
+    if issubclass(cls[1], BaseBenchmark) and cls[1].name is not None
 }
 
-TRAIN_BENCHMARK_DICT = {
-    cls[1].name: cls[1]
-    for cls in inspect.getmembers(sys.modules[__name__], inspect.isclass)
-    if issubclass(cls[1], BaseBenchmark) and cls[1].name is not None and cls[1].is_train
+DEFAULT_BENCHMARK_DICT = {
+    name: cls
+    for name, cls in BENCHMARK_DICT.items()
+    if cls.is_default
 }

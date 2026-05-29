@@ -56,6 +56,7 @@ def main(args):
             "seed": args.seed,
         },
         model_kwargs=args.model_kwargs,
+        benchmark_kwargs=args.benchmark_kwargs,
     )
 
 
@@ -126,8 +127,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model_kwargs",
         type=json.loads,
-        default="{}",
+        default={},
         help="A JSON string representing a dictionary of additional keyword arguments to pass to the model during evaluation.",
+    )
+    parser.add_argument(
+        "--benchmark_kwargs",
+        type=json.loads,
+        default={},
+        help="A JSON string mapping benchmark names to keyword arguments for benchmark construction.",
     )
     parser.add_argument(
         "--benchmarks",

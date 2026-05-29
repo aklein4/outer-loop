@@ -535,6 +535,36 @@ class LlamaForCausalLM(nn.Module):
         return logits, loss
     
 
+    def get_logits(
+        self,
+        input_ids: torch.LongTensor,
+        output_ids: torch.LongTensor | None = None,
+        **kwargs,
+    ):
+
+        if output_ids is None:
+            shift = kwargs.pop("shift_logits", True)
+            return self.forward(
+                input_ids=input_ids,
+                shift_states=shift,
+                **kwargs
+            )[0]
+
+        all_ids = torch.cat(
+            [
+                input_ids,
+                output_ids
+            ],
+            dim=1
+        )
+
+        return self.forward(
+            input_ids=all_ids,
+            shift_states=slice(-(output_ids.shape[-1]+1), -1),
+            **kwargs
+        )[0]
+
+
     def sample(
         self,
         logits: torch.FloatTensor,
