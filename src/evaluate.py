@@ -12,19 +12,20 @@ import utils.constants as constants
 
 
 @torch.no_grad()
-def main(args):
+def main(args, model=None):
     assert constants.DEVICE.type == "cuda", "Evaluation currently only supports CUDA devices."
 
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
 
     print(f"\nLoading model {args.checkpoint_url} at step {args.checkpoint_step}...")
-    model = load_checkpoint(
-        args.checkpoint_url, args.checkpoint_step,
-        strict=(not args.checkpoint_not_strict),
-        attention_kernel="gpu_flash_attention",
-        config_name=args.config_name,
-    ).to(constants.DEVICE)
+    if model is None:
+        model = load_checkpoint(
+            args.checkpoint_url, args.checkpoint_step,
+            strict=(not args.checkpoint_not_strict),
+            attention_kernel="gpu_flash_attention",
+            config_name=args.config_name,
+        ).to(constants.DEVICE)
     model.eval()
 
     print(f"\nLoading tokenizer from {args.tokenizer}...")
@@ -59,6 +60,8 @@ def main(args):
         model_kwargs=args.model_kwargs,
         benchmark_kwargs=args.benchmark_kwargs,
     )
+
+    return model
 
 
 if __name__ == "__main__":

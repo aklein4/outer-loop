@@ -4,6 +4,7 @@ import numpy as np
 import string
 import sys
 import inspect
+from copy import deepcopy
 
 import datasets
 from transformers import PreTrainedTokenizer
@@ -688,11 +689,13 @@ class ManyICLBench(BaseBenchmark):
         max_examples: int | None = None,
         context_length: str | None = None,
         max_test_examples: int | None = None,
+        runs_per_seed: int = 1,
     ):
 
         assert context_length is not None, "ManyICLBench requires a context_length benchmark_kwarg"
         self.context_length = context_length
         self.max_test_examples = max_test_examples
+        self.runs_per_seed = runs_per_seed
 
         super().__init__(
             tokenizer,
@@ -724,11 +727,34 @@ class ManyICLBench(BaseBenchmark):
                     streaming=False,
                 )
 
+                do_add = False
                 for example in ds:
                     if not example["Test Data"][0].endswith(".json"):
-                        data.append(ds)
+                        do_add = True
                     else:
                         break
+
+                if not do_add:
+                    continue
+
+                if self.max_test_examples is not None:
+
+                    d = ds.to_dict()
+
+                    for i in range(self.runs_per_seed):
+                        if len(d["Test Data"][0]) < self.max_test_examples * (i+1):
+                            break
+
+                        new_d = deepcopy(d)
+                        new_d["Test Data"][0] = d["Test Data"][0][i*self.max_test_examples:(i+1)*self.max_test_examples]
+                        new_d["Test Target"][0] = d["Test Target"][0][i*self.max_test_examples:(i+1)*self.max_test_examples]
+
+                        data.append(datasets.Dataset.from_dict(new_d))
+
+                else:
+                    data.append(ds)
+
+
 
         data = datasets.concatenate_datasets(data)
 
@@ -793,9 +819,6 @@ class ManyICLBench(BaseBenchmark):
                 "indices": indices,
                 "labels": labels,
             })
-
-            if self.max_test_examples is not None and len(answers) >= self.max_test_examples:
-                break
 
         output_ids = torch.tensor(output_ids, device=constants.DEVICE).unsqueeze(0)
 

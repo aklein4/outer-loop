@@ -36,7 +36,6 @@ def run_benchmarks(
     if save_path is None:
         save_path = "evaluation_results"
     save_path = os.path.join(constants.LOCAL_DATA_PATH, save_path)
-    os.makedirs(save_path, exist_ok=True)
     print(f"\nEvaluation results will be saved to: {save_path}")  
 
     for i, benchmark_name in enumerate(benchmarks): 
@@ -114,6 +113,8 @@ def run_benchmarks(
                 "benchmark_kwargs_for_benchmark": bench_kwargs,
             } | meta_data
         }
+
+        os.makedirs(save_path, exist_ok=True)
         with open(os.path.join(save_path, f"{benchmark_name}.json"), "w") as f:
             json.dump(results, f, indent=4)
 

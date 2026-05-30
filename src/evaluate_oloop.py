@@ -7,10 +7,11 @@ from evaluate import main as evaluate_main
 from utils import constants
 
 
-SAVE_FOLDER = "ManyICLBench_results_20"
+SAVE_FOLDER = "ManyICLBench_results_50"
 
 CONTEXT_LENGTHS = ["1k", "2k", "4k", "8k", "16k", "32k", "64k", "128k"]
-MAX_TEST_EXAMPLES = 20
+MAX_TEST_EXAMPLES = 10
+RUNS_PER_SEED = 5
 
 
 def args_with_context(name, args, context_length):
@@ -21,6 +22,7 @@ def args_with_context(name, args, context_length):
         "ManyICLBench": {
             "context_length": context_length,
             "max_test_examples": MAX_TEST_EXAMPLES,
+            "runs_per_seed": RUNS_PER_SEED,
         },
     }
 
@@ -42,7 +44,9 @@ def main():
         no_autocast=False,
         save_folder=None,
         seed=42,
-        model_kwargs={"cpu_logits": True},
+        model_kwargs={
+            # "cpu_logits": True
+        },
         benchmark_kwargs=None,
         benchmarks=["ManyICLBench"],
     )
@@ -60,7 +64,10 @@ def main():
         no_autocast=True,
         save_folder=None,
         seed=42,
-        model_kwargs={"cpu_logits": True, "verbose": True, "chunk_size": 1024},
+        model_kwargs={
+            # "cpu_logits": True,
+            "verbose": True, "chunk_size": 1024
+        },
         benchmark_kwargs=None,
         benchmarks=["ManyICLBench"],
     )
@@ -78,7 +85,10 @@ def main():
         no_autocast=True,
         save_folder=None,
         seed=42,
-        model_kwargs={"cpu_logits": True, "verbose": True, "chunk_size": 1024},
+        model_kwargs={
+            # "cpu_logits": True,
+            "verbose": True, "chunk_size": 1024
+        },
         benchmark_kwargs=None,
         benchmarks=["ManyICLBench"],
     )
@@ -96,7 +106,10 @@ def main():
         no_autocast=True,
         save_folder=None,
         seed=42,
-        model_kwargs={"cpu_logits": True, "verbose": True, "chunk_size": 1024},
+        model_kwargs={
+            # "cpu_logits": True,
+            "verbose": True, "chunk_size": 1024
+        },
         benchmark_kwargs=None,
         benchmarks=["ManyICLBench"],
     )
@@ -107,6 +120,7 @@ def main():
         "LoRA": lora_args,
         "OLoop": oloop_args,
     }
+    models = {}
 
     for cl in CONTEXT_LENGTHS:
         print(f"\n ===== Evaluating with context length {cl} ===== ")
@@ -121,7 +135,8 @@ def main():
                 print(f"Results already exist for {name} with context length {cl} at {setup_args.save_folder}; skipping evaluation.\n")
                 continue
             
-            evaluate_main(setup_args)
+            mod = evaluate_main(setup_args, model=models.get(name, None))
+            models[name] = mod
 
 
 if __name__ == "__main__":

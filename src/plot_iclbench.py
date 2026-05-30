@@ -150,7 +150,7 @@ def plot_results(lines, output_path):
     if LINEAR:
         plt.xticks(
             np.linspace(10*1024, 130*1024, 7),
-            [f"{x//1024}k" for x in np.linspace(10*1024, 130*1024, 7)],
+            [f"{int(x)//1024:d}k" for x in np.linspace(10*1024, 130*1024, 7)],
         )
     else:
         plt.xscale("log", base=2)
