@@ -487,6 +487,7 @@ class LlamaForCausalLM(nn.Module):
         shift_states: bool = False,
         logits_to_keep: slice | None = None,
         return_states: bool = False,
+        cpu_logits: bool = False,
     ) -> tuple[torch.FloatTensor, torch.FloatTensor | None]:
         """
         Args:
@@ -514,7 +515,14 @@ class LlamaForCausalLM(nn.Module):
         elif logits_to_keep is not None:
             lm_states = lm_states[:, logits_to_keep, :].contiguous()
 
-        logits = self.lm_head(lm_states)
+        if cpu_logits:
+            logits = F.linear(
+                lm_states.cpu(),
+                self.lm_head.weight.cpu(),
+                bias=None,
+            )
+        else:
+            logits = self.lm_head(lm_states)
         logits = logits.to(torch.float32)
 
         # logits = torch.nn.functional.log_softmax(logits, dim=-1)
@@ -558,11 +566,12 @@ class LlamaForCausalLM(nn.Module):
             dim=1
         )
 
-        return self.forward(
+        out = self.forward(
             input_ids=all_ids,
-            shift_states=slice(-(output_ids.shape[-1]+1), -1),
+            logits_to_keep=slice(-(output_ids.shape[-1]+1), -1),
             **kwargs
         )[0]
+        return out
 
 
     def sample(

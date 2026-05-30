@@ -84,9 +84,11 @@ def run_benchmarks(
                     )
 
                 grade = bench.grade(batch, logits)
+                if isinstance(grade, torch.Tensor):
+                    grade = grade.sum().item()
 
                 seen += batch["input_ids"].shape[0]
-                correct += grade.sum().item()
+                correct += grade
 
                 pbar.update(1)
                 pbar.set_postfix({

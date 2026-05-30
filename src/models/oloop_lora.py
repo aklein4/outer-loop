@@ -166,10 +166,11 @@ class FastWeight(nn.Module):
 
         # approximates newton_schulz as a linear function:
         # f(ax) = af(x), f(x+y) = f(x) + f(y)
-        delta = (
-            (new_whitened - self.prev_whitened * self.momentum_beta) /
-            (1 - self.momentum_beta)
-        )
+        # delta = (
+        #     (new_whitened - self.prev_whitened * self.momentum_beta) /
+        #     (1 - self.momentum_beta)
+        # )
+        delta = new_whitened
 
         # scale delta to element-wise scale of 1
         delta = delta * math.sqrt(max(self.in_features, self.out_features))
@@ -182,44 +183,51 @@ class FastWeight(nn.Module):
         self.prev_whitened.copy_(new_whitened.detach())
 
 
-class FastWeightMLP(nn.Module):
+class FastWeightLoRALinear(nn.Module):
     def __init__(
         self,
+        base_linear: nn.Linear,
         config: DictConfig,
     ):
         super().__init__()
         
-        self.hidden_size = config.hidden_size
-        self.intermediate_size = config.intermediate_size
-        self.fast_weight_size = config.fast_weight_size
-        
-        self.act_fn = ACT2FN[config.hidden_act]
+        self.weight = base_linear.weight
+        self.bias = base_linear.bias
 
-        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
-
-        self.gate_fast = nn.Linear(self.hidden_size, self.fast_weight_size, bias=False)
-        self.up_fast = nn.Linear(self.hidden_size, self.fast_weight_size, bias=False)
-        self.fast = FastWeight(
-            self.fast_weight_size, self.fast_weight_size, config
+        self.base_down = nn.Linear(
+            base_linear.in_features,
+            config.fast_weight_rank,
+            bias=False,
         )
-        self.down_fast = nn.Linear(self.fast_weight_size, self.hidden_size, bias=False)
+        self.base_up = nn.Linear(
+            config.fast_weight_rank,
+            base_linear.out_features,
+            bias=False,
+        )
+
+        self.fast_down = FastWeight(
+            base_linear.in_features,
+            config.fast_weight_rank,
+            config,
+        )
+        self.fast_up = FastWeight(
+            config.fast_weight_rank,
+            base_linear.out_features,
+            config,
+        )
 
 
     def forward(self, x):
     
-        h_base = self.act_fn(self.gate_proj(x)) * self.up_proj(x)
-        y_base = self.down_proj(h_base)
+        y_w = F.linear(x, self.weight, self.bias)
 
-        h_fast = self.act_fn(self.gate_fast(x)) * self.up_fast(x)
-        h_fast = self.fast(h_fast)
-        y_fast = self.down_fast(h_fast)
+        z = self.base_down(x) + self.fast_down(x)
+        y_fast = self.base_up(z) + self.fast_up(z)
 
-        return y_base + y_fast
+        return y_w + y_fast
 
 
-class OLoopModel(LlamaForCausalLM):
+class OLoopLoRAModel(LlamaForCausalLM):
 
 
     def __init__(self, config):
@@ -228,11 +236,16 @@ class OLoopModel(LlamaForCausalLM):
         self.disable_fast_weights = config.get("disable_fast_weights", False)
         if self.disable_fast_weights:
             return
+        self.fast_weight_rank = config.fast_weight_rank
 
-        for layer in self.model.layers:
-            layer: LlamaDecoderLayer
+        def replace_linear(mod: nn.Module):
+            for name, child in mod.named_children():
+                if isinstance(child, nn.Linear):
+                    setattr(mod, name, FastWeightLoRALinear(child, config))
+                else:
+                    replace_linear(child)
 
-            layer.mlp = FastWeightMLP(config)
+        replace_linear(self.model.layers)
 
 
     def load_state_dict(self, state_dict, strict = True, assign = False):
@@ -242,19 +255,25 @@ class OLoopModel(LlamaForCausalLM):
             nn.Module.load_state_dict(self, state_dict, False, assign)
 
             with torch.no_grad():
+                
+                from tqdm import tqdm
+                for mod in tqdm(list(self.modules()), desc="SVD Initialization", leave=False):
+                    
+                    if isinstance(mod, FastWeightLoRALinear):
 
-                for layer in self.model.layers:
-                    mlp: FastWeightMLP = layer.mlp
+                        # svd initialization
+                        W = mod.weight.data
+                        rank = self.fast_weight_rank
 
-                    mlp.gate_fast.weight.data.copy_(
-                        mlp.gate_proj.weight.data[:mlp.fast_weight_size, :]
-                    )
-                    mlp.up_fast.weight.data.copy_(
-                        mlp.up_proj.weight.data[:mlp.fast_weight_size, :]
-                    )
-                    mlp.down_fast.weight.data.copy_(
-                        mlp.down_proj.weight.data[:, :mlp.fast_weight_size]
-                    )
+                        U, S, Vh = torch.linalg.svd(W.float(), full_matrices=False)
+                        U_r = U[:, :rank]
+                        S_r = S[:rank]
+                        Vh_r = Vh[:rank, :]
+                        
+                        mod.base_down.weight.data.copy_(torch.diag(torch.sqrt(S_r)) @ Vh_r)
+                        mod.base_up.weight.data.copy_(U_r @ torch.diag(torch.sqrt(S_r)))
+
+                        mod.weight.data.sub_(mod.base_up.weight.data @ mod.base_down.weight.data)
 
         else:
             nn.Module.load_state_dict(self, state_dict, strict, assign)
@@ -327,10 +346,11 @@ class OLoopModel(LlamaForCausalLM):
             new_momentums, eps=ref.eps
         )
 
-        deltas = (
-            (new_whiteneds - prev_whiteneds * ref.momentum_beta) /
-            (1 - ref.momentum_beta)
-        )
+        # deltas = (
+        #     (new_whiteneds - prev_whiteneds * ref.momentum_beta) /
+        #     (1 - ref.momentum_beta)
+        # )
+        deltas = new_whiteneds
 
         deltas = deltas * math.sqrt(max(ref.in_features, ref.out_features))
 

@@ -23,6 +23,7 @@ def main(args):
         args.checkpoint_url, args.checkpoint_step,
         strict=(not args.checkpoint_not_strict),
         attention_kernel="gpu_flash_attention",
+        config_name=args.config_name,
     ).to(constants.DEVICE)
     model.eval()
 
@@ -77,6 +78,12 @@ if __name__ == "__main__":
         "--checkpoint_not_strict",
         action="store_true",
         help="Whether to NOT use strict loading when loading the model checkpoint.",
+    )
+    parser.add_argument(
+        "--config_name",
+        type=str,
+        default=None,
+        help="The name of the config file in configs/model/ to use for the model.",
     )
     parser.add_argument(
         "--tokenizer",
