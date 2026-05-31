@@ -45,7 +45,7 @@ def main():
         save_folder=None,
         seed=42,
         model_kwargs={
-            # "cpu_logits": True
+            "cpu_logits": True
         },
         benchmark_kwargs=None,
         benchmarks=["ManyICLBench"],
@@ -65,7 +65,7 @@ def main():
         save_folder=None,
         seed=42,
         model_kwargs={
-            # "cpu_logits": True,
+            "cpu_logits": True,
             "verbose": True, "chunk_size": 1024
         },
         benchmark_kwargs=None,
@@ -86,7 +86,7 @@ def main():
         save_folder=None,
         seed=42,
         model_kwargs={
-            # "cpu_logits": True,
+            "cpu_logits": True,
             "verbose": True, "chunk_size": 1024
         },
         benchmark_kwargs=None,
@@ -107,7 +107,7 @@ def main():
         save_folder=None,
         seed=42,
         model_kwargs={
-            # "cpu_logits": True,
+            "cpu_logits": True,
             "verbose": True, "chunk_size": 1024
         },
         benchmark_kwargs=None,

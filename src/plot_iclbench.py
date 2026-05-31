@@ -8,9 +8,9 @@ import matplotlib.pyplot as plt
 from utils import constants
 
 
-RESULTS_DIR = os.path.join(constants.LOCAL_DATA_PATH, "ManyICLBench_results_20")
+RESULTS_DIR = os.path.join(constants.LOCAL_DATA_PATH, "ManyICLBench_results_50")
 
-SAVE_PATH = "iclbench_accuracy_by_context_20.png"
+SAVE_PATH = "iclbench_accuracy_by_context_50.png"
 
 STYLE_MAP = {
     "OLoop": {"color": "black", "label": "OLoop (ours)"},
