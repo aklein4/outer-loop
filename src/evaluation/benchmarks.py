@@ -677,7 +677,8 @@ class ManyICLBench(BaseBenchmark):
     skip_subsets = [
         "MT_",
         "_cot",
-        "GSM8K"
+        "GSM8K",
+        "XLSUM"
     ]
 
 

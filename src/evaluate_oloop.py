@@ -7,11 +7,11 @@ from evaluate import main as evaluate_main
 from utils import constants
 
 
-SAVE_FOLDER = "ManyICLBench_results_50"
+SAVE_FOLDER = "ManyICLBench_results_100_bos"
 
 CONTEXT_LENGTHS = ["1k", "2k", "4k", "8k", "16k", "32k", "64k", "128k"]
 MAX_TEST_EXAMPLES = 10
-RUNS_PER_SEED = 5
+RUNS_PER_SEED = 10
 
 
 def args_with_context(name, args, context_length):
@@ -87,7 +87,29 @@ def main():
         seed=42,
         model_kwargs={
             "cpu_logits": True,
-            "verbose": True, "chunk_size": 1024
+            "verbose": True, "chunk_size": 1024,
+            "add_bos": True,
+        },
+        benchmark_kwargs=None,
+        benchmarks=["ManyICLBench"],
+    )
+
+    lora_ft_args = Namespace(
+        checkpoint_url="aklein4/outer-loop_sliding-reference",
+        checkpoint_step=500,
+        checkpoint_not_strict=False,
+        config_name="oloop-lora-llama3p2-1b",
+        tokenizer="meta-llama/Llama-3.2-1B",
+        max_input_length=256,
+        max_output_length=512,
+        batch_size=1,
+        max_examples=None,
+        no_autocast=True,
+        save_folder=None,
+        seed=42,
+        model_kwargs={
+            "cpu_logits": True,
+            "verbose": True, "chunk_size": 1024,
         },
         benchmark_kwargs=None,
         benchmarks=["ManyICLBench"],
@@ -108,7 +130,8 @@ def main():
         seed=42,
         model_kwargs={
             "cpu_logits": True,
-            "verbose": True, "chunk_size": 1024
+            "verbose": True, "chunk_size": 1024,
+            "add_bos": True,
         },
         benchmark_kwargs=None,
         benchmarks=["ManyICLBench"],
@@ -118,6 +141,7 @@ def main():
         "Sliding": sliding_args,
         "ICL": icl_args,
         "LoRA": lora_args,
+        "LoRA-FT": lora_ft_args,
         "OLoop": oloop_args,
     }
     models = {}
