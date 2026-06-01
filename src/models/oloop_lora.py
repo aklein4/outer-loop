@@ -251,7 +251,7 @@ class OLoopLoRAModel(LlamaForCausalLM):
     def load_state_dict(self, state_dict, strict = True, assign = False):
 
         # svd init if no fast weights in state dict (loading from pretrained LLM)
-        if not any(k.endswith("log_lr") for k in state_dict.keys()) and not self.disable_fast_weights:
+        if not any(k.count("base_down") for k in state_dict.keys()) and not self.disable_fast_weights:
             nn.Module.load_state_dict(self, state_dict, False, assign)
 
             with torch.no_grad():
@@ -382,6 +382,7 @@ class OLoopLoRAModel(LlamaForCausalLM):
         chunk_size: int | None = None,
         cpu_logits: bool = False,
         verbose: bool = False,
+        add_bos: bool = False,
     ):
         if output_ids is not None:
             input_ids = torch.cat([input_ids, output_ids], dim=-1)
@@ -426,6 +427,16 @@ class OLoopLoRAModel(LlamaForCausalLM):
             
             first_chunk = chunks[i-1]
             second_chunk = chunks[i]
+            
+            if i > 1 and add_bos:
+                first_chunk = torch.cat(
+                    [
+                    torch.full_like(first_chunk[:, :1], self.config.bos_token_id),
+                    first_chunk
+                    ],
+                    dim=-1
+                )
+
             all_chunk = torch.cat([first_chunk, second_chunk], dim=-1)
 
             self.update_state()

@@ -362,6 +362,7 @@ class OLoopModel(LlamaForCausalLM):
         chunk_size: int | None = None,
         cpu_logits: bool = False,
         verbose: bool = False,
+        add_bos: bool = False,
     ):
         if output_ids is not None:
             input_ids = torch.cat([input_ids, output_ids], dim=-1)
@@ -406,6 +407,16 @@ class OLoopModel(LlamaForCausalLM):
             
             first_chunk = chunks[i-1]
             second_chunk = chunks[i]
+            
+            if i > 1 and add_bos:
+                first_chunk = torch.cat(
+                    [
+                    torch.full_like(first_chunk[:, :1], self.config.bos_token_id),
+                    first_chunk
+                    ],
+                    dim=-1
+                )
+
             all_chunk = torch.cat([first_chunk, second_chunk], dim=-1)
 
             self.update_state()
