@@ -12,8 +12,10 @@ import balanced_assignment
 
 
 INPUT_DATASET = "aklein4/offline-RL-binary-2"
-OUTPUT_DATASET = "aklein4/offline-RL-binary-2-clustered"
+OUTPUT_DATASET = "aklein4/offline-RL-binary-clustered"
 MODEL_NAME = "google/embeddinggemma-300m"
+
+MAX_LENGTH = 2048
 
 SOURCE_COLUMN = "source"
 INPUT_COLUMN = "input"
@@ -63,7 +65,7 @@ def main():
     parser.add_argument("--output-dataset", default=OUTPUT_DATASET)
     parser.add_argument("--configs", nargs="*")
     parser.add_argument("--sources", nargs="*")
-    parser.add_argument("--num-clusters", type=int, default=256)
+    parser.add_argument("--cluster-size", type=int, default=64)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--kmeans-steps", type=int, default=25)
     parser.add_argument("--assignment-steps", type=int, default=100)
@@ -94,6 +96,7 @@ def main():
                     keep.append(i)
                 if args.limit_per_source and len(keep) == args.limit_per_source:
                     break
+            keep = keep[: args.cluster_size * (len(keep) // args.cluster_size)]
             subset = subset.select(keep)
 
             print(f"{source}: {len(subset):_} examples")
@@ -105,10 +108,11 @@ def main():
                 convert_to_tensor=True,
                 normalize_embeddings=True,
                 show_progress_bar=True,
+                processing_kwargs={"text": {"max_length": MAX_LENGTH, "truncation": True}}
             )
             labels = balanced_kmeans(
                 embeddings,
-                k=args.num_clusters,
+                k=len(embeddings)//args.cluster_size,
                 steps=args.kmeans_steps,
                 assignment_steps=args.assignment_steps,
                 seed=args.seed,

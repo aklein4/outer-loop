@@ -139,6 +139,7 @@ def main():
                 continue
 
             subset = ds.filter(source_filter, fn_kwargs={"source": source})
+            subset = subset.shuffle(seed=42)
             subset = deduplicate_by_input(subset, limit=args.limit_per_source)
 
             length_columns = [
