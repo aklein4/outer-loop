@@ -8,21 +8,21 @@ import matplotlib.pyplot as plt
 from utils import constants
 
 
-RESULTS_DIR = os.path.join(constants.LOCAL_DATA_PATH, "ManyICLBench_results_100_bos")
+RESULTS_DIR = os.path.join(constants.LOCAL_DATA_PATH, "ManyICLBench_results_50")
 
-SAVE_PATH = "iclbench_accuracy_by_context_100_bos.png"
+SAVE_PATH = "iclbench_accuracy_by_context_50.png"
 
 STYLE_MAP = {
-    "OLoop": {"color": "black", "label": "OLoop (ours)"},
-    "LoRA": {"color": "blue", "label": "LoRA"},
-    "LoRA-FT": {"color": "skyblue", "label": "LoRA-FT"},
-    "ICL": {"color": "red", "label": "ICL"},
-    "Sliding": {"color": "green", "label": "Sliding"},
+    "OLoop": {"color": "black", "label": "Ours"},
+    "LoRA": {"color": "blue", "label": "Finetuning"},
+    # "LoRA-FT": {"color": "skyblue", "label": "LoRA-FT"},
+    "ICL": {"color": "orange", "label": "Prompting"},
+    # "Sliding": {"color": "green", "label": "Sliding"},
 }
 
 BASELINE_CONTEXT_LABEL = "128k"
 
-LINEAR = False
+LINEAR = True
 
 
 def context_length_value(name):
@@ -133,6 +133,36 @@ def print_sample_efficiency(lines):
     )
 
 
+def plot_sample_efficiency_arrow(lines):
+    baseline_context = context_length_value(BASELINE_CONTEXT_LABEL)
+    baseline_accuracy = next(
+        point["accuracy"]
+        for point in lines["LoRA"]
+        if point["context_length"] == baseline_context
+    )
+    oloop_context = interpolated_context_for_accuracy(
+        lines["OLoop"],
+        baseline_accuracy,
+    )
+    baseline_accuracy_percent = 100 * baseline_accuracy
+
+    plt.annotate(
+        "",
+        xy=(oloop_context, baseline_accuracy_percent),
+        xytext=(baseline_context, baseline_accuracy_percent),
+        arrowprops={
+            "arrowstyle": "-|>",
+            "mutation_scale": 25,
+            "color": "#DD0000",
+            "linestyle": "--",
+            "linewidth": 1.5,
+            "shrinkA": 6,
+            "shrinkB": 0,
+        },
+        zorder=4,
+    )
+
+
 def plot_results(lines, output_path):
     plt.figure(figsize=(7, 6))
 
@@ -140,6 +170,8 @@ def plot_results(lines, output_path):
         x = [point["context_length"] for point in points]
         y = [100 * point["accuracy"] for point in points]
         plt.plot(x, y, marker="s", **STYLE_MAP[version])
+
+    plot_sample_efficiency_arrow(lines)
 
     all_x = sorted({point["context_length"] for points in lines.values() for point in points})
     labels_by_x = {
@@ -157,9 +189,9 @@ def plot_results(lines, output_path):
         plt.xscale("log", base=2)
         plt.xticks(all_x, [labels_by_x[x] for x in all_x])
 
-    plt.xlabel("Context Length")
+    plt.xlabel("Example Tokens")
     plt.ylabel("Accuracy (%)")
-    plt.title(f"ManyICLBench Accuracy by Context Length ({'linear' if LINEAR else 'log'} scale)")
+    plt.title(f"Example Tokens versus ManyICLBench Accuracy")
     
     plt.grid(True, linestyle="--", alpha=0.5)
     
