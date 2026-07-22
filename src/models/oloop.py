@@ -223,6 +223,7 @@ class FastWeight(nn.Module):
 
         s = self.get_s()
 
+        print(s.shape, x.shape, flush=True)
         y = torch.einsum("boi,bli->blo", s, x)
         y = FastWeightFunction.apply(x, y, self.momentum)
 
