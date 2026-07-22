@@ -142,7 +142,7 @@ class BaseTrainer:
         #     logger.info("All model parameters have sharding spec.")
 
         # Setup SPMD mesh and shard the model.
-        model, self.input_sharding_spec, self.minibatch, shard_info = setup_sharding_and_mesh(
+        model, self.input_sharding_spec, self.minibatch, shard_info, self.mesh = setup_sharding_and_mesh(
             model, config
         )
         logger.info("Sharding info:")
@@ -253,9 +253,14 @@ class BaseTrainer:
             shuffle=False,
             drop_last=True,
         )
+
+        sharding_spec = self.input_sharding_spec
+        if hasattr(self.config.trainer, "input_sharding_spec"):
+            sharding_spec = xs.ShardingSpec(
+                self.mesh, self.config.trainer.input_sharding_spec, minibatch=self.minibatch
+            )
         loader = pl.MpDeviceLoader(
-            dataloader, self.device,
-            input_sharding=self.config.trainer.get("input_sharding_spec", self.input_sharding_spec)
+            dataloader, self.device, sharding_spec=sharding_spec
         )
         
         return loader
