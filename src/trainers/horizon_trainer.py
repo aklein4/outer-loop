@@ -179,7 +179,7 @@ class HorizonTrainer(BaseTrainer):
 
         # finalize outputs
         final_loss = total_loss / horizon_length
-        aux["atom_count"] = input_ids.numel()
+        aux["atom_count"] = attention_mask.long().sum()
 
         decades = {}
         for key, value in aux.items():
