@@ -256,8 +256,12 @@ class BaseTrainer:
 
         sharding_spec = self.input_sharding_spec
         if hasattr(self.config.trainer, "input_sharding_spec"):
+            sharding_spec = self.config.trainer.input_sharding_spec
+            sharding_spec = tuple(
+                tuple(dim) if dim is not None else None for dim in sharding_spec
+            )
             sharding_spec = xs.ShardingSpec(
-                self.mesh, self.config.trainer.input_sharding_spec, minibatch=self.minibatch
+                self.mesh, sharding_spec, minibatch=self.minibatch
             )
         loader = pl.MpDeviceLoader(
             dataloader, self.device, sharding_spec=sharding_spec
