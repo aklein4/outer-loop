@@ -360,18 +360,19 @@ class BaseTrainer:
         # run the training loop
         # TODO: enable multi-epoch training
         while step < max_step:
-            try:
-                batch = next(train_iterator)
-            except:
-                error_count += 1
-                logger.warning("Unexpected error (%d) when fetching data at step %d, retrying", error_count, step)
-                if error_count > 1000 and step > 1:
-                    logger.error("Too many errors when fetching data, saving checkpoint and exiting")
-                    self.save_checkpoint(step)
-                    raise RuntimeError("Too many errors when fetching data")
-                time.sleep(1)
-                continue
-            error_count = 0
+            # try:
+            #     batch = next(train_iterator)
+            # except:
+            #     error_count += 1
+            #     logger.warning("Unexpected error (%d) when fetching data at step %d, retrying", error_count, step)
+            #     if error_count > 1000 and step > 1:
+            #         logger.error("Too many errors when fetching data, saving checkpoint and exiting")
+            #         self.save_checkpoint(step)
+            #         raise RuntimeError("Too many errors when fetching data")
+            #     time.sleep(1)
+            #     continue
+            # error_count = 0
+            batch = next(train_iterator)
             
             # skip steps for pretrained model
             if self.config.model.pretrained_step is not None and step < self.config.model.pretrained_step:
