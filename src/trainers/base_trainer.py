@@ -264,7 +264,7 @@ class BaseTrainer:
                 self.mesh, sharding_spec, minibatch=self.minibatch
             )
         loader = pl.MpDeviceLoader(
-            dataloader, self.device, sharding_spec=sharding_spec
+            dataloader, self.device, sharding_spec
         )
         
         return loader
