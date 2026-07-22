@@ -51,7 +51,7 @@ class FastWeightFunction(torch.autograd.Function):
         return None, grad, update
 
         
-class FastWeightLoRA(nn.Module):
+class FastWeight(nn.Module):
 
     def __init__(
         self,
@@ -64,7 +64,6 @@ class FastWeightLoRA(nn.Module):
         # save config
         self.in_features = in_features
         self.out_features = out_features
-        self.rank = config.fast_weight_rank
 
         self.base_lr = config.base_lr
         self.momentum_beta = config.momentum_beta
@@ -77,31 +76,13 @@ class FastWeightLoRA(nn.Module):
         
         # ittt params
         self.log_lr = nn.Parameter(
-            torch.zeros(self.rank, self.in_features)
-        )
-        self.fast_out_proj = nn.Linear(
-            self.rank, self.out_features, bias=False
+            torch.zeros(self.out_features, self.in_features)
         )
 
         # ephemeral state
         self.state: nn.Buffer
         self.momentum: nn.Buffer
         self.prev_whitened: nn.Buffer
-
-        # weight initialization
-        self.fast_out_proj.weight.data.normal_(
-            std=1/math.sqrt(self.rank)
-        )
-
-    
-    @torch.no_grad()
-    def svd_init(self, weight):
-
-        u, s, v = torch.linalg.svd(weight, full_matrices=False)
-
-        self.fast_out_proj.weight.copy_(
-            u[:, :self.rank] * s[None, :self.rank]
-        )
                     
 
     def get_lr(self):
@@ -124,8 +105,6 @@ class FastWeightLoRA(nn.Module):
         y = torch.einsum("boi,bli->blo", s, x)
         y = FastWeightFunction.apply(x, y, self.momentum)
 
-        y = self.fast_out_proj(y)
-
         return y
 
 
@@ -133,7 +112,7 @@ class FastWeightLoRA(nn.Module):
     def init_state(self, bs: int, device: torch.device):
 
         state = torch.zeros(
-            bs, self.rank, self.in_features,
+            bs, self.out_features, self.in_features,
             device=device, dtype=self.state_dtype,
         )
         momentum = torch.zeros_like(
@@ -187,14 +166,13 @@ class FastWeightLoRA(nn.Module):
 
         # approximates newton_schulz as a linear function:
         # f(ax) = af(x), f(x+y) = f(x) + f(y)
-        # delta = (
-        #     (new_whitened - self.prev_whitened * self.momentum_beta) /
-        #     (1 - self.momentum_beta)
-        # )
-        delta = new_whitened
+        delta = (
+            (new_whitened - self.prev_whitened * self.momentum_beta) /
+            (1 - self.momentum_beta)
+        )
 
         # scale delta to element-wise scale of 1
-        delta = delta * math.sqrt(max(self.in_features, self.rank))
+        delta = delta * math.sqrt(max(self.in_features, self.out_features))
         
         self.state.add_(-delta.to(self.state_dtype))
         
@@ -213,6 +191,7 @@ class FastWeightMLP(nn.Module):
         
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
+        self.fast_weight_size = config.fast_weight_size
         
         self.act_fn = ACT2FN[config.hidden_act]
 
@@ -220,17 +199,22 @@ class FastWeightMLP(nn.Module):
         self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
 
-        self.down_fast = FastWeightLoRA(
-            self.intermediate_size, self.hidden_size, config
+        self.gate_fast = nn.Linear(self.hidden_size, self.fast_weight_size, bias=False)
+        self.up_fast = nn.Linear(self.hidden_size, self.fast_weight_size, bias=False)
+        self.fast = FastWeight(
+            self.fast_weight_size, self.fast_weight_size, config
         )
+        self.down_fast = nn.Linear(self.fast_weight_size, self.hidden_size, bias=False)
 
 
     def forward(self, x):
     
-        x = self.act_fn(self.gate_proj(x)) * self.up_proj(x)
+        h_base = self.act_fn(self.gate_proj(x)) * self.up_proj(x)
+        y_base = self.down_proj(h_base)
 
-        y_base = self.down_proj(x)
-        y_fast = self.down_fast(x)
+        h_fast = self.act_fn(self.gate_fast(x)) * self.up_fast(x)
+        h_fast = self.fast(h_fast)
+        y_fast = self.down_fast(h_fast)
 
         return y_base + y_fast
 
@@ -241,6 +225,10 @@ class OLoopModel(LlamaForCausalLM):
     def __init__(self, config):
         super().__init__(config)
 
+        self.disable_fast_weights = config.get("disable_fast_weights", False)
+        if self.disable_fast_weights:
+            return
+
         for layer in self.model.layers:
             layer: LlamaDecoderLayer
 
@@ -250,16 +238,22 @@ class OLoopModel(LlamaForCausalLM):
     def load_state_dict(self, state_dict, strict = True, assign = False):
 
         # svd init if no fast weights in state dict (loading from pretrained LLM)
-        if not any(k.endswith("log_lr") for k in state_dict.keys()):
+        if not any(k.endswith("log_lr") for k in state_dict.keys()) and not self.disable_fast_weights:
             nn.Module.load_state_dict(self, state_dict, False, assign)
 
             with torch.no_grad():
 
                 for layer in self.model.layers:
-                    layer: LlamaDecoderLayer
+                    mlp: FastWeightMLP = layer.mlp
 
-                    layer.mlp.down_fast.svd_init(
-                        layer.mlp.down_proj.weight.data
+                    mlp.gate_fast.weight.data.copy_(
+                        mlp.gate_proj.weight.data[:mlp.fast_weight_size, :]
+                    )
+                    mlp.up_fast.weight.data.copy_(
+                        mlp.up_proj.weight.data[:mlp.fast_weight_size, :]
+                    )
+                    mlp.down_fast.weight.data.copy_(
+                        mlp.down_proj.weight.data[:, :mlp.fast_weight_size]
                     )
 
         else:
@@ -269,14 +263,14 @@ class OLoopModel(LlamaForCausalLM):
     @torch.no_grad()
     def init_state(self, bs: int, device: torch.device):
         for m in self.modules():
-            if isinstance(m, FastWeightLoRA):
+            if isinstance(m, FastWeight):
                 m.init_state(bs, device)
 
 
     @torch.no_grad()
     def empty_state(self):
         for m in self.modules():
-            if isinstance(m, FastWeightLoRA):
+            if isinstance(m, FastWeight):
                 m.empty_state()
     
 
@@ -285,7 +279,7 @@ class OLoopModel(LlamaForCausalLM):
 
         to_update = []
         for name, mod in self.model.layers[0].named_modules():
-            if isinstance(mod, FastWeightLoRA):
+            if isinstance(mod, FastWeight):
                 to_update.append(name)
 
         for name in to_update:
@@ -297,9 +291,9 @@ class OLoopModel(LlamaForCausalLM):
         # updates named module across all layers in parallel
         
         try:
-            ref: FastWeightLoRA = self.model.layers[0].get_submodule(name)
+            ref: FastWeight = self.model.layers[0].get_submodule(name)
         except:
-            ref: FastWeightLoRA = self.model.layers[0]._orig_mod.get_submodule(name)
+            ref: FastWeight = self.model.layers[0]._orig_mod.get_submodule(name)
 
         updates = []
         momentums = []
@@ -308,9 +302,9 @@ class OLoopModel(LlamaForCausalLM):
             layer: LlamaDecoderLayer
 
             try:
-                m: FastWeightLoRA = layer.get_submodule(name)
+                m: FastWeight = layer.get_submodule(name)
             except:
-                m: FastWeightLoRA = layer._orig_mod.get_submodule(name)
+                m: FastWeight = layer._orig_mod.get_submodule(name)
 
             updates.append(m.momentum.grad)
             momentums.append(m.momentum)
@@ -333,13 +327,12 @@ class OLoopModel(LlamaForCausalLM):
             new_momentums, eps=ref.eps
         )
 
-        # deltas = (
-        #     (new_whiteneds - prev_whiteneds * ref.momentum_beta) /
-        #     (1 - ref.momentum_beta)
-        # )
-        deltas = new_whiteneds
+        deltas = (
+            (new_whiteneds - prev_whiteneds * ref.momentum_beta) /
+            (1 - ref.momentum_beta)
+        )
 
-        deltas = deltas * math.sqrt(max(ref.in_features, ref.rank))
+        deltas = deltas * math.sqrt(max(ref.in_features, ref.out_features))
 
         state_deltas = -deltas.to(ref.state_dtype)
 
@@ -347,9 +340,9 @@ class OLoopModel(LlamaForCausalLM):
             layer: LlamaDecoderLayer
 
             try:
-                m: FastWeightLoRA = layer.get_submodule(name)
+                m: FastWeight = layer.get_submodule(name)
             except:
-                m: FastWeightLoRA = layer._orig_mod.get_submodule(name)
+                m: FastWeight = layer._orig_mod.get_submodule(name)
 
             m.state.add_(state_deltas[:, i].detach())
 
@@ -359,18 +352,25 @@ class OLoopModel(LlamaForCausalLM):
             m.prev_whitened.copy_(new_whiteneds[:, i].detach())
 
 
+    def get_logits(self, *args, **kwargs):
+        return self.compute_logits(*args, **kwargs)
+
     def compute_logits(
         self,
         input_ids: torch.LongTensor,
+        output_ids: torch.LongTensor | None = None,
+        chunk_size: int | None = None,
+        cpu_logits: bool = False,
         verbose: bool = False,
+        add_bos: bool = False,
     ):
-        """
-        Written for iTTT with overlapping chunks.
+        if output_ids is not None:
+            input_ids = torch.cat([input_ids, output_ids], dim=-1)
         
-        TODO: update
-        """
-        
-        chunks = torch.split(input_ids, self.config.chunk_size, dim=-1)
+        if chunk_size is None:
+            chunk_size = self.config.chunk_size
+
+        chunks = torch.split(input_ids, chunk_size, dim=-1)
 
         ac_kwargs = {
             "device_type": str(input_ids.device),
@@ -382,50 +382,73 @@ class OLoopModel(LlamaForCausalLM):
         all_logits = []
 
         # first chunk
-        with torch.autocast(**ac_kwargs):
+        with torch.enable_grad():
+            with torch.autocast(**ac_kwargs):
 
-            logits = self(
-                chunks[0],
-                logits_to_keep=slice(0, -1)
-            )[0]
-            all_logits.append(logits.detach())
+                logits = self(
+                    chunks[0],
+                    logits_to_keep=slice(0, -1)
+                )[0]
+    
+                loss = lm_loss_fn(
+                    logits, chunks[0],
+                    shift_logits=False,
+                    ignore_index=self.config.pad_token_id,
+                )
 
-            loss = lm_loss_fn(
-                logits, chunks[0],
-                shift_logits=False,
-                ignore_index=self.config.pad_token_id,
-            )
+                if cpu_logits:
+                    logits = logits.cpu()
+                all_logits.append(logits.detach())
 
-        loss.backward()
+            loss.backward()
 
         # remaining chunks
         for i in tqdm(range(1, len(chunks)), desc="Processing Chunks", leave=False, disable=(not verbose)):
             
             first_chunk = chunks[i-1]
             second_chunk = chunks[i]
+            
+            if i > 1 and add_bos:
+                first_chunk = torch.cat(
+                    [
+                    torch.full_like(first_chunk[:, :1], self.config.bos_token_id),
+                    first_chunk
+                    ],
+                    dim=-1
+                )
+
             all_chunk = torch.cat([first_chunk, second_chunk], dim=-1)
 
             self.update_state()
 
-            with torch.autocast(**ac_kwargs):
+            with torch.enable_grad():
+                with torch.autocast(**ac_kwargs):
 
-                logits = self(
-                    all_chunk,
-                    logits_to_keep=slice(first_chunk.shape[-1]-1, -1)
-                )[0]
-                all_logits.append(logits.detach())
+                    logits = self(
+                        all_chunk,
+                        logits_to_keep=slice(first_chunk.shape[-1]-1, -1)
+                    )[0]
 
-                loss = lm_loss_fn(
-                    logits,
-                    all_chunk[:, first_chunk.shape[-1]:],
-                    shift_logits=False,
-                    shift_labels=False,
-                    ignore_index=self.config.pad_token_id,
-                )
+                    loss = lm_loss_fn(
+                        logits,
+                        all_chunk[:, first_chunk.shape[-1]:],
+                        shift_logits=False,
+                        shift_labels=False,
+                        ignore_index=self.config.pad_token_id,
+                    )
 
-            loss.backward()
+                    if cpu_logits:
+                        logits = logits.cpu()
+                    all_logits.append(logits.detach())
+
+                loss.backward()
 
         self.zero_grad(True)
         self.empty_state()
             
-        return torch.cat(all_logits, dim=1).detach()
+        logits = torch.cat(all_logits, dim=1).detach()
+
+        if output_ids is not None:
+            logits = logits[:, -output_ids.shape[-1]:, :]
+        
+        return logits

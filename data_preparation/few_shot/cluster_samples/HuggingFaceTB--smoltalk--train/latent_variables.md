@@ -1,0 +1,34 @@
+# Conditional Latent Variable Notes
+
+Dataset: `aklein4/few-shot-long-test`
+Config: `HuggingFaceTB--smoltalk--train`
+Split: `train`
+Sampling: 10 clusters sampled from cluster IDs `0..99` with `random.Random(42)`.
+Generation script: `data_preparation/few_shot/view_clusters.py`
+
+The sampled clusters are `3`, `13`, `14`, `17`, `28`, `31`, `35`, `81`, `86`, and `94`. Each saved JSON contains 64 examples and has only `system`, `user`, and `response` fields. `system` is `null` when no system prompt is present.
+
+This pass looks for latent variables that govern `p(y | x)`: response behavior, transformation rules, output policy, reasoning trace style, tone, format, or other information that changes the distribution over valid responses after the input is known. Pure facts about `p(x)`, `p(y)`, or broad `p(x, y)` subject matter are not counted as defining variables unless they also predict how the answer is written conditional on the prompt.
+
+Theme-fit counts are judgments against the conditional latent variable, counting examples where seeing other examples from the cluster would plausibly help predict `y` given `x`.
+
+| Cluster | Conditional fit | Conditional latent variable for `p(y | x)` | CMI signal | Notes |
+| --- | ---: | --- | --- | --- |
+| `003` | 48/64 | Worked-solution policy: give a decomposed derivation with intermediate variables, formulas, and calculation steps before the final answer. | Medium | The useful signal is not "math" itself, but that answers usually expand the solution path. For the same math prompt, this latent variable predicts a stepwise derivation rather than a terse final answer. Off-theme examples are mostly role-play, editing, security advice, or direct code snippets. |
+| `013` | 35/64 | Implementation-first policy: produce a concrete function, algorithm, or direct task artifact, usually with a compact code block and minimal exposition. | Medium-low | This cluster has many code prompts, so much of the apparent similarity is still in `x`. The conditional signal is strongest for examples where the response chooses runnable implementation over conceptual explanation. |
+| `014` | 45/64 | Interaction bootstrapping policy: assume the requested role or service persona, open the interaction in first person, and often ask clarifying questions instead of completing a closed-form task. | Medium-high | The same user request could be answered factually, but examples here often establish an ongoing role-play or consultation state. This is a real `p(y | x)` signal because it predicts voice, stance, and whether the assistant asks for more context. |
+| `017` | 30/64 | Explicit surface-constraint policy: obey requested presentation constraints or text-improvement operations, producing compact formatted output such as bullets, revised prose, sections, summaries, or constrained keyword responses. | Medium | The cluster is mixed, but many examples are governed by output-form requirements rather than subject. The conditional variable predicts formatting and rewrite behavior after `x` is known. |
+| `028` | 16/64 | Next-step planning policy: continue from a partially specified goal or existing plan by moving to the next planning layer, milestones, logistics, or strategy. | Low-medium | This is partly a topic cluster around launches/trips/projects, but the conditional signal is that responses often do not solve a single query; they advance an open-ended plan. It is weaker because many examples are unrelated math, role-play, or summarization. |
+| `031` | 42/64 | Advisory decomposition policy: frame the prompt as a practical problem, break it into factors, and provide actionable next steps, tradeoffs, or diagnostic guidance. | Low-medium | This is broad and partially contaminated by `p(x)` variety. The common `p(y | x)` feature is the response scaffold: diagnose, decompose, advise. The latent variable is less crisp than in clusters `081` or `086`. |
+| `035` | 31/64 | Persona/creative voice policy: respond with immersive first-person role voice or narrative prose rather than neutral instruction. | Medium | The examples include fictional scenes, role personas, story continuations, character design, and creative-writing help. The conditional signal is tone and embodiment: the answer often sounds like the requested character or writes in story mode. |
+| `081` | 64/64 | Code-block implementation policy: answer by writing a runnable Python-style utility implementation, typically over lists, dictionaries, strings, files, JSON, objects, validation, or exceptions. | High | Every example contains a code block. This is a strong conditional variable: for a known programming prompt, the cluster tells us to emit implementation code, not just explain the concept. It is still somewhat correlated with code-heavy `x`, but the response format is extremely consistent. |
+| `086` | 56/64 | Tone-transfer rewrite policy: preserve the request or criticism while converting it into a friendly, professional, lower-conflict message with a greeting, softened claims, and collaborative language. | Very high | This is the strongest meta-learning cluster. The latent variable is a transformation rule on `y` given `x`, not a topic. Seeing other examples would strongly identify the desired rewrite style for a held-out hostile or critical message. |
+| `094` | 47/64 | Tutorial explanation policy: provide an educational, stepwise answer with definitions, setup, intermediate reasoning, and often code/math derivation. | Medium | This looks like a math/code/concept cluster at the `x` level, but the useful conditional variable is tutorial mode. Given the same question, the cluster predicts an explanatory walkthrough rather than a terse answer. Role-play and rewrite examples are the main off-theme cases. |
+
+## Meta-Learning Assessment
+
+Clusters `081` and `086` are the best aligned with the meta-learning objective because their latent variables directly constrain `p(y | x)`. Cluster `086` is especially strong: the input text already specifies the semantic content, while the hidden cluster variable specifies the response transformation. A support set from the same cluster should materially reduce uncertainty about the correct response style for a query.
+
+Clusters `003`, `014`, and `094` have moderate conditional signal. They mostly reveal response policy: worked derivation, role-interaction setup, or tutorial explanation. These are useful, but a strong model may infer some of the policy from the individual prompt alone.
+
+Clusters `013`, `017`, `028`, `031`, and `035` are weaker for meta-learning. They contain real conditional patterns, but those patterns are mixed with input-topic regularities or broad instruction types. For stronger tasks, these clusters would need either a more explicit hidden response rule or hard negatives with the same `x`-topic but different `y` policy.

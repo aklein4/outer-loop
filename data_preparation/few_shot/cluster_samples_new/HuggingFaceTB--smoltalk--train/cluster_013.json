@@ -1,0 +1,322 @@
+[
+  {
+    "system": null,
+    "user": "The sum of the first and third of three consecutive integers is 118. What is the value of the second integer?",
+    "response": "Let the three consecutive integers be $n-1$, $n$, and $n+1$.\nThe sum of the first and third integers is $(n-1) + (n+1) = 2n$.\nWe are given that this sum is 118, so $2n = 118$ and $n = 59$.\nTherefore, the second integer is $n = \\boxed{59}$.\nThe answer is: 59"
+  },
+  {
+    "system": null,
+    "user": "The sum of two numbers is $30$. Their difference is $4$. What is the larger of the two numbers?",
+    "response": "Let the two numbers be $x$ and $y$, with $x>y$.\nWe are given that $x+y=30$ and $x-y=4$.\nAdding these two equations, we get $2x=34$, so $x=17$.\nTherefore, the larger of the two numbers is $\\boxed{17}$.\nThe answer is: 17"
+  },
+  {
+    "system": null,
+    "user": "The sum of two numbers is $30$. Their difference is $4$. What is the larger of the two numbers?",
+    "response": "Let the two numbers be $x$ and $y$, where $x>y$.\nWe are given that $x+y=30$ and $x-y=4$.\nAdding these two equations, we get $2x=34$, so $x=17$.\nTherefore, the larger of the two numbers is $\\boxed{17}$.\nThe answer is: 17"
+  },
+  {
+    "system": null,
+    "user": "If a square has an area of 25 and a rectangle has the same width as the square, with the length of the rectangle being twice its width, what is the area of the rectangle?",
+    "response": "Let the width of the square be $w$. Then the area of the square is $w^2 = 25$, so $w = 5$.\nThe length of the rectangle is twice its width, so the length is $2w = 2(5) = 10$.\nThe area of the rectangle is the product of its length and width, so the area is $10(5) = \\boxed{50}$.\nThe answer is: 50"
+  },
+  {
+    "system": null,
+    "user": "If a number leaves a remainder of 2 when divided by 7, what is the remainder when 3 times the number minus 7 is divided by 7?",
+    "response": "Let the number be $n$. We are given that $n \\equiv 2 \\pmod{7}$.\nThis means that $n$ can be written in the form $n = 7k + 2$ for some integer $k$.\nWe want to find the remainder when $3n - 7$ is divided by 7.\nSubstituting $n = 7k + 2$, we have $3n - 7 = 3(7k + 2) - 7 = 21k + 6 - 7 = 21k - 1$.\nThe remainder when $21k - 1$ is divided by 7 is $\\boxed{6}$.\nThe answer is: 6"
+  },
+  {
+    "system": null,
+    "user": "The complement of an angle is $5^{\\circ}$ more than four times the angle. What is the number of degrees in the measure of the angle?",
+    "response": "Let the angle be $x$ degrees. The complement of the angle is $90-x$ degrees.\nAccording to the problem, we have the equation $90-x = 4x + 5$.\nSolving for $x$, we get $5x = 85$, so $x = 17$.\nTherefore, the angle measures $\\boxed{17}$ degrees.\nThe answer is: 17"
+  },
+  {
+    "system": null,
+    "user": "The sum of the squares of two positive integers is 90. The product of the two integers is 27. What is the sum of the two integers?",
+    "response": "Let the two integers be $x$ and $y$. We are given that $x^2 + y^2 = 90$ and $xy = 27$.\nWe can rewrite the equation $x^2 + y^2 = 90$ as $(x+y)^2 - 2xy = 90$.\nSubstituting $xy = 27$, we have $(x+y)^2 - 2(27) = 90$.\nSimplifying, we get $(x+y)^2 = 144$.\nTaking the square root of both sides, we have $x+y = \\pm 12$.\nSince the problem states that the two integers are positive, we take the positive value and conclude that $x+y = \\boxed{12}$.\nThe answer is: 12"
+  },
+  {
+    "system": null,
+    "user": "The sum of two numbers is $45$. Their difference is $3$. What is the lesser of the two numbers?",
+    "response": "Let the two numbers be $x$ and $y$, with $x>y$.\nWe are given that $x+y=45$ and $x-y=3$.\nAdding these two equations, we get $2x=48$, so $x=24$.\nSubstituting this value back into one of the equations, we find $y=21$.\nTherefore, the lesser of the two numbers is $\\boxed{21}$.\nThe answer is: 21"
+  },
+  {
+    "system": null,
+    "user": "The sum of two numbers is 10. The difference of their squares is 24. What is the positive difference of the two numbers?",
+    "response": "Let the two numbers be $x$ and $y$. According to the problem, we have:\n1. $x+y = 10$\n2. $x^2 - y^2 = 24$\n\nUsing the identity $x^2 - y^2 = (x+y)(x-y)$, we substitute the known sum:\n\\[ (x+y)(x-y) = 24 \\]\n\\[ 10(x-y) = 24 \\]\n\\[ x-y = \\frac{24}{10} = \\frac{12}{5} \\]\n\nThus, the positive difference of the two numbers is $\\boxed{\\frac{12}{5}}$."
+  },
+  {
+    "system": null,
+    "user": "The sum of the first and third of three consecutive integers is 118. What is the value of the second integer?",
+    "response": "Let the three consecutive integers be $n-1$, $n$, and $n+1$.\nThe sum of the first and third integers is $(n-1)+(n+1)=2n$.\nWe are given that this sum is 118, so $2n=118$.\nSolving for $n$, we find $n=59$.\nTherefore, the second integer is $\\boxed{59}$.\nThe answer is: 59"
+  },
+  {
+    "system": null,
+    "user": "The sum of the squares of two positive integers is 90. The product of the two integers is 27. What is the sum of the two integers?",
+    "response": "Let the two positive integers be $x$ and $y$.\nWe are given that $x^2 + y^2 = 90$ and $xy = 27$.\nWe want to find the value of $x+y$.\nWe can rewrite $x^2 + y^2 = 90$ as $(x+y)^2 - 2xy = 90$.\nSubstituting $xy = 27$, we have $(x+y)^2 - 2(27) = 90$.\nSimplifying, we get $(x+y)^2 = 144$.\nTaking the square root of both sides, we have $x+y = \\pm 12$.\nSince we are given that the integers are positive, we take the positive value, so $x+y = \\boxed{12}$.\nThe answer is: 12"
+  },
+  {
+    "system": null,
+    "user": "Given that the sum of two numbers is 45 and their difference is 3, what is the smaller of the two numbers?",
+    "response": "Let the two numbers be $x$ and $y$, with $x>y$.\nWe are given that $x+y=45$ and $x-y=3$.\nAdding these two equations, we get $2x=48$, so $x=24$.\nSubstituting this value of $x$ into the first equation, we get $24+y=45$, so $y=21$.\nTherefore, the smaller of the two numbers is $\\boxed{21}$.\nThe answer is: 21"
+  },
+  {
+    "system": null,
+    "user": "The sum of two numbers is $12$ and their difference is $20$. What is the smaller number?",
+    "response": "Let the two numbers be $x$ and $y$.\nWe are given that $x + y = 12$ and $x - y = 20$.\nAdding these two equations, we get $2x = 32$, so $x = 16$.\nSubstituting this value into either equation, we find $y = 12 - 16 = -4$.\nThus, the smaller number is $\\boxed{-4}$.\nThe answer is: -4"
+  },
+  {
+    "system": null,
+    "user": "In a right-angled triangle, the sum of the squares of the three side lengths is 1800.  What is the length of the hypotenuse of this triangle?",
+    "response": "Let the lengths of the two legs of the triangle be $x$ and $y$, and the length of the hypotenuse be $z$.\nBy the Pythagorean theorem, we have $x^2+y^2=z^2$.\nWe are also given that $x^2+y^2+z^2=1800$.\nSubstituting the first equation into the second equation, we get $2z^2=1800$, so $z^2=900$.\nTaking the square root of both sides, we find $z=\\boxed{30}$.\nThe answer is: 30"
+  },
+  {
+    "system": null,
+    "user": "If the sum of the x-coordinates of the vertices of a triangle in the Cartesian plane is 10, what is the sum of the x-coordinates of the midpoints of the sides of the triangle?",
+    "response": "Let the vertices of the triangle be $(x_1, y_1)$, $(x_2, y_2)$, and $(x_3, y_3)$.\nThe sum of the x-coordinates of the vertices is $x_1 + x_2 + x_3 = 10$.\nThe midpoints of the sides of the triangle are $\\left(\\frac{x_1+x_2}{2}, \\frac{y_1+y_2}{2}\\right)$, $\\left(\\frac{x_2+x_3}{2}, \\frac{y_2+y_3}{2}\\right)$, and $\\left(\\frac{x_3+x_1}{2}, \\frac{y_3+y_1}{2}\\right)$.\nThe sum of the x-coordinates of these midpoints is $\\frac{x_1+x_2}{2} + \\frac{x_2+x_3}{2} + \\frac{x_3+x_1}{2} = \\frac{2x_1+2x_2+2x_3}{2} = x_1 + x_2 + x_3 = 10$.\nTherefore, the sum of the x-coordinates of the midpoints of the sides of the triangle is $\\boxed{10}$.The answer is: 10"
+  },
+  {
+    "system": null,
+    "user": "If the sum of two numbers is 12 and their difference is 20, what is the smaller number?",
+    "response": "Let the two numbers be $x$ and $y$, with $x>y$.\nWe are given that $x+y=12$ and $x-y=20$.\nAdding these two equations, we get $2x=32$, so $x=16$.\nSubstituting this value into one of the equations, we get $16+y=12$, so $y=-4$.\nTherefore, the smaller number is $\\boxed{-4}$.\nThe answer is: -4"
+  },
+  {
+    "system": null,
+    "user": "If Andrew's grandfather's age is twelve times Andrew's age, and Andrew's grandfather was 55 years old when Andrew was born, how old is Andrew currently?",
+    "response": "Let Andrew's age be $x$.\nAccording to the problem, Andrew's grandfather's age is twelve times Andrew's age, so his age is $12x$.\nWe are given that Andrew's grandfather was 55 years old when Andrew was born, so the age difference between them is $55-x$ years.\nSince Andrew's grandfather is twelve times Andrew's age, we have the equation $12x = 55-x$.\nSimplifying this equation, we get $13x = 55$.\nDividing both sides by 13, we find that $x = 5$.\nTherefore, Andrew is currently $\\boxed{5}$ years old.\nThe answer is: 5"
+  },
+  {
+    "system": null,
+    "user": "Consider a population of lemur species. The population of lemurs can be modeled with the following logistic growth equation: P(t) = (8000)/(1+199e^(-0.162t)), where P(t) represents the population of lemurs at time t and t is measured in years. Determine the carrying capacity of the lemur population.",
+    "response": "The given logistic growth equation for the lemur population is P(t) = (8000)/(1+199e^(-0.162t)). In a logistic growth model, the carrying capacity is the maximum population that the environment can sustain, and it is typically represented by the value that the population approaches as time approaches infinity.\n\nAs time (t) increases, the term e^(-0.162t) approaches zero. Therefore, the term 199e^(-0.162t) also approaches zero. Substituting this value back into the equation, we get:\n\nP(t) ≈ (8000)/(1+0)\nP(t) ≈ 8000\n\nSo, the carrying capacity of the lemur population is approximately 8000. This means that as time goes on, the population of lemurs will approach 8000, but it will not exceed this value due to environmental limitations."
+  },
+  {
+    "system": null,
+    "user": "The numerical value of a particular square's area is equal to the numerical value of its perimeter. What is the length of a side of the square?",
+    "response": "Let the side length of the square be $s$.\nThe area of the square is $s^2$ and the perimeter is $4s$.\nWe are given that $s^2 = 4s$.\nDividing both sides by $s$ (since $s$ cannot be zero), we get $s = 4$.\nTherefore, the length of a side of the square is $\\boxed{4}$.The answer is: 4"
+  },
+  {
+    "system": null,
+    "user": "Given that the sum of two numbers is 22 and their difference is 4, what is the larger of the two numbers?",
+    "response": "Let the larger number be $x$ and the smaller number be $y$.\nWe have the system of equations:\n\\begin{align*}\nx + y &= 22 \\\\\nx - y &= 4\n\\end{align*}\nAdding the two equations, we get $2x = 26$, so $x = 13$.\nTherefore, the larger number is $\\boxed{13}$.The answer is: 13"
+  },
+  {
+    "system": null,
+    "user": "The sum of two numbers is 10. The difference of their squares is 80. What is the positive difference of the two numbers?",
+    "response": "Let the two numbers be $x$ and $y$.\n1. We know from the problem that $x + y = 10$.\n2. We also know that $x^2 - y^2 = 80$.\n\nFrom the identity $x^2 - y^2 = (x + y)(x - y)$, we substitute the values we know:\n\\[ (x + y)(x - y) = 80 \\]\n\\[ 10(x - y) = 80 \\]\n\n3. Solving for $x - y$:\n\\[ x - y = \\frac{80}{10} = 8 \\]\n\nThus, the positive difference of the two numbers is $\\boxed{8}$."
+  },
+  {
+    "system": null,
+    "user": "In a pentagon, the ratio of the measures of the angles is 3:3:3:4:5. What is the measure, in degrees, of the largest angle?",
+    "response": "Let the measures of the angles be $3x$, $3x$, $3x$, $4x$, and $5x$.\nThe sum of the measures of the angles in a pentagon is $180(5-2) = 540$ degrees.\nThus, we have the equation $3x + 3x + 3x + 4x + 5x = 540$.\nSimplifying, we get $18x = 540$, so $x = 30$.\nTherefore, the largest angle has measure $5x = 5(30) = \\boxed{150}$ degrees.\nThe answer is: 150"
+  },
+  {
+    "system": null,
+    "user": "The sum of the squares of two positive integers is 193, and their product is 84. What is the sum of the two integers?",
+    "response": "Let the two integers be $x$ and $y$.\nWe have the equations $x^2 + y^2 = 193$ and $xy = 84$.\nWe want to find $x + y$.\nWe notice that $(x + y)^2 = x^2 + 2xy + y^2 = 193 + 2(84) = 361$.\nTaking the square root of both sides, we get $x + y = \\sqrt{361} = \\boxed{19}$.\nThe answer is: 19"
+  },
+  {
+    "system": null,
+    "user": "Two numbers have a difference of 3 and a sum of 31. What is the larger of the two numbers?",
+    "response": "Let the two numbers be $x$ and $y$, where $x>y$.\nWe are given that $x-y=3$ and $x+y=31$.\nAdding these equations, we get $2x=34$, so $x=17$.\nTherefore, the larger of the two numbers is $\\boxed{17}$.\nThe answer is: 17"
+  },
+  {
+    "system": null,
+    "user": "Three positive integers have a sum of 72 and are in the ratio 1:3:4. What is the least of these three integers?",
+    "response": "Let the three integers be $x$, $3x$, and $4x$.\nSince the sum of the integers is 72, we have $x+3x+4x=72$.\nCombining like terms, we get $8x=72$.\nDividing both sides by 8, we find that $x=9$.\nTherefore, the least of the three integers is $x=\\boxed{9}$.\nThe answer is: 9"
+  },
+  {
+    "system": null,
+    "user": "Given that $k, a_2, a_3$ and $k, b_2, b_3$ are nonconstant geometric sequences with different common ratios, if $a_3 - b_3 = 2(a_2 - b_2)$, what is the sum of the common ratios of the two sequences?",
+    "response": "Let the common ratio of the geometric sequence $k, a_2, a_3$ be $r_1$,\nand let the common ratio of the geometric sequence $k, b_2, b_3$ be $r_2$.\nSince $a_3 - b_3 = 2(a_2 - b_2)$,\nwe have $kr_1^2 - kr_2^2 = 2(kr_1 - kr_2)$.\nDividing both sides by $k$ (since $k$ is non-zero), we get $r_1^2 - r_2^2 = 2(r_1 - r_2)$.\nThis can be factored as $(r_1 - r_2)(r_1 + r_2 - 2) = 0$.\nSince $r_1$ and $r_2$ are non-zero and different, we must have $r_1 + r_2 = 2$.\nTherefore, the sum of the common ratios of the two sequences is $\\boxed{2}$.\nThe answer is: 2"
+  },
+  {
+    "system": null,
+    "user": "Two numbers have a difference of 3 and a sum of 31. What is the larger of the two numbers?",
+    "response": "Let the two numbers be $x$ and $y$, where $x>y$.\nWe have the system of equations \\[\n\\begin{aligned} x-y &= 3, \\\\ x+y &= 31. \\end{aligned}\n\\] Adding these equations, we have $2x=34$, so $x=\\frac{34}{2}=17$.\nTherefore, the larger number is $\\boxed{17}$.\nThe answer is: 17"
+  },
+  {
+    "system": null,
+    "user": "If Andrew's grandfather is twelve times Andrew's age, and Andrew's grandfather was 55 years old when Andrew was born, how old is Andrew currently?",
+    "response": "Let Andrew's age be $x$.\nAccording to the information given, Andrew's grandfather is $12x$ years old.\nWe are also given that Andrew's grandfather was 55 years old when Andrew was born.\nThis means that the age difference between Andrew and his grandfather is $12x - x = 55$.\nSimplifying the equation, we get $11x = 55$, which implies $x = 5$.\nTherefore, Andrew is currently $\\boxed{5}$ years old. \nThe answer is: 5"
+  },
+  {
+    "system": null,
+    "user": "Given that the sum of two numbers is 12 and their difference is 20, what is the smaller number?",
+    "response": "Let the two numbers be $x$ and $y$.\nWe are given that $x+y=12$ and $x-y=20$.\nAdding these two equations, we get $2x=32$ or $x=16$.\nSubstituting this value back into the first equation, we find $16+y=12$ or $y=-4$.\nTherefore, the smaller number is $\\boxed{-4}$.\nThe answer is: -4"
+  },
+  {
+    "system": null,
+    "user": "The measures of the angles of a triangle are in the ratio 5:6:7. What is the number of degrees in the largest of these angles?",
+    "response": "Let the measures of the angles be $5x$, $6x$, and $7x$.\nThe sum of the angles in a triangle is $180$ degrees, so we have the equation $5x + 6x + 7x = 180$.\nCombining like terms, we get $18x = 180$, so $x = 10$.\nThe largest angle is $7x$, so the number of degrees in the largest angle is $7 \\times 10 = \\boxed{70}$. \nThe answer is: 70"
+  },
+  {
+    "system": null,
+    "user": "The sum of two numbers is 25 and their product is 126. What is the absolute value of the difference of the two numbers?",
+    "response": "Let the two numbers be $x$ and $y$. We are given that $x+y=25$ and $xy=126$.\nWe want to find $|x-y|$.\nWe can rewrite $|x-y|$ as $\\sqrt{(x-y)^2}$.\nExpanding the square, we have $(x-y)^2 = x^2 - 2xy + y^2$.\nSubstituting $x+y$ for $25$, we have $(x-y)^2 = x^2 - 2xy + y^2 = (x+y)^2 - 4xy = 25^2 - 4(126) = 625 - 504 = 121$.\nTaking the square root, we have $\\sqrt{(x-y)^2} = \\sqrt{121} = \\boxed{11}$.\nThe answer is: 11"
+  },
+  {
+    "system": null,
+    "user": "The sum of two positive integers is 50 and their difference  is 12. What is the value of the positive difference of the squares of the integers?",
+    "response": "Let the two integers be $x$ and $y,$ where $x > y.$\nWe are given that $x + y = 50$ and $x - y = 12.$\nAdding these equations, we get $2x = 62,$ so $x = 31.$\nSubstituting into $x + y = 50,$ we find $y = 50 - 31 = 19.$\nThe positive difference of the squares of the integers is $x^2 - y^2 = 31^2 - 19^2 = 961 - 361 = \\boxed{600}.$\nThe answer is: 600"
+  },
+  {
+    "system": null,
+    "user": "A geometric sequence of positive integers is formed for which the first term is 2 and the fifth term is 162. What is the sixth term of the sequence?",
+    "response": "Let the common ratio of the geometric sequence be $r$.\nWe can write the sequence as $2, 2r, 2r^2, 2r^3, 2r^4, \\dots$.\nWe are given that the fifth term is 162, so we have $2r^4 = 162$.\nDividing both sides by 2 gives $r^4 = 81$.\nTaking the fourth root of both sides gives $r = 3$.\nTherefore, the sixth term of the sequence is $2r^5 = 2(3^5) = \\boxed{486}$.\nThe answer is: 486"
+  },
+  {
+    "system": null,
+    "user": "The sum of two numbers is 50 and their difference is 6. What is their product?",
+    "response": "Let the two numbers be $x$ and $y$. We are given that $x+y=50$ and $x-y=6$.\nAdding the two equations, we have $2x=56$, so $x=28$.\nSubstituting this value back into one of the equations, we have $28+y=50$, so $y=22$.\nTherefore, the product of the two numbers is $28 \\cdot 22 = \\boxed{616}$.\nThe answer is: 616"
+  },
+  {
+    "system": null,
+    "user": "The combined weight of Alice and Clara is 240 pounds. If Clara's weight minus Alice's weight equals two-thirds of Clara's weight, find Clara's weight.",
+    "response": "Let Alice's weight be \\(a\\) and Clara's weight be \\(c\\). The problem gives us the following system of equations:\n\\[\na + c = 240\n\\]\n\\[\nc - a = \\frac{2}{3}c\n\\]\n\nAdding these equations, we eliminate \\(a\\):\n\\[\na + c + c - a = 240 + \\frac{2}{3}c\n\\]\n\\[\n2c = 240 + \\frac{2}{3}c\n\\]\n\\[\n\\frac{4}{3}c = 240\n\\]\n\\[\nc = \\frac{240 \\times 3}{4} = 180\n\\]\n\nThus, Clara weighs \\(\\boxed{180}\\) pounds."
+  },
+  {
+    "system": null,
+    "user": "The sum of the first and third of three consecutive integers is 118. What is the value of the second integer?",
+    "response": "Let the three consecutive integers be $n-1,$ $n,$ and $n+1$.\nThe sum of the first and third integers is $(n-1) + (n+1) = 2n$.\nWe are given that this sum is 118, so $2n = 118$ and $n = 59$.\nTherefore, the second integer is $n = \\boxed{59}$.\nThe answer is: 59"
+  },
+  {
+    "system": null,
+    "user": "Given that one endpoint of a line segment is (4,3) and its midpoint is (2,9), what is the sum of the coordinates of the other endpoint?",
+    "response": "Let the coordinates of the other endpoint be $(x,y)$.\nSince the midpoint of the line segment is $(2,9)$, we can use the midpoint formula to find that the average of the $x$-coordinates and the average of the $y$-coordinates is equal to the coordinates of the midpoint.\nSo, we have $\\frac{4+x}{2}=2$ and $\\frac{3+y}{2}=9$.\nSolving these equations, we find $x=0$ and $y=15$.\nThe sum of the coordinates of the other endpoint is $0+15=\\boxed{15}$.\nThe answer is: 15"
+  },
+  {
+    "system": null,
+    "user": "In the given diagram, the square has a perimeter of 48 and the triangle has a height of 48. If the square and the triangle have the same area, what is the value of x?",
+    "response": "Let the side length of the square be $s$.\nThen the perimeter of the square is $4s$, so we have $4s=48$.\nThis gives us $s=12$.\nThe area of the square is $s^2=12^2=144$.\nThe area of the triangle is $(1/2)bh=(1/2)(x)(48)=24x$.\nSince the square and the triangle have the same area, we have $144=24x$.\nSolving for $x$, we find $x=\\boxed{6}$.\nThe answer is: 6"
+  },
+  {
+    "system": null,
+    "user": "If the least common multiple of two integers is 36 and their greatest common divisor is 6, what is the product of the two numbers?",
+    "response": "Let the two integers be $a$ and $b$. We know that $\\text{lcm}(a,b) \\cdot \\text{gcd}(a,b) = a \\cdot b$.\nSubstituting the given values, we have $36 \\cdot 6 = a \\cdot b$.\nSimplifying, we find that $216 = a \\cdot b$.\nTherefore, the product of the two numbers is $\\boxed{216}$.\nThe answer is: 216"
+  },
+  {
+    "system": null,
+    "user": "The sum of two numbers is 10. The difference of their squares is 24. What is the positive difference between the two numbers?",
+    "response": "Let the two numbers be $x$ and $y$. We are given that $x + y = 10$ and $x^2 - y^2 = 24$. Recall that the difference of squares can be factored as $(x + y)(x - y)$. We substitute $x + y = 10$ into the difference of squares equation:\n\n$$ x^2 - y^2 = (x + y)(x - y) = 10(x - y) = 24.$$\n\nNow, solve for $x - y$:\n\n$$ 10(x - y) = 24, $$\n$$ x - y = \\frac{24}{10}, $$\n$$ x - y = \\frac{12}{5}. $$\n\nThus, the positive difference between the two numbers is $\\boxed{\\frac{12}{5}}$."
+  },
+  {
+    "system": null,
+    "user": "The sum of two numbers is 50 and their difference is 6. What is their product?",
+    "response": "Let the two numbers be $x$ and $y$, where $x>y$.\nWe have the equations\n\\begin{align*}\nx+y &= 50, \\\\\nx-y &= 6.\n\\end{align*}\nAdding the two equations, we get $2x=56$, so $x=28$.\nSubstituting this value into the first equation, we find $y=22$.\nTherefore, the product of the two numbers is $x \\cdot y = 28 \\cdot 22 = \\boxed{616}$.\nThe answer is: 616"
+  },
+  {
+    "system": null,
+    "user": "If the sum of two positive integers is 50 and their difference is 12, what is the positive difference between the squares of the integers?",
+    "response": "Let the two integers be $x$ and $y$, where $x>y$.\nWe have the system of equations:\n\\begin{align*}\nx+y &= 50, \\\\\nx-y &= 12.\n\\end{align*}\nAdding the two equations, we get $2x = 62$, so $x=31$.\nSubstituting this value into one of the equations, we get $y=19$.\nThe positive difference between the squares of the integers is $x^2 - y^2 = 31^2 - 19^2 = 961 - 361 = \\boxed{600}$.\nThe answer is: 600"
+  },
+  {
+    "system": null,
+    "user": "A geometric sequence of positive integers is formed for which the first term is 3 and the fourth term is 192. What is the third term of the sequence?",
+    "response": "Let the common ratio of the geometric sequence be $r$.\nThen the third term is $3r^2$ and the fourth term is $3r^3$.\nWe are given that the fourth term is 192, so $3r^3=192$.\nDividing both sides by 3, we have $r^3=64$.\nTaking the cube root of both sides, we find that $r=4$.\nTherefore, the third term of the sequence is $3r^2=3(4^2)=\\boxed{48}$.\nThe answer is: 48"
+  },
+  {
+    "system": null,
+    "user": "A geometric sequence of positive integers is formed for which the first term is 2 and the fifth term is 162. What is the sixth term of the sequence?",
+    "response": "Let the common ratio of the geometric sequence be $r$.\nThe fifth term is $2r^4$, so we have $2r^4=162$.\nSolving for $r$, we find $r=3$.\nTherefore, the sixth term is $2r^5=2(3^5)=2(243)=\\boxed{486}$.\nThe answer is: 486"
+  },
+  {
+    "system": null,
+    "user": "When a number is divided by 7, the remainder is 2. What is the remainder when three times the number minus 7 is divided by 7?",
+    "response": "Let the number be $x$.\nIf $x$ leaves a remainder of 2 when divided by 7, then we can express $x$ as $x = 7k + 2$, where $k$ is an integer.\nWe want to find the remainder when $3x - 7$ is divided by 7.\nSubstituting $x = 7k + 2$, we have $3x - 7 = 3(7k + 2) - 7 = 21k + 6 - 7 = 21k - 1$.\nWhen $21k - 1$ is divided by 7, the remainder is $\\boxed{6}$.\nThe answer is: 6"
+  },
+  {
+    "system": null,
+    "user": "Three positive integers have a sum of 72 and are in the ratio 1:3:4. What is the least of these three integers?",
+    "response": "Let the three integers be $x$, $3x$, and $4x$. We have the equation $x + 3x + 4x = 72$, which simplifies to $8x = 72$. Dividing both sides by 8 gives $x = 9$. Therefore, the least of the three integers is $\\boxed{9}$.The answer is: 9"
+  },
+  {
+    "system": null,
+    "user": "The sum of two numbers is 6. The difference of their squares is 12. What is the positive difference of the two numbers?",
+    "response": "Let the two numbers be $x$ and $y$.\nWe are given that $x + y = 6$ and $x^2 - y^2 = 12$.\nUsing the difference of squares factorization, we can rewrite the second equation as $(x + y)(x - y) = 12$.\nSubstituting $x + y = 6$, we have $6(x - y) = 12$, which simplifies to $x - y = 2$.\nThe positive difference of the two numbers is $|x - y| = \\boxed{2}$.The answer is: 2"
+  },
+  {
+    "system": null,
+    "user": "If the sum of two numbers is 6 and the difference of their squares is 12, what is the positive difference between the two numbers?",
+    "response": "Let the two numbers be $x$ and $y$. We are given that $x + y = 6$ and $x^2 - y^2 = 12$.\nWe can rewrite the second equation as $(x + y)(x - y) = 12$.\nSubstituting $x + y = 6$, we have $6(x - y) = 12$, which simplifies to $x - y = 2$.\nThe positive difference between the two numbers is $\\boxed{2}$.\nThe answer is: 2"
+  },
+  {
+    "system": null,
+    "user": "During a class activity, Mr. Sanchez's students were instructed to add two positive integers. However, Juan subtracted instead and obtained a sum of 2, while Maria mistakenly multiplied and obtained a product of 120. What is the correct answer for the addition of the two positive integers?",
+    "response": "Let the two positive integers be $x$ and $y$.\nJuan subtracted and obtained $x - y = 2$.\nMaria multiplied and obtained $xy = 120$.\nWe want to find the sum $x + y$.\nWe can solve for $x$ and $y$ by considering the factors of 120 and finding pairs that have a difference of 2.\nThe pairs of factors of 120 that have a difference of 2 are (10, 12) and (-10, -12).\nSince the integers are positive, the correct pair is (10, 12).\nTherefore, the sum $x + y$ is $10 + 12 = \\boxed{22}$.\nThe answer is: 22"
+  },
+  {
+    "system": null,
+    "user": "When a number is divided by 7, the remainder is 2. What is the remainder when three times the number minus 7 is divided by 7?",
+    "response": "Let the number be $n$. We know that $n \\equiv 2 \\pmod{7}$.\nSo, we can write $n = 7k + 2$ for some integer $k$.\nNow, we want to find the remainder when $3n - 7$ is divided by 7.\nSubstituting $n = 7k + 2$, we get $3(7k + 2) - 7 = 21k + 6 - 7 = 21k - 1$.\nSince $21k$ is divisible by 7, the remainder is $\\boxed{6}$.The answer is: 6"
+  },
+  {
+    "system": null,
+    "user": "Two numbers have a difference of 3 and a sum of 31. What is the larger of the two numbers?",
+    "response": "Let the two numbers be $x$ and $y$, where $x > y$.\nGiven that the difference between the two numbers is 3, we have $x - y = 3$.\nGiven that the sum of the two numbers is 31, we have $x + y = 31$.\nAdding the two equations, we get $2x = 34$, so $x = 17$.\nTherefore, the larger of the two numbers is $\\boxed{17}$.\nThe answer is: 17"
+  },
+  {
+    "system": null,
+    "user": "A rhombus has an area of 150 square units. The ratios of its diagonals have changed to 4 to 3. What is the length of the longest diagonal?",
+    "response": "Let the lengths of the diagonals be $4x$ and $3x$. The area of the rhombus is given by the formula:\n\\[ \\frac{1}{2} \\times (4x) \\times (3x) = 150 \\]\n\\[ 6x^2 = 150 \\]\n\\[ x^2 = 25 \\]\n\\[ x = 5 \\]\nThus, the longest diagonal, which is $4x$, measures:\n\\[ 4 \\times 5 = \\boxed{20} \\text{ units} \\]"
+  },
+  {
+    "system": null,
+    "user": "Given that one endpoint of a line segment is (4,3) and its midpoint is (2,9), what is the sum of the coordinates of the other endpoint?",
+    "response": "Let the other endpoint be $(x,y)$.\nBy the midpoint formula, we have $\\left(\\frac{4+x}{2}, \\frac{3+y}{2}\\right) = (2,9)$.\nSolving this system of equations, we find $x=0$ and $y=15$.\nTherefore, the sum of the coordinates of the other endpoint is $0+15=\\boxed{15}$.\nThe answer is: 15"
+  },
+  {
+    "system": null,
+    "user": "Allen and Ben are painting a fence. The ratio of the amount of work Allen does to the amount of work Ben does is $3:5$. If the fence requires a total of $240$ square feet to be painted, how many square feet does Ben paint?",
+    "response": "Let the amount of work Allen does be represented by $3x$ and the amount of work Ben does be represented by $5x$.\nSince the total amount of work is $240$ square feet, we have $3x + 5x = 240$.\nCombining like terms, we get $8x = 240$, so $x = 30$.\nTherefore, Ben paints $5x = 5(30) = \\boxed{150}$ square feet.\nThe answer is: 150"
+  },
+  {
+    "system": null,
+    "user": "Given that three positive integers have a sum of 72 and are in the ratio 1:3:4, what is the smallest of these three integers?",
+    "response": "Let the three integers be $x$, $3x$, and $4x$.\nWe have $x + 3x + 4x = 72$, so $8x = 72$, which means $x = 9$.\nTherefore, the smallest integer is $x = \\boxed{9}$.\nThe answer is: 9"
+  },
+  {
+    "system": null,
+    "user": "A geometric sequence of positive integers is formed for which the first term is 2 and the fifth term is 162. What is the sixth term of the sequence?",
+    "response": "Let the common ratio of the geometric sequence be $r$.\nThen the terms of the sequence are 2, $2r$, $2r^2$, $2r^3$, and $2r^4$.\nWe are given that $2r^4 = 162$, so $r^4 = 81$.\nTaking the fourth root of both sides, we find that $r = 3$.\nTherefore, the sixth term of the sequence is $2r^5 = 2(3^5) = \\boxed{486}$.The answer is: 486"
+  },
+  {
+    "system": null,
+    "user": "If the sum of the squares of two positive integers is 193 and their product is 84, what is the sum of the two integers?",
+    "response": "Let the two integers be $x$ and $y$. We are given that $x^2 + y^2 = 193$ and $xy = 84$. We want to find $x + y$.\nWe can rewrite the equation $x^2 + y^2 = 193$ as $(x + y)^2 - 2xy = 193$.\nSubstituting $xy = 84$, we have $(x + y)^2 - 2(84) = 193$.\nSimplifying, we get $(x + y)^2 = 361$, so $x + y = \\boxed{19}$.\nThe answer is: 19"
+  },
+  {
+    "system": null,
+    "user": "In a right triangle with integer side lengths, the hypotenuse measures 39 units. What is the length, in units, of the shorter leg?",
+    "response": "We can use the Pythagorean Theorem to solve this problem.\nLet the lengths of the legs be $a$ and $b$, with $a < b$.\nBy the Pythagorean Theorem, we have $a^2 + b^2 = 39^2 = 1521$.\nWe want to find the length of the shorter leg, which is $a$.\nSince $a < b$, we can start by trying $a = 1$.\nIf $a = 1$, then $b^2 = 1520$, which is not a perfect square.\nWe can continue trying larger values of $a$ until we find one that works.\nAfter some trial and error, we find that $a = 15$ and $b = 36$ satisfy the equation $a^2 + b^2 = 1521$.\nTherefore, the length of the shorter leg is $\\boxed{15}$ units.\nThe answer is: 15"
+  },
+  {
+    "system": null,
+    "user": "Two numbers have a difference of 3 and a sum of 31. What is the larger of the two numbers?",
+    "response": "Let the two numbers be $x$ and $y$, with $x>y$.\nWe are told that $x-y=3$ and $x+y=31$.\nAdding these equations, we get $2x=34$, so $x=17$.\nTherefore, the larger number is $\\boxed{17}$.\nThe answer is: 17"
+  },
+  {
+    "system": null,
+    "user": "The sum of two numbers is 50 and their difference is 6. What is their product?",
+    "response": "Let the two numbers be $x$ and $y$.\nWe are given that $x+y=50$ and $x-y=6$.\nAdding these equations, we get $2x=56$ or $x=28$.\nSubstituting this value back into one of the equations, we find that $28+y=50$ or $y=22$.\nTherefore, the product of the two numbers is $28 \\times 22 = \\boxed{616}$.\nThe answer is: 616"
+  },
+  {
+    "system": null,
+    "user": "If two is added to three times the value of B, the result is 20. What is the value of B?",
+    "response": "Let B be the value we are trying to find.\nWe are told that two is added to three times the value of B, so we have the equation 3B + 2 = 20.\nTo solve for B, we subtract 2 from both sides, giving us 3B = 18.\nFinally, we divide both sides by 3 to solve for B, which gives us B = 6.\nTherefore, the value of B is 6.The answer is: 6"
+  },
+  {
+    "system": null,
+    "user": "The sum of two numbers is 8. The difference of their squares is 32. What is the positive difference of the two numbers?",
+    "response": "Let the two numbers be $x$ and $y$. The given conditions are:\n1. \\(x + y = 8\\)\n2. \\(x^2 - y^2 = 32\\)\n\nThe expression \\(x^2 - y^2\\) can be rewritten using the formula for the difference of squares: \\(x^2 - y^2 = (x+y)(x-y)\\). Substituting in the values from the conditions, we have:\n\\[\n(x+y)(x-y) = 32\n\\]\nFrom condition 1, \\(x+y = 8\\), so:\n\\[\n8(x-y) = 32\n\\]\nNow, solve for \\(x-y\\):\n\\[\nx-y = \\frac{32}{8} = 4\n\\]\nThus, the positive difference between the numbers $x$ and $y$ is \\(\\boxed{4}\\)."
+  },
+  {
+    "system": null,
+    "user": "A geometric sequence of positive integers is formed for which the first term is 3 and the fourth term is 192. What is the third term of the sequence?",
+    "response": "Let the common ratio of the geometric sequence be $r$.\nThe fourth term is 192, so we have $3r^3=192$.\nSolving for $r$, we find $r=4$.\nThe third term of the sequence is $3r^2=3(4^2)=3(16)=\\boxed{48}$.\nThe answer is: 48"
+  },
+  {
+    "system": null,
+    "user": "The measures of the angles of a triangle are in the ratio 5:6:7. What is the number of degrees in the largest of these angles?",
+    "response": "Let the angles of the triangle be $5x$, $6x$, and $7x$.\nThe sum of the angles in a triangle is $180$ degrees, so we have the equation $5x + 6x + 7x = 180$.\nCombining like terms, we get $18x = 180$, so $x = 10$.\nThe largest angle is $7x$, so the number of degrees in the largest angle is $7 \\cdot 10 = \\boxed{70}$.\nThe answer is: 70"
+  }
+]

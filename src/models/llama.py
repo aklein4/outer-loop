@@ -409,7 +409,10 @@ class LlamaModel(nn.Module):
             assert attention_mask is None, "Custom attention mask not compatible with flash attention"
 
             # dummy value
-            causal_mask = torch.zeros_like(position_ids)
+            if constants.XLA_AVAILABLE:
+                causal_mask = torch.zeros_like(position_ids)
+            else:
+                causal_mask = None
 
         else:
             causal_mask = torch.triu(
@@ -487,6 +490,7 @@ class LlamaForCausalLM(nn.Module):
         shift_states: bool = False,
         logits_to_keep: slice | None = None,
         return_states: bool = False,
+        cpu_logits: bool = False,
     ) -> tuple[torch.FloatTensor, torch.FloatTensor | None]:
         """
         Args:
@@ -514,7 +518,14 @@ class LlamaForCausalLM(nn.Module):
         elif logits_to_keep is not None:
             lm_states = lm_states[:, logits_to_keep, :].contiguous()
 
-        logits = self.lm_head(lm_states)
+        if cpu_logits:
+            logits = F.linear(
+                lm_states.cpu(),
+                self.lm_head.weight.cpu(),
+                bias=None,
+            )
+        else:
+            logits = self.lm_head(lm_states)
         logits = logits.to(torch.float32)
 
         # logits = torch.nn.functional.log_softmax(logits, dim=-1)
@@ -534,6 +545,37 @@ class LlamaForCausalLM(nn.Module):
         
         return logits, loss
     
+
+    def get_logits(
+        self,
+        input_ids: torch.LongTensor,
+        output_ids: torch.LongTensor | None = None,
+        **kwargs,
+    ):
+
+        if output_ids is None:
+            shift = kwargs.pop("shift_logits", True)
+            return self.forward(
+                input_ids=input_ids,
+                shift_states=shift,
+                **kwargs
+            )[0]
+
+        all_ids = torch.cat(
+            [
+                input_ids,
+                output_ids
+            ],
+            dim=1
+        )
+
+        out = self.forward(
+            input_ids=all_ids,
+            logits_to_keep=slice(-(output_ids.shape[-1]+1), -1),
+            **kwargs
+        )[0]
+        return out
+
 
     def sample(
         self,

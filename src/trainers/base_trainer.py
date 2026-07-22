@@ -129,17 +129,17 @@ class BaseTrainer:
 
         # print model parameters that to not have sharding spec
         config_names = set(self.config.model.sharding.keys())
-        param_names = set()
-        for name, p in model.named_parameters():
-            if p is not None:
-                param_names.add(re.sub("\.\d+\.", ".*.", name))
-        all_found = True
-        for name in param_names:
-            if name not in config_names:
-                logger.warning(f"Parameter {name} does not have sharding spec!")
-                all_found = False
-        if all_found:
-            logger.info("All model parameters have sharding spec.")
+        # param_names = set()
+        # for name, p in model.named_parameters():
+        #     if p is not None:
+        #         param_names.add(re.sub("\.\d+\.", ".*.", name))
+        # all_found = True
+        # for name in param_names:
+        #     if name not in config_names:
+        #         logger.warning(f"Parameter {name} does not have sharding spec!")
+        #         all_found = False
+        # if all_found:
+        #     logger.info("All model parameters have sharding spec.")
 
         # Setup SPMD mesh and shard the model.
         model, self.input_sharding_spec, self.minibatch, shard_info = setup_sharding_and_mesh(
@@ -183,6 +183,10 @@ class BaseTrainer:
             lr_schedulers = {}
 
             for key, c in config.trainer.multiple_optimizers.items():
+                if len(list(params[key])) == 0:
+                    logger.warning(f"No parameters found for optimizer {key}!")
+                    continue
+                
                 optimizer_config = c.optimizer
                 lr_scheduler_config = c.lr_scheduler
 
@@ -355,9 +359,9 @@ class BaseTrainer:
             try:
                 batch = next(train_iterator)
             except:
-                logger.warning("Unexpected error when fetching data at step %d, retrying", step)
                 error_count += 1
-                if error_count > 1000:
+                logger.warning("Unexpected error (%d) when fetching data at step %d, retrying", error_count, step)
+                if error_count > 1000 and step > 1:
                     logger.error("Too many errors when fetching data, saving checkpoint and exiting")
                     self.save_checkpoint(step)
                     raise RuntimeError("Too many errors when fetching data")
