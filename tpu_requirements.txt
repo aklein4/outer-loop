@@ -6,3 +6,4 @@ dotenv==0.9.9
 python-dotenv==1.2.2
 wandb
 gitpython
+jinja2==3.1.0
