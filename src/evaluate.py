@@ -12,20 +12,15 @@ import utils.constants as constants
 
 
 @torch.no_grad()
-def main(args, model=None):
+def main(args):
     assert constants.DEVICE.type == "cuda", "Evaluation currently only supports CUDA devices."
 
-    torch.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
-
     print(f"\nLoading model {args.checkpoint_url} at step {args.checkpoint_step}...")
-    if model is None:
-        model = load_checkpoint(
-            args.checkpoint_url, args.checkpoint_step,
-            strict=(not args.checkpoint_not_strict),
-            attention_kernel="gpu_flash_attention",
-            config_name=args.config_name,
-        ).to(constants.DEVICE)
+    model = load_checkpoint(
+        args.checkpoint_url, args.checkpoint_step,
+        strict=(not args.checkpoint_not_strict),
+        attention_kernel="gpu_flash_attention",
+    ).to(constants.DEVICE)
     model.eval()
 
     print(f"\nLoading tokenizer from {args.tokenizer}...")
@@ -53,77 +48,68 @@ def main(args, model=None):
         benchmarks=args.benchmarks,
         max_examples=args.max_examples,
         autocast=(not args.no_autocast),
-        save_path=save_path,
-        meta_data={
-            "seed": args.seed,
-        },
         model_kwargs=args.model_kwargs,
         benchmark_kwargs=args.benchmark_kwargs,
+        save_path=save_path,
+        seed=args.seed,
     )
-
-    return model
 
 
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Evaluate the model on various benchmarks.")
     parser.add_argument(
-        "--checkpoint_url",
+        "--checkpoint-url",
         type=str,
         help="The URL of the model checkpoint to evaluate.",
     )
     parser.add_argument(
-        "--checkpoint_step",
+        "--checkpoint-step",
         type=int,
         help="The training step of the model checkpoint to evaluate.",
     )
     parser.add_argument(
-        "--checkpoint_not_strict",
+        "--checkpoint-not-strict",
         action="store_true",
         help="Whether to NOT use strict loading when loading the model checkpoint.",
     )
     parser.add_argument(
-        "--config_name",
-        type=str,
-        default=None,
-        help="The name of the config file in configs/model/ to use for the model.",
-    )
-    parser.add_argument(
         "--tokenizer",
         type=str,
+        default=os.path.join(constants.LOCAL_DATA_PATH, "tokenizer"),
         help="The path to the tokenizer to use for evaluation.",
     )
     parser.add_argument(
-        "--max_input_length",
+        "--max-input-length",
         type=int,
         default=256,
         help="The maximum input length for the benchmarks.",
     )
     parser.add_argument(
-        "--max_output_length",
+        "--max-output-length",
         type=int,
         default=512,
         help="The maximum output length for the benchmarks.",
     )
     parser.add_argument(
-        "--batch_size",
+        "--batch-size",
         type=int,
         default=16,
         help="The batch size to use for evaluation.",
     )
     parser.add_argument(
-        "--max_examples",
+        "--max-examples",
         type=int,
         default=None,
         help="The maximum number of examples to evaluate on for each benchmark. If not specified, evaluates on the entire benchmark.",
     )
     parser.add_argument(
-        "--no_autocast",
+        "--no-autocast",
         action="store_true",
         help="Whether to use NOT autocast for evaluation.",
     )
     parser.add_argument(
-        "--save_folder",
+        "--save-folder",
         type=str,
         default=None,
         help="The path to save the evaluation results. If not specified, saves to 'evaluation_results/'.",
@@ -135,16 +121,16 @@ if __name__ == "__main__":
         help="The random seed to use for evaluation.",
     )
     parser.add_argument(
-        "--model_kwargs",
+        "--model-kwargs",
         type=json.loads,
-        default={},
+        default="{}",
         help="A JSON string representing a dictionary of additional keyword arguments to pass to the model during evaluation.",
     )
     parser.add_argument(
-        "--benchmark_kwargs",
+        "--benchmark-kwargs",
         type=json.loads,
-        default={},
-        help="A JSON string mapping benchmark names to keyword arguments for benchmark construction.",
+        default="{}",
+        help="A JSON string representing a dictionary of additional keyword arguments to pass to the benchmarks during evaluation.",
     )
     parser.add_argument(
         "--benchmarks",
