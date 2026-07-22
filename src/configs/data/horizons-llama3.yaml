@@ -1,0 +1,22 @@
+dataset:
+
+    url: aklein4/horizons-10B
+
+    kwargs:
+
+        split: train
+
+        streaming: true
+
+
+collator:
+
+    type: horizon.HorizonCollator
+
+    kwargs:
+    
+        tokenizer_url: meta-llama/Llama-3.2-1B-Instruct
+
+        max_length: 1024
+        cluster_length: 64
+

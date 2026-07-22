@@ -5,7 +5,7 @@
 # See these configs for more information about the expected structure of the model, dataset, and trainer configs.
 defaults:
   - _self_ # refers to this config file
-  - model: tinyllama-test 
+  - model: llama3p2-test 
   - data: fineweb-tinyllama-1024
   - trainer: lm-test
 
