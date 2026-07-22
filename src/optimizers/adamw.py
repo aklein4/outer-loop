@@ -44,7 +44,7 @@ class AdamW(Optimizer):
         correct_bias: bool = True,
         update_clip: float = None,
         fix_nan: bool = True,
-        state_dtype: torch.dtype = "bfloat16",
+        state_dtype: torch.dtype = "float32",
     ):
         if lr < 0.0:
             raise ValueError("Invalid learning rate: {} - should be >= 0.0".format(lr))
