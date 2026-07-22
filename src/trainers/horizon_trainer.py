@@ -75,8 +75,6 @@ class HorizonTrainer(BaseTrainer):
 
     @torch_xla.compile(full_graph=True)
     def inner_fn(self, input_ids, assistant_mask):
-        input_ids = maybe_shard_with_gradients(input_ids)
-        assistant_mask = maybe_shard_with_gradients(assistant_mask)
 
         with torch.autocast(
             "xla",
@@ -155,7 +153,8 @@ class HorizonTrainer(BaseTrainer):
         for i in range(horizon_length):
 
             loss = self.inner_fn(
-                input_ids[:, i], assistant_mask[:, i]
+                maybe_shard_with_gradients(input_ids[:, i]),
+                maybe_shard_with_gradients(assistant_mask[:, i])
             )
             aux[f"lm_loss/episode_{i:02d}"] = loss
             total_loss = total_loss + loss
