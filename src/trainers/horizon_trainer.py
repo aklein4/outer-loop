@@ -75,6 +75,8 @@ class HorizonTrainer(BaseTrainer):
 
     @torch_xla.compile(full_graph=True)
     def inner_fn(self, input_ids, assistant_mask):
+        input_ids = maybe_shard_with_gradients(input_ids)
+        assistant_mask = maybe_shard_with_gradients(assistant_mask)
 
         with torch.autocast(
             "xla",
