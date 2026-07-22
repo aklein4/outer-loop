@@ -140,7 +140,7 @@ class HorizonTrainer(BaseTrainer):
                     enabled=self.config.trainer.use_autocast,
                 ):
                     self.model(init_input_ids)
-                torch_xla.sync()
+                torch_xla.sync(wait=True)
 
                 self.model.disable_init()
                 self.model.train()
@@ -156,13 +156,25 @@ class HorizonTrainer(BaseTrainer):
                 input_ids[:, i],
                 assistant_mask[:, i]
             )
+
+            # torch_xla.compile schedules execution asynchronously.  Wait for
+            # its sharded output placeholders (including the persistent fast
+            # weight state) to be populated before using them in another XLA
+            # graph.  In particular, this must happen before accumulating the
+            # loss below rather than after that graph has already been built.
+            torch_xla.sync(wait=True)
+
             aux[f"lm_loss/episode_{i:02d}"] = loss
             total_loss = total_loss + loss
 
-            torch_xla.sync()
             master_print(f"Horizon {i:02d} completed.")
 
         post_aux, grad_norm = self.post_forward()
+
+        # post_forward is compiled too; materialize its optimizer outputs
+        # before final_loss and the logging reductions build dependent graphs.
+        torch_xla.sync(wait=True)
+
         aux.update(post_aux)
 
         # finalize outputs
