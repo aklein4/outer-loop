@@ -5,7 +5,7 @@ type: horizon_trainer.HorizonTrainer  # Used to import the trainer from this cla
 # This config is similar to the hyperparameters of GPT-3 XL which had 1.3B parameters.
 
 # total batch size across all devices
-global_batch_size: 128 # 8M tokens total
+global_batch_size: 256 # ~16M tokens total
 
 # run for N steps
 max_steps: 1000000
@@ -29,7 +29,7 @@ multiple_optimizers:
       type: muon.ScaledMuon
 
       kwargs:
-        lr: 4.0e-4
+        lr: 5.0e-4
         betas: [0.9, 0.95]
         eps: 1e-6
         weight_decay: 0.01
@@ -49,10 +49,10 @@ multiple_optimizers:
   slow:
 
     optimizer:
-      type: adamw.AdamW
+      type: muon.ScaledMuon
 
       kwargs:
-        lr: 4.0e-5
+        lr: 5.0e-5
         betas: [0.9, 0.95]
         eps: 1e-6
         weight_decay: 0.01
