@@ -243,6 +243,9 @@ class BaseTrainer:
         collator = import_collator(self.config.data.collator.type)(
             **self.config.data.collator.kwargs
         )
+        if self.config.model.pretrained_step is not None:
+            collator.skip_steps = self.config.model.pretrained_step
+
         dataloader = DataLoader(
             self.train_dataset,
             collate_fn=collator,
