@@ -107,7 +107,9 @@ class BaseTrainer:
         self.post_init()
 
         # Execute all initialization work queued so far before starting training.
-        torch_xla.sync()
+        # Persistent sharded buffers created by post_init must have real PJRT
+        # handles before a compiled training graph can consume them.
+        torch_xla.sync(wait=True)
 
 
     def post_init(self):
@@ -421,12 +423,15 @@ class BaseTrainer:
                 # keep track of something like number of tokens trained on
                 if "atom_count" in aux.keys():
                     if isinstance(aux["atom_count"], torch.Tensor):
-                        self.atoms_seen += aux["atom_count"].detach().item()
+                        self.atoms_seen += aux["atom_count"].item()
                     else:
                         self.atoms_seen += aux["atom_count"]
 
-                loss = loss.detach().item()
-                grad_norm = grad_norm.detach().item()
+                # These tensors were detached and cloned before the step
+                # marker.  Do not create new XLA IR with another detach in
+                # this asynchronous closure.
+                loss = loss.item()
+                grad_norm = grad_norm.item()
 
                 logger.info(
                     "Hours elapsed: %.3f, epoch: %d, step: %d, loss: %.3f, grad_norm: %.3f, trace time: %.0f ms",
@@ -441,7 +446,7 @@ class BaseTrainer:
                 to_wandb = {}
                 for k, v in aux.items():
                     if isinstance(v, torch.Tensor):
-                        to_wandb[k] = v.detach().item()
+                        to_wandb[k] = v.item()
                     else:
                         to_wandb[k] = v
 
@@ -478,7 +483,11 @@ class BaseTrainer:
                 ),
                 run_async=True,
             )
-            xm.mark_step()
+            # Wait for the detached metric clones to receive their sharded
+            # PJRT handles before the asynchronous closure reads them.  The
+            # closure may overlap host-side logging with the next step, but it
+            # must not overlap device production of its inputs.
+            torch_xla.sync(wait=True)
 
             # save checkpoint
             if (step+1) % self.config.trainer.checkpoint_interval == 0:    
