@@ -153,8 +153,8 @@ class HorizonTrainer(BaseTrainer):
         for i in range(horizon_length):
 
             loss = self.inner_fn(
-                maybe_shard_with_gradients(input_ids[:, i]),
-                maybe_shard_with_gradients(assistant_mask[:, i])
+                input_ids[:, i],
+                assistant_mask[:, i]
             )
             aux[f"lm_loss/episode_{i:02d}"] = loss
             total_loss = total_loss + loss

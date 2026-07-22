@@ -82,5 +82,7 @@ max_grad_value: null
 # You can add any additional configuration options for your trainer here
 # They will appear as attributes of config.trainer
 
+input_sharding_spec: [[data, fsdp], null, null]
+
 do_init: true
 init_examples: 4

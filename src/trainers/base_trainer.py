@@ -254,7 +254,8 @@ class BaseTrainer:
             drop_last=True,
         )
         loader = pl.MpDeviceLoader(
-            dataloader, self.device, input_sharding=self.input_sharding_spec
+            dataloader, self.device,
+            input_sharding=self.config.trainer.get("input_sharding_spec", self.input_sharding_spec)
         )
         
         return loader
