@@ -395,13 +395,13 @@ class LlamaModel(nn.Module):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
-        if (
-            not inputs_embeds.requires_grad and 
-            constants.XLA_AVAILABLE and
-            self.training and
-            torch.is_grad_enabled()
-        ):
-            inputs_embeds = inputs_embeds.requires_grad_(True)
+        # if (
+        #     not inputs_embeds.requires_grad and 
+        #     constants.XLA_AVAILABLE and
+        #     self.training and
+        #     torch.is_grad_enabled()
+        # ):
+        #     inputs_embeds = inputs_embeds.requires_grad_(True)
 
         seq_length = inputs_embeds.shape[1]
 
