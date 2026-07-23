@@ -32,6 +32,8 @@ from torchprime.torch_xla_models.attention import AttentionModule
 from utils import constants
 if constants.XLA_AVAILABLE:
     from torchprime.torch_xla_models import offloading
+else:
+    from torch.utils.checkpoint import checkpoint
 from utils.attention_utils import AtttentionProbe
 from utils.loss_utils import lm_loss_fn
 
@@ -373,6 +375,14 @@ class LlamaModel(nn.Module):
         self.rotary_emb = LlamaRotaryEmbedding(
             head_dim=head_dim, rope_theta=config.rope_theta, scaling=rope_scaling
         )
+
+        self.gradient_checkpointing = False
+
+
+    def gradient_checkpointing_enable(self, enable: bool = True):
+        if constants.XLA_AVAILABLE:
+            raise NotImplementedError("Gradient checkpointing is not supported on XLA devices")
+        self.gradient_checkpointing = enable
     
 
     # @xp.trace_me("LlamaModel")
@@ -435,12 +445,28 @@ class LlamaModel(nn.Module):
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
 
         # decoder layers
-        hidden_states = self.layers(
-            inputs_embeds,
-            attention_mask=causal_mask,
-            position_ids=position_ids,
-            position_embeddings=position_embeddings,
-        )
+        if (
+            self.gradient_checkpointing
+            and self.training
+            and torch.is_grad_enabled()
+        ):
+            hidden_states = inputs_embeds
+            for layer in self.layers:
+                hidden_states = checkpoint(
+                    layer,
+                    hidden_states,
+                    attention_mask=causal_mask,
+                    position_ids=position_ids,
+                    position_embeddings=position_embeddings,
+                    use_reentrant=False,
+                )
+        else:
+            hidden_states = self.layers(
+                inputs_embeds,
+                attention_mask=causal_mask,
+                position_ids=position_ids,
+                position_embeddings=position_embeddings,
+            )
 
         if self.do_norm:
             hidden_states = self.norm(hidden_states)
@@ -486,6 +512,10 @@ class LlamaForCausalLM(nn.Module):
                 
         elif isinstance(module, nn.Embedding):
             module.weight.data.normal_(mean=0.0, std=std)
+
+
+    def gradient_checkpointing_enable(self, enable: bool = True):
+        self.model.gradient_checkpointing_enable(enable)
 
 
     # @xp.trace_me("LlamaForCausalLM")
@@ -617,4 +647,3 @@ class LlamaForCausalLM(nn.Module):
                 return samples.squeeze(0)
 
             return samples
-    

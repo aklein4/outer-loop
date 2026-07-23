@@ -9,11 +9,9 @@ defaults:
 type: oloop_lora.OLoopLoRAModel
 
 # HuggingFace URL of the checkpoint to load, or null if initializing from scratch
-pretrained_url: null
-# Step of the checkpoint to load
-pretrained_step: null
-# Whether to strictly enforce that the keys in the checkpoint match the model state dict
-pretrained_strict: null
+pretrained_url: aklein4/Horizon-TPU_baseline
+pretrained_step: 250
+pretrained_strict: false
 
 
 # dtype of the model parameters. Should probably be float32

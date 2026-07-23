@@ -68,7 +68,7 @@ class FastWeight(nn.Module):
         self.base_lr = config.base_lr
         self.momentum_beta = config.momentum_beta
 
-        self.eps = config.rms_norm_eps
+        self.grad_eps = config.grad_rms_eps
         self.scalar_scaler = math.sqrt(self.in_features)
 
         self.momentum_dtype = getattr(torch, config.momentum_dtype)
@@ -160,8 +160,13 @@ class FastWeight(nn.Module):
             update,
             1 - self.momentum_beta
         )
+        to_whiten = torch.lerp(
+            new_momentum,
+            update,
+            1 - self.momentum_beta
+        )
         new_whitened = select_newton_schulz()(
-            new_momentum, eps=self.eps
+            to_whiten, eps=self.grad_eps
         )
 
         # approximates newton_schulz as a linear function:
@@ -342,8 +347,13 @@ class OLoopLoRAModel(LlamaForCausalLM):
             updates,
             1 - ref.momentum_beta
         )
+        to_whitens = torch.lerp(
+            new_momentums,
+            updates,
+            1 - ref.momentum_beta
+        )
         new_whiteneds = select_newton_schulz()(
-            new_momentums, eps=ref.eps
+            to_whitens, eps=ref.grad_eps
         )
 
         # deltas = (

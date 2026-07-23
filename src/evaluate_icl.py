@@ -11,14 +11,14 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
-from collators.cluster import ASSISTANT_MASK_CHAT_TEMPLATE
-from models.ittt.configuration_ittt import ItttConfig
-from models.ittt.modelling_ittt import ItttModel
+from collators.horizon import ASSISTANT_MASK_CHAT_TEMPLATE
+from models import load_checkpoint, load_checkpoint_state
 from utils.import_utils import import_model
 import utils.constants as constants
 
 
-DEFAULT_CHECKPOINT = "aklein4/iTTT-Cluster_horizons-recurrent-elu"
+DEFAULT_CHECKPOINT = "aklein4/Horizon-TPU_alpha"
+DEFAULT_TOKENIZER = "meta-llama/Llama-3.2-1B-Instruct"
 DEFAULT_DATASET = "aklein4/Bitext-SmolLM2-1024-natural-instructions-format"
 
 DEFAULT_NUM_EXAMPLES = [0] + list(2 ** i for i in range(0, 11))  # 0, 1, 2, 4, 8, ..., 1024
@@ -30,6 +30,7 @@ def parse_args():
     parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT)
     parser.add_argument("--checkpoint-steps", type=int, nargs="+", default=None)
     parser.add_argument("--fresh-config", default=None)
+    parser.add_argument("--tokenizer", default=DEFAULT_TOKENIZER)
     parser.add_argument("--base-lrs", type=float, nargs="+", default=None)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--num-examples", type=int, nargs="+", default=DEFAULT_NUM_EXAMPLES)
@@ -48,70 +49,56 @@ def parse_args():
     return parser.parse_args()
 
 
-def step_name(step: int) -> str:
-    return f"step_{step:012d}"
-
-
-def local_checkpoint(checkpoint: str, step: int) -> Path:
-    return Path(constants.LOCAL_DATA_PATH) / Path(checkpoint).name / step_name(step)
-
-
-def load_model(checkpoint: str, step: int, device: torch.device) -> ItttModel:
-    local_path = local_checkpoint(checkpoint, step)
-    if local_path.exists():
-        print(f"Loading {local_path}")
-        config = ItttConfig.from_pretrained(str(local_path))
-        if device.type == "cuda":
-            config._attn_implementation = "flash_attention_2"
-        model = ItttModel.from_pretrained(str(local_path), config=config)
-    else:
-        print(f"Loading {checkpoint}/{step_name(step)}")
-        config = ItttConfig.from_pretrained(checkpoint, subfolder=step_name(step))
-        if device.type == "cuda":
-            config._attn_implementation = "flash_attention_2"
-        model = ItttModel.from_pretrained(checkpoint, subfolder=step_name(step), config=config)
+def load_model(checkpoint: str, step: int, device: torch.device):
+    print(f"Loading {checkpoint} at step {step}")
+    model = load_checkpoint(
+        checkpoint,
+        step,
+        attention_kernel="gpu_flash_attention" if device.type == "cuda" else None,
+    )
 
     model.to(device=device, dtype=torch.float32)
     model.train()
     model.gradient_checkpointing_enable()
-    model.config.use_cache = False
-    model.llama.config.use_cache = False
     for param in model.parameters():
         param.requires_grad_(False)
-    model.llama.model.embed_tokens.requires_grad_(True)
+    model.model.embed_tokens.requires_grad_(True)
     return model
 
 
 def load_fresh_model(config_path: str, base_lr: float | None, device: torch.device):
     config = OmegaConf.load(config_path)
-    model_kwargs = OmegaConf.to_container(config.model.config.kwargs, resolve=True)
     if base_lr is not None:
-        model_kwargs["base_lr"] = base_lr
+        config.base_lr = base_lr
+    config.attention_kernel = "gpu_flash_attention" if device.type == "cuda" else None
 
-    config_class = import_model(config.model.config.type)
-    model_class = import_model(config.model.type)
-    model_config = config_class(**model_kwargs)
-    if device.type == "cuda":
-        model_config._attn_implementation = "flash_attention_2"
+    model_class = import_model(config.type)
 
-    print(f"Loading fresh {config.model.type} from {config_path}")
+    print(f"Loading fresh {config.type} from {config_path}")
     if base_lr is not None:
         print(f"Using base_lr={base_lr:g}")
-    model = model_class(model_config)
+    model = model_class(config)
+
+    if config.pretrained_url is not None:
+        print(f"Loading {config.pretrained_url} at step {config.pretrained_step} with strict={config.pretrained_strict}")
+        model = load_checkpoint_state(
+            model,
+            config.pretrained_url,
+            config.pretrained_step,
+            strict=config.pretrained_strict,
+        )
 
     model.to(device=device, dtype=torch.float32)
     model.train()
     model.gradient_checkpointing_enable()
-    model.config.use_cache = False
-    model.llama.config.use_cache = False
     for param in model.parameters():
         param.requires_grad_(False)
-    model.llama.model.embed_tokens.requires_grad_(True)
+    model.model.embed_tokens.requires_grad_(True)
     return model
 
 
-def load_tokenizer(model: ItttModel):
-    tokenizer = AutoTokenizer.from_pretrained(model.config.base_model)
+def load_tokenizer(tokenizer_url: str):
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_url)
     tokenizer.padding_side = "right"
     tokenizer.chat_template = ASSISTANT_MASK_CHAT_TEMPLATE
     if tokenizer.pad_token_id is None:
@@ -182,22 +169,15 @@ def autocast(device: torch.device, dtype: str):
 
 def make_fns(model, args, device):
     def train_fn(input_ids, assistant_mask, attention_mask, lr_scale):
-        use_embeds = hasattr(model, "bidirectional_forward")
         with autocast(device, args.dtype):
-            outputs = model(input_ids, logits_to_keep=slice(0, -1))
-            loss = adaptation_loss(input_ids, assistant_mask, attention_mask, outputs.logits, args.aux_weight)
-            if use_embeds:
-                with torch.no_grad():
-                    embeds = model.bidirectional_forward(outputs.hidden_states, attention_mask)
+            logits = model(input_ids, logits_to_keep=slice(0, -1))[0]
+            loss = adaptation_loss(input_ids, assistant_mask, attention_mask, logits, args.aux_weight)
         loss.backward()
-        if use_embeds:
-            model.update_state(embeds, attention_mask)
-        else:
-            model.update_state()
+        model.update_state()
 
     def logits_fn(input_ids):
         with autocast(device, args.dtype):
-            return model(input_ids, logits_to_keep=slice(0, -1)).logits
+            return model(input_ids, logits_to_keep=slice(0, -1))[0]
 
     if args.compile:
         train_fn = torch.compile(train_fn, fullgraph=False)
@@ -306,7 +286,7 @@ def evaluate_rows(model, train_fn, logits_fn, tokenizer, rows, args, device):
 
 def save_results(args, label: int | str, results):
     if args.fresh_config is None:
-        path = Path(constants.LOCAL_DATA_PATH) / "icl_results" / ((args.save_name+"/"+args.checkpoint) if args.save_name is not None else args.checkpoint) / f"{label:012d}.json"
+        path = Path(constants.LOCAL_DATA_PATH) / "icl_results" / ((args.save_name+"/"+args.checkpoint.replace("/", "--")) if args.save_name is not None else args.checkpoint.replace("/", "--")) / f"{label:012d}.json"
     else:
         path = Path(constants.LOCAL_DATA_PATH) / "icl_results" / (args.save_name if args.save_name is not None else "fresh") / Path(args.fresh_config).stem / f"{label}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -333,7 +313,7 @@ def main():
     if args.fresh_config is not None:
         for base_lr in args.base_lrs or [None]:
             model = load_fresh_model(args.fresh_config, base_lr, device)
-            tokenizer = load_tokenizer(model)
+            tokenizer = load_tokenizer(args.tokenizer)
             train_fn, logits_fn = make_fns(model, args, device)
             results = evaluate_rows(model, train_fn, logits_fn, tokenizer, rows, args, device)
             save_results(args, lr_label(base_lr, model), results)
@@ -341,7 +321,7 @@ def main():
 
     for step in args.checkpoint_steps:
         model = load_model(args.checkpoint, step, device)
-        tokenizer = load_tokenizer(model)
+        tokenizer = load_tokenizer(args.tokenizer)
         train_fn, logits_fn = make_fns(model, args, device)
         results = evaluate_rows(model, train_fn, logits_fn, tokenizer, rows, args, device)
         save_results(args, step, results)
