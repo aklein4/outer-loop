@@ -151,10 +151,6 @@ class FoItttTrainer(BaseTrainer):
             embeddings.detach()
         )
         embeddings.requires_grad_(True)
-        self.model.set_current_embeddings(
-            embeddings,
-            attention_mask,
-        )
         self.model.set_fast_weight_mode(
             FastWeightMLP.SECOND_PASS
         )
@@ -171,6 +167,8 @@ class FoItttTrainer(BaseTrainer):
             logits = self.model(
                 double_input_ids,
                 logits_to_keep=slice(0, -1),
+                fast_weight_embeddings=embeddings,
+                fast_weight_embedding_mask=attention_mask,
             )[0]
             logits = maybe_shard_with_gradients(
                 logits[:input_ids.shape[0]]
@@ -183,9 +181,11 @@ class FoItttTrainer(BaseTrainer):
             )
 
         loss.backward()
-        embedding_gradient = (
-            self.model.clear_current_embeddings().detach()
-        )
+        if embeddings.grad is None:
+            raise RuntimeError(
+                "no gradient was accumulated in current embeddings"
+            )
+        embedding_gradient = embeddings.grad.detach()
         embedding_gradient = maybe_shard_with_gradients(
             embedding_gradient
         )

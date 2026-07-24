@@ -268,8 +268,6 @@ class FastWeightMLP(nn.Module):
         self.final_grad_buffer: nn.Buffer
 
         self.mode = self.FIRST_PASS
-        self.current_embeddings = None
-        self.current_embedding_mask = None
 
     @torch.no_grad()
     def reset_fast_parameters(self, initializer_range: float):
@@ -325,19 +323,12 @@ class FastWeightMLP(nn.Module):
             raise ValueError(f"unknown fast-weight mode: {mode}")
         self.mode = mode
 
-    def set_current_embeddings(
+    def forward(
         self,
-        embeddings: torch.FloatTensor,
-        embedding_mask: torch.BoolTensor,
-    ):
-        self.current_embeddings = embeddings
-        self.current_embedding_mask = embedding_mask
-
-    def clear_current_embeddings(self):
-        self.current_embeddings = None
-        self.current_embedding_mask = None
-
-    def forward(self, x: torch.FloatTensor) -> torch.FloatTensor:
+        x: torch.FloatTensor,
+        fast_weight_embeddings: torch.FloatTensor | None = None,
+        fast_weight_embedding_mask: torch.BoolTensor | None = None,
+    ) -> torch.FloatTensor:
         base_hidden = (
             self.act_fn(self.gate_proj(x))
             * self.up_proj(x)
@@ -374,16 +365,16 @@ class FastWeightMLP(nn.Module):
             )
         elif self.mode == self.SECOND_PASS:
             if (
-                self.current_embeddings is None
-                or self.current_embedding_mask is None
+                fast_weight_embeddings is None
+                or fast_weight_embedding_mask is None
             ):
                 raise RuntimeError(
                     "second pass requires current learning-rate embeddings"
                 )
 
             learning_rate = self.get_lr(
-                self.current_embeddings,
-                self.current_embedding_mask,
+                fast_weight_embeddings,
+                fast_weight_embedding_mask,
             )
             remaining_gradient = (
                 self.final_grad_buffer
@@ -478,8 +469,6 @@ class FoItttModel(LlamaForCausalLM):
                 )
                 layer.mlp = fast_mlp
 
-        self.current_embeddings = None
-
     def _layer_mlp(self, layer) -> FastWeightMLP:
         try:
             return layer.get_submodule("mlp")
@@ -497,32 +486,6 @@ class FoItttModel(LlamaForCausalLM):
     def set_fast_weight_mode(self, mode: str):
         for module in self._fast_weight_mlps():
             module.set_mode(mode)
-
-    def set_current_embeddings(
-        self,
-        embeddings: torch.FloatTensor,
-        embedding_mask: torch.BoolTensor,
-    ):
-        self.current_embeddings = embeddings
-        for module in self._fast_weight_mlps():
-            module.set_current_embeddings(
-                embeddings,
-                embedding_mask,
-            )
-
-    def clear_current_embeddings(self) -> torch.FloatTensor:
-        if self.current_embeddings is None:
-            raise RuntimeError("current embeddings have not been set")
-        if self.current_embeddings.grad is None:
-            raise RuntimeError(
-                "no gradient was accumulated in current embeddings"
-            )
-
-        embedding_gradient = self.current_embeddings.grad
-        self.current_embeddings = None
-        for module in self._fast_weight_mlps():
-            module.clear_current_embeddings()
-        return embedding_gradient
 
     def bidirectional_forward(
         self,
@@ -611,9 +574,7 @@ class FoItttModel(LlamaForCausalLM):
 
     @torch.no_grad()
     def empty_state(self):
-        self.current_embeddings = None
         for module in self._fast_weight_mlps():
-            module.clear_current_embeddings()
             module.state.zero_()
             module.grad_buffer.zero_()
             module.grad_buffer.grad.zero_()
