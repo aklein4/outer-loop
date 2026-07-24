@@ -21,6 +21,17 @@ class FoItttTrainer(BaseTrainer):
             module.fast_p_r.no_muon = True
             module.fast_p_l.no_muon = True
 
+    def _backward_fast_weight_gradients(self, loss):
+        grad_buffers = tuple(
+            module.grad_buffer
+            for module in self.model._fast_weight_mlps()
+        )
+        if grad_buffers:
+            torch.autograd.backward(
+                loss,
+                inputs=grad_buffers,
+            )
+
     def get_trainable_parameters(self, model):
         slow = []
         fast = []
@@ -102,7 +113,7 @@ class FoItttTrainer(BaseTrainer):
                 logits,
             )
 
-        loss.backward()
+        self._backward_fast_weight_gradients(loss)
 
         with torch.no_grad():
             with torch.autocast(
@@ -151,7 +162,7 @@ class FoItttTrainer(BaseTrainer):
                 logits,
             )
 
-        loss.backward()
+        self._backward_fast_weight_gradients(loss)
         self.model.accumulate_gradients()
         self.model.finalize_gradients()
         self.model.zero_grad(set_to_none=False)
