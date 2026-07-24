@@ -1,247 +1,326 @@
-"""
-This is an old version of the iTTT architecture that computes some of the higher order gradients.
-
-Left here for reference.
-"""
-
 import torch
-
+import torch.nn.functional as F
 import torch_xla
 
+from models.fo_ittt import FastWeightMLP, FoItttModel
 from trainers.base_trainer import BaseTrainer
-from models.fo_ittt import FoItttModel
-from utils.loss_utils import lm_loss_fn
-import utils.constants as constants
 from utils.logging_utils import master_print
 from utils.sharding_utils import maybe_shard_with_gradients
 
 
 class FoItttTrainer(BaseTrainer):
-    
     model: FoItttModel
 
-
     def post_init(self):
-        self.model.model.embed_tokens.weight.no_muon = True
-        try:
-            self.model.lm_head.weight.no_muon = True
-        except:
-            # ShardedModule
-            self.model.lm_head._orig_mod.weight.no_muon = True
-
         self.model.init_state(
-            self.global_batch_size, self.device
+            self.global_batch_size,
+            self.device,
         )
+        for module in self.model._fast_weight_mlps():
+            module.fast_log_lr.no_muon = True
 
+    def get_trainable_parameters(self, model):
+        slow = []
+        fast = []
+        embeddings = []
 
-    def loss(self, labels, logits):
-        return lm_loss_fn(
-            logits, labels,
-            ignore_index=self.model.config.pad_token_id,
-            shift_logits=False,
-        )
+        for name, parameter in model.named_parameters():
+            if (
+                "embed_tokens" in name
+                or "lm_head" in name
+            ):
+                embeddings.append(parameter)
+            elif (
+                "fast" in name
+                or "embedding_norm" in name
+                or "bidirectional_head" in name
+            ):
+                fast.append(parameter)
+            else:
+                slow.append(parameter)
 
+        parameters = {
+            "slow": slow,
+            "fast": fast,
+            "embeddings": embeddings,
+        }
+        if (
+            "embeddings"
+            not in self.config.trainer.multiple_optimizers
+        ):
+            parameters.pop("embeddings")
+        return parameters
+
+    def loss(
+        self,
+        input_ids: torch.LongTensor,
+        assistant_mask: torch.BoolTensor,
+        logits: torch.FloatTensor,
+    ):
+        labels = input_ids[:, 1:].contiguous()
+        output_mask = assistant_mask[:, 1:].float().contiguous()
+
+        losses = F.cross_entropy(
+            logits.contiguous().view(-1, logits.shape[-1]),
+            labels.view(-1),
+            reduction="none",
+        ).view_as(labels)
+
+        output_loss = (
+            (losses * output_mask).sum(dim=-1)
+            / output_mask.sum(dim=-1).clamp_min(1.0)
+        ).mean()
+
+        return output_loss
 
     @torch_xla.compile(full_graph=True)
-    def first_chunk(self, chunk):
+    def first_pass(
+        self,
+        input_ids,
+        assistant_mask,
+        attention_mask,
+    ):
+        self.model.set_fast_weight_mode(
+            FastWeightMLP.FIRST_PASS
+        )
 
         with torch.autocast(
             "xla",
             dtype=torch.bfloat16,
             enabled=self.config.trainer.use_autocast,
         ):
+            logits, _, hidden_states = self.model(
+                input_ids,
+                logits_to_keep=slice(0, -1),
+                return_states=True,
+            )
+            loss = self.loss(
+                input_ids,
+                assistant_mask,
+                logits,
+            )
 
-            logits = self.model(
-                chunk,
-                logits_to_keep=slice(0, -1)
-            )[0]
-            loss = self.loss(chunk, logits)
+            with torch.no_grad():
+                embeddings = self.model.bidirectional_forward(
+                    hidden_states,
+                    attention_mask,
+                )
 
         loss.backward()
-        self.model.update_state()
+
+        with torch.autocast(
+            "xla",
+            dtype=torch.bfloat16,
+            enabled=self.config.trainer.use_autocast,
+        ):
+            self.model.update_state(
+                embeddings,
+                attention_mask,
+            )
 
         return loss
 
-    
     @torch_xla.compile(full_graph=True)
-    def first_chunk_second_pass(self, chunk):
-
-        self.model.set_second_pass(True)
+    def begin_second_pass(self):
         self.model.finalize_gradients()
         self.model.zero_grad(set_to_none=False)
 
-        double_chunk = chunk.repeat(2, 1)
-        double_chunk = maybe_shard_with_gradients(double_chunk)
-
-        with torch.autocast(
-            "xla",
-            dtype=torch.bfloat16,
-            enabled=self.config.trainer.use_autocast,
-        ):
-
-            logits = self.model(
-                double_chunk,
-                logits_to_keep=slice(0, -1)
-            )[0]
-
-            logits = logits[:logits.shape[0]//2]
-            logits = maybe_shard_with_gradients(logits)
-
-            loss = self.loss(chunk, logits)
-
-        loss.backward()
-        self.model.update_state()
-
-        return loss
-
-
     @torch_xla.compile(full_graph=True)
-    def looped_chunks(self, in_chunk, out_chunk):
+    def second_pass(
+        self,
+        input_ids,
+        assistant_mask,
+        attention_mask,
+    ):
+        self.model.set_fast_weight_mode(FastWeightMLP.PLAIN)
 
-        all_chunk = torch.cat([in_chunk, out_chunk], dim=-1)
+        with torch.no_grad():
+            with torch.autocast(
+                "xla",
+                dtype=torch.bfloat16,
+                enabled=self.config.trainer.use_autocast,
+            ):
+                embeddings = self.model.embedding_forward(
+                    input_ids,
+                    attention_mask,
+                )
+
+        embeddings = maybe_shard_with_gradients(
+            embeddings.detach()
+        )
+        embeddings.requires_grad_(True)
+        self.model.set_current_embeddings(
+            embeddings,
+            attention_mask,
+        )
+        self.model.set_fast_weight_mode(
+            FastWeightMLP.SECOND_PASS
+        )
+
+        double_input_ids = maybe_shard_with_gradients(
+            input_ids.repeat(2, 1)
+        )
 
         with torch.autocast(
             "xla",
             dtype=torch.bfloat16,
             enabled=self.config.trainer.use_autocast,
         ):
-
             logits = self.model(
-                all_chunk,
-                logits_to_keep=slice(in_chunk.shape[-1]-1, -1)
+                double_input_ids,
+                logits_to_keep=slice(0, -1),
             )[0]
+            logits = maybe_shard_with_gradients(
+                logits[:input_ids.shape[0]]
+            )
+
             loss = self.loss(
-                all_chunk[:, in_chunk.shape[-1]-1:],
-                logits
+                input_ids,
+                assistant_mask,
+                logits,
             )
 
         loss.backward()
-        self.model.update_state()
+        embedding_gradient = (
+            self.model.clear_current_embeddings().detach()
+        )
+        embedding_gradient = maybe_shard_with_gradients(
+            embedding_gradient
+        )
 
-        return loss
-    
+        # Recompute the same pre-update embedding graph. This propagates the
+        # adaptive-learning-rate gradient through both the bidirectional head
+        # and the entire causal backbone.
+        self.model.set_fast_weight_mode(FastWeightMLP.PLAIN)
+        with torch.autocast(
+            "xla",
+            dtype=torch.bfloat16,
+            enabled=self.config.trainer.use_autocast,
+        ):
+            propagated_embeddings = self.model.embedding_forward(
+                input_ids,
+                attention_mask,
+            )
+            embedding_loss = (
+                propagated_embeddings
+                * embedding_gradient.to(
+                    propagated_embeddings.dtype
+                )
+            ).sum()
 
-    @torch_xla.compile(full_graph=True)
-    def looped_chunks_second_pass(self, in_chunk, out_chunk):
-
-        all_chunk = torch.cat([in_chunk, out_chunk], dim=-1)
-
-        double_all_chunk = all_chunk.repeat(2, 1)
-        double_all_chunk = maybe_shard_with_gradients(double_all_chunk)
+        embedding_loss.backward()
 
         with torch.autocast(
             "xla",
             dtype=torch.bfloat16,
             enabled=self.config.trainer.use_autocast,
         ):
-
-            logits = self.model(
-                double_all_chunk,
-                logits_to_keep=slice(in_chunk.shape[-1]-1, -1)
-            )[0]
-
-            logits = logits[:logits.shape[0]//2]
-            logits = maybe_shard_with_gradients(logits)
-
-            loss = self.loss(
-                all_chunk[:, in_chunk.shape[-1]-1:],
-                logits
+            self.model.update_state(
+                embeddings,
+                attention_mask,
             )
 
-        loss.backward()
-        self.model.update_state()
-
-        return loss
-
+        return embedding_loss
 
     @torch_xla.compile(full_graph=True)
     def post_forward(self):
-
-        err = self.model.relative_grad_error()
-
-        # clear state
+        relative_grad_error = self.model.relative_grad_error()
         self.model.empty_state()
 
-        # regular optimization step
         grad_norm = self.clip_gradients()
+        metrics = self.optimization_step()
 
-        aux = self.optimizers['main'].step()       
         self.model.zero_grad(set_to_none=False)
-
-        aux['lr'] = self.lr_schedulers['main'].get_last_lr()[0]
-        self.lr_schedulers['main'].step()
-
-        aux["relative_grad_error"] = err
-
-        return aux, grad_norm
-
-
-    def train_step(self, batch):
-
-        input_ids: torch.LongTensor = batch["input_ids"]
-        chunks = torch.split(
-            input_ids, self.config.model.chunk_size,
-            dim=-1
+        self.model.set_fast_weight_mode(
+            FastWeightMLP.FIRST_PASS
         )
 
-        # perform the first pass
-        self.model.set_second_pass(False)
-        
-        self.first_chunk(chunks[0])
-        torch_xla.sync()
-        master_print("First chunk 00 completed.")
+        metrics["relative_grad_error"] = (
+            relative_grad_error
+        )
+        return metrics, grad_norm
 
-        for i in range(1, len(chunks)):
-            in_chunk = chunks[i-1]
-            out_chunk = chunks[i]
-            
-            self.looped_chunks(in_chunk, out_chunk)
-            torch_xla.sync()
+    def train_step(self, batch):
+        input_ids: torch.LongTensor = batch["input_ids"]
+        assistant_mask: torch.BoolTensor = batch[
+            "assistant_mask"
+        ]
+        attention_mask: torch.BoolTensor = batch[
+            "attention_mask"
+        ]
 
-            master_print(f"First chunk {i:02d} completed.")
-        
-        # perform the second pass
-        total_loss = self.first_chunk_second_pass(chunks[0])
-        aux = {
-            "lm_loss/chunk_00": total_loss,
-        }
-        torch_xla.sync()
-        master_print("Second chunk 00 completed.")
+        if input_ids.ndim != 3:
+            raise ValueError(
+                "input_ids must have shape "
+                "[batch, horizon, sequence]"
+            )
+        if (
+            assistant_mask.shape != input_ids.shape
+            or attention_mask.shape != input_ids.shape
+        ):
+            raise ValueError(
+                "assistant_mask and attention_mask must match "
+                "input_ids"
+            )
 
-        # remaining chunks
-        for i in range(1, len(chunks)):
-            in_chunk = chunks[i-1]
-            out_chunk = chunks[i]
-            
-            loss = self.looped_chunks_second_pass(in_chunk, out_chunk)
+        horizon_length = input_ids.shape[1]
+        self.model.empty_state()
 
-            aux[f"lm_loss/chunk_{i:02d}"] = loss
+        total_loss = 0.0
+        metrics = {}
+
+        for index in range(horizon_length):
+            loss = self.first_pass(
+                input_ids[:, index],
+                assistant_mask[:, index],
+                attention_mask[:, index],
+            )
+            torch_xla.sync(wait=True)
+
+            metrics[
+                f"lm_loss/episode_{index:02d}"
+            ] = loss
             total_loss = total_loss + loss
-            torch_xla.sync()
-            master_print(f"Second chunk {i:02d} completed.")
 
-        post_aux, grad_norm = self.post_forward()
-        aux.update(post_aux)
+            master_print(
+                f"First-pass horizon {index:02d} completed."
+            )
 
-        # finalize outputs
-        final_loss = total_loss / len(chunks)
-        aux["atom_count"] = input_ids.numel()
+        self.begin_second_pass()
+        torch_xla.sync(wait=True)
+
+        for index in range(horizon_length):
+            self.second_pass(
+                input_ids[:, index],
+                assistant_mask[:, index],
+                attention_mask[:, index],
+            )
+            torch_xla.sync(wait=True)
+            master_print(
+                f"Second-pass horizon {index:02d} completed."
+            )
+
+        post_metrics, grad_norm = self.post_forward()
+        torch_xla.sync(wait=True)
+        metrics.update(post_metrics)
+
+        final_loss = total_loss / horizon_length
+        metrics["all_loss"] = final_loss
+        metrics["atom_count"] = attention_mask.long().sum()
 
         decades = {}
-        for key, value in aux.items():
+        for key, value in metrics.items():
+            if "episode_" not in key or key.endswith("00"):
+                continue
 
-            if "chunk_" in key:
-                if key.endswith("00"):
-                    continue
-
-                decade = int(key.split("_")[-1][0])
-
-                if decade not in decades:
-                    decades[decade] = []
-                decades[decade].append(value)
+            decade = int(key.rsplit("_", maxsplit=1)[-1][0])
+            decades.setdefault(decade, []).append(
+                value
+            )
 
         for decade, values in decades.items():
-            aux[f"grouped_lm_loss/decade_{decade:02d}"] = torch.stack(values).mean()
+            metrics[
+                f"grouped_lm_loss/decade_{decade:02d}"
+            ] = torch.stack(values).mean()
 
-        return final_loss, aux, grad_norm
-    
+        return final_loss, metrics, grad_norm

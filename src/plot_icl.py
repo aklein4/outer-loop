@@ -11,12 +11,13 @@ from utils import constants
 BASE_PATH = os.path.join(constants.LOCAL_DATA_PATH, "icl_results")
 
 RUNS = {
-    "OLoop": "aklein4--Horizon-TPU_alpha/000000000250.json",
+    "OLoop 250": "aklein4--Horizon-TPU_alpha/000000000250.json",
+    "OLoop 500": "aklein4--Horizon-TPU_alpha/000000000500.json",
     "LoRA (1e-5)": "fresh/oloop-lora-llama3p2-1b-pre/base_lr_1e-05.json",
     "LoRA (3e-5)": "fresh/oloop-lora-llama3p2-1b-pre/base_lr_3e-05.json",
     "LoRA (1e-4)": "fresh/oloop-lora-llama3p2-1b-pre/base_lr_1e-04.json",
     "LoRA (3e-4)": "fresh/oloop-lora-llama3p2-1b-pre/base_lr_3e-04.json",
-    "LoRA (1e-3)": "fresh/oloop-lora-llama3p2-1b-pre/base_lr_1e-03.json",
+    # "LoRA (1e-3)": "fresh/oloop-lora-llama3p2-1b-pre/base_lr_1e-03.json",
 }
 
 

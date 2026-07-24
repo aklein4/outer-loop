@@ -1,0 +1,9 @@
+defaults:
+  - fo-ittt-llama3p2-1b
+  - _self_
+
+
+# This checkpoint was created using scripts/convert_hf_checkpoint.py
+pretrained_url: aklein4/Llama-3.2-1B-TPU
+pretrained_step: 0
+pretrained_strict: false

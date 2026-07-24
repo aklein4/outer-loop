@@ -1,0 +1,21 @@
+advanced:
+
+  - name: self
+    settings:
+      activation_checkpoint_layers:
+        - LlamaDecoderLayer
+      optimization_barrier_layers:
+        - LlamaDecoderLayer
+      scan_layers: model.layers
+      offload_tensors:
+        - decoder_input
+
+  - name: bidirectional_head
+    settings:
+      activation_checkpoint_layers:
+        - BidirectionalDecoderLayer
+      optimization_barrier_layers:
+        - BidirectionalDecoderLayer
+      scan_layers: layers
+      offload_tensors:
+        - bidirectional_head_input

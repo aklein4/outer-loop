@@ -1,0 +1,10 @@
+# See docs/sharding.md for more details about sharding configuration.
+
+# Parameters use the repository's default implied FSDP placement.
+
+
+# Activations
+model.layers.*: [[data, fsdp], null, null]
+lm_head: [[data, fsdp], null, null]
+
+bidirectional_head.layers.*: [[data, fsdp], null, null]
