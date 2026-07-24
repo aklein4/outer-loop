@@ -319,23 +319,25 @@ class FoItttTrainer(BaseTrainer):
                 "input_ids"
             )
 
-        horizon_length = input_ids.shape[1]
+        input_episodes = input_ids.unbind(dim=1)
+        assistant_episodes = assistant_mask.unbind(dim=1)
+        attention_episodes = attention_mask.unbind(dim=1)
+        horizon_length = len(input_episodes)
 
-        total_loss = 0.0
+        losses = []
         metrics = {}
 
         for index in range(horizon_length - 1):
             loss = self.first_pass(
-                input_ids[:, index],
-                assistant_mask[:, index],
-                attention_mask[:, index],
+                input_episodes[index],
+                assistant_episodes[index],
+                attention_episodes[index],
             )
-            torch_xla.sync(wait=True)
 
             metrics[
                 f"lm_loss/episode_{index:02d}"
             ] = loss
-            total_loss = total_loss + loss
+            losses.append(loss)
 
             master_print(
                 f"First-pass horizon {index:02d} completed."
@@ -343,41 +345,38 @@ class FoItttTrainer(BaseTrainer):
 
         terminal_index = horizon_length - 1
         loss = self.terminal_first_pass(
-            input_ids[:, terminal_index],
-            assistant_mask[:, terminal_index],
+            input_episodes[terminal_index],
+            assistant_episodes[terminal_index],
         )
-        torch_xla.sync(wait=True)
         metrics[
             f"lm_loss/episode_{terminal_index:02d}"
         ] = loss
-        total_loss = total_loss + loss
+        losses.append(loss)
         master_print(
             f"First-pass horizon {terminal_index:02d} completed."
         )
 
         for index in range(horizon_length - 1):
             self.second_pass(
-                input_ids[:, index],
-                assistant_mask[:, index],
-                attention_mask[:, index],
+                input_episodes[index],
+                assistant_episodes[index],
+                attention_episodes[index],
             )
-            torch_xla.sync(wait=True)
             master_print(
                 f"Second-pass horizon {index:02d} completed."
             )
 
         post_metrics, grad_norm = self.terminal_second_pass(
-            input_ids[:, terminal_index],
-            assistant_mask[:, terminal_index],
+            input_episodes[terminal_index],
+            assistant_episodes[terminal_index],
         )
-        torch_xla.sync(wait=True)
         master_print(
             f"Second-pass horizon {terminal_index:02d} completed."
         )
 
         metrics.update(post_metrics)
 
-        final_loss = total_loss / horizon_length
+        final_loss = torch.stack(losses).mean()
         metrics["all_loss"] = final_loss
         metrics["atom_count"] = attention_mask.long().sum()
 
