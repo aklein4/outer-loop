@@ -37,7 +37,7 @@ multiple_optimizers:
     lr_scheduler:
       type: warmup_stable_decay
 
-      num_warmup_steps: 100
+      num_warmup_steps: 50
       kwargs:
         num_stable_steps: 1000000 # Currently never decays
         num_decay_steps: 2500
@@ -60,7 +60,7 @@ multiple_optimizers:
     lr_scheduler:
       type: warmup_stable_decay
 
-      num_warmup_steps: 100
+      num_warmup_steps: 50
       kwargs:
         num_stable_steps: 1000000 # Currently never decays
         num_decay_steps: 2500

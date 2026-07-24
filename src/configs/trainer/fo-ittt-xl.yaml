@@ -2,5 +2,6 @@ defaults:
   - horizon-xl
   - _self_
 
+global_batch_size: 128
 
 type: fo_ittt_trainer.FoItttTrainer
