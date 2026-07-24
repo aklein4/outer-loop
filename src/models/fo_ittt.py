@@ -191,6 +191,10 @@ class UnitGLU(nn.Module):
     def forward(self, x, gate):
         return x * F.silu(gate) / 0.6
 
+class StandardGLU(nn.Module):
+    def forward(self, x, gate):
+        return x * F.silu(gate)
+
 
 class FastWeightMLP(nn.Module):
     FIRST_PASS = "first"
@@ -210,7 +214,7 @@ class FastWeightMLP(nn.Module):
         self.scalar_scaler = math.sqrt(self.hidden_size)
 
         self.act_fn = ACT2FN[config.hidden_act]
-        self.fast_act_fn = UnitGLU()
+        self.fast_act_fn = StandardGLU()
 
         self.gate_proj = nn.Linear(
             self.hidden_size,
@@ -500,7 +504,7 @@ class FoItttModel(LlamaForCausalLM):
 
         with torch.no_grad():
             for mlp in self._fast_weight_mlps():
-                
+
                 fast_weight_size = mlp.fast_weight_size
                 if fast_weight_size > mlp.intermediate_size:
                     raise ValueError(
