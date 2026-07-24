@@ -11,7 +11,7 @@ global_batch_size: 256 # ~16M tokens total
 max_steps: 1000000
 
 # Save a checkpoint every N steps
-checkpoint_interval: 250
+checkpoint_interval: 100
 
 
 # whether to autocast the forward pass and loss computation.
@@ -84,5 +84,5 @@ max_grad_value: null
 
 input_sharding_spec: [[data, fsdp], null, null]
 
-do_init: true
+do_init: false
 init_examples: 4

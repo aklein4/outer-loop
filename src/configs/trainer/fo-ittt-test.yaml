@@ -1,8 +1,0 @@
-defaults:
-  - oloop-test
-  - _self_
-
-
-type: fo_ittt_trainer.FoItttTrainer
-
-input_sharding_spec: [[data, fsdp], null, null]
