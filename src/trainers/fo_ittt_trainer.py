@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 import torch_xla
+import torch_xla.core.xla_model as xm
 
 from models.fo_ittt import FastWeightMLP, FoItttModel
 from trainers.base_trainer import BaseTrainer
@@ -18,19 +19,8 @@ class FoItttTrainer(BaseTrainer):
         )
         for module in self.model._fast_weight_mlps():
             module.fast_log_lr.no_muon = True
-            module.fast_p_r.no_muon = True
-            module.fast_p_l.no_muon = True
-
-    def _backward_fast_weight_gradients(self, loss):
-        grad_buffers = tuple(
-            module.grad_buffer
-            for module in self.model._fast_weight_mlps()
-        )
-        if grad_buffers:
-            torch.autograd.backward(
-                loss,
-                inputs=grad_buffers,
-            )
+            module.fast_p_r.weight.no_muon = True
+            module.fast_p_l.weight.no_muon = True
 
     def get_trainable_parameters(self, model):
         slow = []
@@ -64,111 +54,167 @@ class FoItttTrainer(BaseTrainer):
             parameters.pop("embeddings")
         return parameters
 
-    def loss(
+
+    def _logit_iteration_loss_and_gradient(
         self,
-        input_ids: torch.LongTensor,
-        assistant_mask: torch.BoolTensor,
-        logits: torch.FloatTensor,
+        hidden_states: torch.FloatTensor,
+        labels: torch.LongTensor,
+        token_weights: torch.FloatTensor,
     ):
-        labels = input_ids[:, 1:].contiguous()
-        output_mask = assistant_mask[:, 1:].float().contiguous()
-
-        losses = F.cross_entropy(
-            logits.contiguous().view(-1, logits.shape[-1]),
-            labels.view(-1),
-            reduction="none",
-        ).view_as(labels)
-
-        output_loss = (
-            (losses * output_mask).sum(dim=-1)
-            / output_mask.sum(dim=-1).clamp_min(1.0)
-        ).mean()
-
-        return output_loss
-
-    @torch_xla.compile(full_graph=True)
-    def first_pass(
-        self,
-        input_ids,
-        assistant_mask,
-        attention_mask,
-    ):
-        self.model.set_fast_weight_mode(
-            FastWeightMLP.FIRST_PASS
+        num_iterations = self.config.trainer.num_logit_iterations
+        hidden_states = hidden_states.detach().reshape(
+            -1,
+            num_iterations,
+            hidden_states.shape[-1],
         )
+        labels = labels.reshape(
+            -1,
+            num_iterations,
+        )
+        token_weights = token_weights.reshape(
+            -1,
+            num_iterations,
+        )
+        hidden_states = maybe_shard_with_gradients(hidden_states)
+        labels = maybe_shard_with_gradients(labels)
+        token_weights = maybe_shard_with_gradients(token_weights)
+        hidden_states.requires_grad_(True)
 
-        with torch.autocast(
-            "xla",
-            dtype=torch.bfloat16,
-            enabled=self.config.trainer.use_autocast,
-        ):
-            logits, _, hidden_states = self.model(
-                input_ids,
-                logits_to_keep=slice(0, -1),
-                return_states=True,
-            )
-            loss = self.loss(
-                input_ids,
-                assistant_mask,
-                logits,
-            )
+        losses = []
+        for i in range(num_iterations):
+            hs = hidden_states[:, i].contiguous()
 
-        self._backward_fast_weight_gradients(loss)
-
-        with torch.no_grad():
             with torch.autocast(
                 "xla",
                 dtype=torch.bfloat16,
                 enabled=self.config.trainer.use_autocast,
             ):
-                embeddings = self.model.bidirectional_forward(
-                    hidden_states,
-                    attention_mask,
+                lm_states = self.model.model.norm(hs)
+                logits = self.model.lm_head(lm_states).float()
+                token_losses = F.cross_entropy(
+                    logits,
+                    labels[:, i],
+                    reduction="none",
                 )
+                loss = (
+                    token_losses
+                    * token_weights[:, i]
+                ).sum()
 
-        with torch.autocast(
-            "xla",
-            dtype=torch.bfloat16,
-            enabled=self.config.trainer.use_autocast,
-        ):
-            self.model.update_state(
-                embeddings,
-                attention_mask,
+            xm.optimization_barrier_([loss])
+
+            losses.append(loss.detach())
+            loss.backward()
+
+        return (
+            torch.stack(losses).sum(),
+            hidden_states.grad.detach(),
+        )
+
+    def loss_and_hidden_gradient(
+        self,
+        input_ids: torch.LongTensor,
+        assistant_mask: torch.BoolTensor,
+        hidden_states: torch.FloatTensor,
+    ):
+        batch_size = hidden_states.shape[0]
+        num_iterations = (
+            self.config.trainer.num_logit_iterations
+        )
+        token_count = hidden_states.numel() // hidden_states.shape[-1]
+        if token_count % num_iterations != 0:
+            raise ValueError(
+                "the number of loss tokens must be divisible by "
+                "trainer.num_logit_iterations"
+            )
+        iteration_size = token_count // num_iterations
+        if iteration_size % self.logit_batch_shards != 0:
+            raise ValueError(
+                "each logit iteration must be divisible by the "
+                "number of data/FSDP shards"
             )
 
-        return loss
+        output_mask = assistant_mask[:, 1:].float()
+        token_weights = (
+            output_mask
+            / output_mask.sum(dim=-1, keepdim=True).clamp_min(1.0)
+            / batch_size
+        )
 
-    @torch_xla.compile(full_graph=True)
-    def terminal_first_pass(
+        loss, hidden_gradient = (
+            self._logit_iteration_loss_and_gradient(
+                hidden_states,
+                input_ids[:, 1:],
+                token_weights,
+            )
+        )
+        hidden_gradient = maybe_shard_with_gradients(
+            hidden_gradient.reshape_as(hidden_states)
+        )
+        return loss, hidden_gradient
+
+    def first_pass(
         self,
         input_ids,
         assistant_mask,
+        attention_mask,
+        update_state=True,
     ):
         self.model.set_fast_weight_mode(
             FastWeightMLP.FIRST_PASS
         )
+
         with torch.autocast(
             "xla",
             dtype=torch.bfloat16,
             enabled=self.config.trainer.use_autocast,
         ):
-            logits = self.model(
-                input_ids,
-                logits_to_keep=slice(0, -1),
-            )[0]
-            loss = self.loss(
-                input_ids,
-                assistant_mask,
-                logits,
+            hidden_states = self.model.model(
+                input_ids=input_ids,
+            )
+            loss, hidden_gradient = (
+                self.loss_and_hidden_gradient(
+                    input_ids,
+                    assistant_mask,
+                    hidden_states[:, :-1],
+                )
             )
 
-        self._backward_fast_weight_gradients(loss)
-        self.model.accumulate_gradients()
-        self.model.finalize_gradients()
-        self.model.zero_grad(set_to_none=False)
+        grad_buffers = tuple(
+            module.grad_buffer
+            for module in self.model._fast_weight_mlps()
+        )
+        if grad_buffers:
+            torch.autograd.backward(
+                hidden_states[:, :-1],
+                hidden_gradient,
+                inputs=grad_buffers,
+            )
+
+        if update_state:
+            with torch.no_grad():
+                with torch.autocast(
+                    "xla",
+                    dtype=torch.bfloat16,
+                    enabled=self.config.trainer.use_autocast,
+                ):
+                    embeddings = self.model.bidirectional_forward(
+                        hidden_states,
+                        attention_mask,
+                    )
+
+            with torch.autocast(
+                "xla",
+                dtype=torch.bfloat16,
+                enabled=self.config.trainer.use_autocast,
+            ):
+                self.model.update_state(
+                    embeddings,
+                    attention_mask,
+                )
+
         return loss
 
-    @torch_xla.compile(full_graph=True)
     def second_pass(
         self,
         input_ids,
@@ -207,20 +253,25 @@ class FoItttTrainer(BaseTrainer):
             dtype=torch.bfloat16,
             enabled=self.config.trainer.use_autocast,
         ):
-            logits = self.model.second_pass_forward(
+            loss_hidden_states = self.model.second_pass_forward(
                 double_input_ids,
                 embeddings,
                 attention_mask,
                 logits_to_keep=slice(0, -1),
             )
 
-            loss = self.loss(
-                input_ids,
-                assistant_mask,
-                logits,
+            _, hidden_gradient = (
+                self.loss_and_hidden_gradient(
+                    input_ids,
+                    assistant_mask,
+                    loss_hidden_states,
+                )
             )
 
-        loss.backward()
+        torch.autograd.backward(
+            loss_hidden_states,
+            hidden_gradient,
+        )
         if embeddings.grad is None:
             raise RuntimeError(
                 "no gradient was accumulated in current embeddings"
@@ -254,46 +305,13 @@ class FoItttTrainer(BaseTrainer):
         return embedding_loss
 
     @torch_xla.compile(full_graph=True)
-    def terminal_second_pass(
-        self,
-        input_ids,
-        assistant_mask,
-    ):
-        self.model.set_fast_weight_mode(
-            FastWeightMLP.FIRST_PASS
-        )
-        with torch.autocast(
-            "xla",
-            dtype=torch.bfloat16,
-            enabled=self.config.trainer.use_autocast,
-        ):
-            logits = self.model(
-                input_ids,
-                logits_to_keep=slice(0, -1),
-            )[0]
-            loss = self.loss(
-                input_ids,
-                assistant_mask,
-                logits,
-            )
-
-        loss.backward()
-        self.model.accumulate_gradients()
-
-        relative_grad_error = self.model.relative_grad_error()
+    def post_forward(self):
         self.model.empty_state()
 
         grad_norm = self.clip_gradients()
         metrics = self.optimization_step()
 
         self.model.zero_grad(set_to_none=False)
-        self.model.set_fast_weight_mode(
-            FastWeightMLP.FIRST_PASS
-        )
-
-        metrics["relative_grad_error"] = (
-            relative_grad_error
-        )
         return metrics, grad_norm
 
     def train_step(self, batch):
@@ -344,10 +362,16 @@ class FoItttTrainer(BaseTrainer):
             )
 
         terminal_index = horizon_length - 1
-        loss = self.terminal_first_pass(
+        loss = self.first_pass(
             input_episodes[terminal_index],
             assistant_episodes[terminal_index],
+            attention_episodes[terminal_index],
+            update_state=False,
         )
+        self.model.accumulate_gradients()
+        self.model.finalize_gradients()
+        self.model.zero_grad(set_to_none=False)
+
         metrics[
             f"lm_loss/episode_{terminal_index:02d}"
         ] = loss
@@ -366,9 +390,38 @@ class FoItttTrainer(BaseTrainer):
                 f"Second-pass horizon {index:02d} completed."
             )
 
-        post_metrics, grad_norm = self.terminal_second_pass(
-            input_episodes[terminal_index],
-            assistant_episodes[terminal_index],
+        self.model.set_fast_weight_mode(
+            FastWeightMLP.FIRST_PASS
+        )
+        with torch.autocast(
+            "xla",
+            dtype=torch.bfloat16,
+            enabled=self.config.trainer.use_autocast,
+        ):
+            hidden_states = self.model.model(
+                input_ids=input_episodes[terminal_index],
+            )
+            _, hidden_gradient = (
+                self.loss_and_hidden_gradient(
+                    input_episodes[terminal_index],
+                    assistant_episodes[terminal_index],
+                    hidden_states[:, :-1],
+                )
+            )
+
+        torch.autograd.backward(
+            hidden_states[:, :-1],
+            hidden_gradient,
+        )
+        self.model.accumulate_gradients()
+        relative_grad_error = self.model.relative_grad_error()
+
+        post_metrics, grad_norm = self.post_forward()
+        self.model.set_fast_weight_mode(
+            FastWeightMLP.FIRST_PASS
+        )
+        post_metrics["relative_grad_error"] = (
+            relative_grad_error
         )
         master_print(
             f"Second-pass horizon {terminal_index:02d} completed."

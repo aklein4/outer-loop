@@ -13,7 +13,7 @@ from models.llama import (
     LlamaRMSNorm,
 )
 from utils.sharding_utils import maybe_shard_with_gradients
-from utils.torch_utils import safe_copy_state
+from utils.torch_utils import fixed_linear, safe_copy_state
 
 
 def _raw_fast_weight_gradient(
@@ -23,14 +23,23 @@ def _raw_fast_weight_gradient(
     output_dtype: torch.dtype,
 ) -> torch.FloatTensor:
     matmul_dtype = torch.bfloat16
-    value_gradient = F.linear(
-        output_gradient.to(matmul_dtype),
-        down_weight.transpose(0, 1).to(matmul_dtype),
-    )
-    return (
-        value_gradient.transpose(-2, -1)
-        @ activations.to(matmul_dtype)
-    ).to(output_dtype)
+    device_type = str(activations.device.type)
+    with torch.autocast(
+        device_type,
+        dtype=matmul_dtype,
+    ):
+        value_gradient = fixed_linear(
+            output_gradient.to(matmul_dtype),
+            down_weight.transpose(0, 1).to(matmul_dtype),
+        )
+
+    # Match the source implementation: the projection uses the model's BF16
+    # precision, but gradients are accumulated over the sequence in FP32.
+    with torch.autocast(device_type, enabled=False):
+        return (
+            value_gradient.transpose(-2, -1).float()
+            @ activations.float()
+        ).to(output_dtype)
 
 
 class FastWeightFunction(torch.autograd.Function):
@@ -115,81 +124,61 @@ class FastWeightFunction(torch.autograd.Function):
             learning_rate,
         ) = ctx.saved_tensors
 
-        matmul_dtype = torch.bfloat16
         batch_size = remaining_gradient.shape[0]
         lm_output_gradient = output_gradient.reshape(
             batch_size,
             2,
             *output_gradient.shape[1:],
-        )[:, 0].to(matmul_dtype)
-        activations = activations.to(matmul_dtype)
-        down_weight_for_grad = down_weight.to(matmul_dtype)
+        )[:, 0].detach()
 
-        value_gradient = F.linear(
-            lm_output_gradient,
-            down_weight_for_grad.transpose(0, 1),
-        )
-        local_raw_gradient = (
-            value_gradient.transpose(-2, -1) @ activations
-        )
-        raw_gradient = local_raw_gradient.to(ctx.grad_dtype)
-        future_gradient = (
-            remaining_gradient
-            - raw_gradient.to(remaining_gradient.dtype)
-        ).detach().to(matmul_dtype)
-
-        local_raw_gradient_float = local_raw_gradient.float()
-        inverse_rms = torch.rsqrt(
-            local_raw_gradient_float.square().mean(
-                dim=(-2, -1),
-                keepdim=True,
+        with torch.enable_grad():
+            activations_for_grad = (
+                activations.detach()
+                .requires_grad_(True)
             )
-            + ctx.grad_eps
-        )
-        normalized_gradient = (
-            local_raw_gradient_float * inverse_rms
-        ).to(matmul_dtype)
+            down_weight_for_grad = (
+                down_weight.detach()
+                .requires_grad_(True)
+            )
+            learning_rate_for_grad = (
+                learning_rate.detach()
+                .float()
+                .requires_grad_(True)
+            )
 
-        learning_rate_for_grad = learning_rate.to(matmul_dtype)
-        normalized_gradient_gradient = -(
-            future_gradient * learning_rate_for_grad
-        )
-        normalized_gradient_gradient_float = (
-            normalized_gradient_gradient.float()
-        )
-        local_raw_gradient_gradient = (
+            local_raw_gradient = _raw_fast_weight_gradient(
+                activations_for_grad,
+                lm_output_gradient,
+                down_weight_for_grad,
+                ctx.grad_dtype,
+            )
+            raw_gradient = local_raw_gradient.detach()
+            future_gradient = (
+                remaining_gradient.to(ctx.grad_dtype)
+                - raw_gradient
+            ).detach()
+
+            normalized_gradient = F.rms_norm(
+                local_raw_gradient,
+                local_raw_gradient.shape[-2:],
+                eps=ctx.grad_eps,
+            )
+            state_update = -(
+                learning_rate_for_grad * normalized_gradient
+            )
+            local_loss = (future_gradient * state_update).sum()
             (
-                normalized_gradient_gradient_float
-                - local_raw_gradient_float
-                * (
-                    normalized_gradient_gradient_float
-                    * local_raw_gradient_float
-                ).mean(dim=(-2, -1), keepdim=True)
-                * inverse_rms.square()
+                activation_gradient,
+                down_weight_gradient,
+                learning_rate_gradient,
+            ) = torch.autograd.grad(
+                local_loss,
+                (
+                    activations_for_grad,
+                    down_weight_for_grad,
+                    learning_rate_for_grad,
+                ),
             )
-            * inverse_rms
-        ).to(matmul_dtype)
-
-        activation_gradient = (
-            value_gradient @ local_raw_gradient_gradient
-        )
-        value_gradient_gradient = (
-            activations
-            @ local_raw_gradient_gradient.transpose(-2, -1)
-        )
-        down_weight_gradient = (
-            lm_output_gradient.reshape(
-                -1,
-                lm_output_gradient.shape[-1],
-            ).transpose(0, 1)
-            @ value_gradient_gradient.reshape(
-                -1,
-                value_gradient_gradient.shape[-1],
-            )
-        )
-        learning_rate_gradient = -(
-            future_gradient * normalized_gradient
-        )
 
         activation_gradient = torch.stack(
             (
@@ -481,6 +470,68 @@ class FastWeightMLP(nn.Module):
         )
         self.final_grad_buffer.requires_grad_(False)
 
+    @torch.no_grad()
+    def accumulate_gradients(self):
+        self.grad_buffer.add_(
+            self.grad_buffer.grad.to(self.grad_buffer.dtype)
+        )
+        self.grad_buffer.grad.zero_()
+
+    @torch.no_grad()
+    def update_state(
+        self,
+        embeddings: torch.FloatTensor,
+        embedding_mask: torch.FloatTensor,
+    ):
+        raw_gradient = self.grad_buffer.grad
+        normalized_gradient = F.rms_norm(
+            raw_gradient.float(),
+            raw_gradient.shape[-2:],
+            eps=self.grad_eps,
+        )
+        learning_rate = self.get_lr(
+            embeddings,
+            embedding_mask,
+        )
+        update = -(
+            learning_rate.to(normalized_gradient.dtype)
+            * normalized_gradient
+        )
+
+        self.state.add_(update.to(self.state.dtype))
+        self.grad_buffer.add_(
+            raw_gradient.to(self.grad_buffer.dtype)
+        )
+        self.grad_buffer.grad.zero_()
+
+    @torch.no_grad()
+    def finalize_gradients(self):
+        self.state.zero_()
+        self.final_grad_buffer.copy_(
+            self.grad_buffer.to(self.final_grad_buffer.dtype)
+        )
+        self.grad_buffer.zero_()
+        self.grad_buffer.grad.zero_()
+
+    @torch.no_grad()
+    def empty_state(self):
+        self.state.zero_()
+        self.grad_buffer.zero_()
+        self.grad_buffer.grad.zero_()
+        self.final_grad_buffer.zero_()
+
+    @torch.no_grad()
+    def relative_grad_error(self) -> torch.FloatTensor:
+        error = (
+            self.grad_buffer
+            - self.final_grad_buffer.to(self.grad_buffer.dtype)
+        ).norm()
+        denominator = (
+            self.final_grad_buffer.norm()
+            + self.grad_eps
+        )
+        return error / denominator
+
 
 class FoItttModel(LlamaForCausalLM):
     def __init__(self, config: DictConfig):
@@ -613,7 +664,7 @@ class FoItttModel(LlamaForCausalLM):
         embedding_mask: torch.FloatTensor,
         logits_to_keep: slice,
     ) -> torch.FloatTensor:
-        """Run both residual streams but project logits for the loss stream."""
+        """Run both residual streams and return the loss stream."""
         hidden_states = self.model(
             input_ids=input_ids,
             fast_weight_embeddings=embeddings,
@@ -624,9 +675,7 @@ class FoItttModel(LlamaForCausalLM):
             2,
             *hidden_states.shape[1:],
         )[:, 0, logits_to_keep, :].contiguous()
-        hidden_states = maybe_shard_with_gradients(hidden_states)
-        lm_states = self.model.norm(hidden_states)
-        return self.lm_head(lm_states).float()
+        return maybe_shard_with_gradients(hidden_states)
 
     @torch.no_grad()
     def init_state(self, batch_size: int, device: torch.device):
@@ -636,12 +685,7 @@ class FoItttModel(LlamaForCausalLM):
     @torch.no_grad()
     def accumulate_gradients(self):
         for module in self._fast_weight_mlps():
-            module.grad_buffer.add_(
-                module.grad_buffer.grad.to(
-                    module.grad_buffer.dtype
-                )
-            )
-            module.grad_buffer.grad.zero_()
+            module.accumulate_gradients()
 
     @torch.no_grad()
     def update_state(
@@ -649,81 +693,28 @@ class FoItttModel(LlamaForCausalLM):
         embeddings: torch.FloatTensor,
         embedding_mask: torch.BoolTensor,
     ):
-        modules = self._fast_weight_mlps()
-        if not modules:
-            return
-
-        raw_gradients = maybe_shard_with_gradients(
-            torch.stack(
-                [module.grad_buffer.grad for module in modules],
-                dim=1,
+        for module in self._fast_weight_mlps():
+            module.update_state(
+                embeddings,
+                embedding_mask,
             )
-        )
-        learning_rates = maybe_shard_with_gradients(
-            torch.stack(
-                [
-                    module.get_lr(embeddings, embedding_mask)
-                    for module in modules
-                ],
-                dim=1,
-            )
-        )
-        normalized_gradients = F.rms_norm(
-            raw_gradients.float(),
-            raw_gradients.shape[-2:],
-            eps=modules[0].grad_eps,
-        )
-        updates = -(
-            learning_rates.to(normalized_gradients.dtype)
-            * normalized_gradients
-        )
-
-        for index, module in enumerate(modules):
-            module.state.add_(
-                updates[:, index].to(module.state.dtype)
-            )
-            module.grad_buffer.add_(
-                raw_gradients[:, index].to(
-                    module.grad_buffer.dtype
-                )
-            )
-            module.grad_buffer.grad.zero_()
 
     @torch.no_grad()
     def finalize_gradients(self):
         for module in self._fast_weight_mlps():
-            module.state.zero_()
-            module.final_grad_buffer.copy_(
-                module.grad_buffer.to(
-                    module.final_grad_buffer.dtype
-                )
-            )
-            module.grad_buffer.zero_()
-            module.grad_buffer.grad.zero_()
+            module.finalize_gradients()
 
     @torch.no_grad()
     def empty_state(self):
         for module in self._fast_weight_mlps():
-            module.state.zero_()
-            module.grad_buffer.zero_()
-            module.grad_buffer.grad.zero_()
-            module.final_grad_buffer.zero_()
+            module.empty_state()
 
     @torch.no_grad()
     def relative_grad_error(self) -> torch.FloatTensor:
-        errors = []
-        for module in self._fast_weight_mlps():
-            error = (
-                module.grad_buffer
-                - module.final_grad_buffer.to(
-                    module.grad_buffer.dtype
-                )
-            ).norm()
-            denominator = (
-                module.final_grad_buffer.norm()
-                + module.grad_eps
-            )
-            errors.append(error / denominator)
+        errors = [
+            module.relative_grad_error()
+            for module in self._fast_weight_mlps()
+        ]
 
         if not errors:
             return torch.zeros(

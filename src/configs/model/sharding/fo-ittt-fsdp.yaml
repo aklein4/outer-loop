@@ -1,10 +1,13 @@
 # See docs/sharding.md for more details about sharding configuration.
 
 # Parameters use the repository's default implied FSDP placement.
+# The loss is evaluated in separate token-group graphs. Replicating the head
+# prevents every group from all-gathering the vocabulary projection.
+model.norm.weight: [null]
+lm_head.weight: [null, null]
 
 
 # Activations
 model.layers.*: [[data, fsdp], null, null]
-lm_head: [[data, fsdp], null, null]
 
 bidirectional_head.layers.*: [[data, fsdp], null, null]
