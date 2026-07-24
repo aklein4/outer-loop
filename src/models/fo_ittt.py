@@ -64,11 +64,16 @@ class FastWeightFunction(torch.autograd.Function):
 
             ctx.second_pass = True
             ctx.save_for_backward(
-                activations[:batch_size],
+                activations.reshape(
+                    batch_size,
+                    2,
+                    *activations.shape[1:],
+                )[:, 0],
                 down_weight,
                 remaining_gradient,
                 learning_rate,
             )
+            ctx.activation_dtype = activations.dtype
         else:
             raise ValueError(
                 "fast-weight batch must equal the state batch on the first "
@@ -77,7 +82,7 @@ class FastWeightFunction(torch.autograd.Function):
 
         ctx.grad_dtype = grad_buffer.dtype
         ctx.grad_eps = grad_eps
-        return output.clone()
+        return output
 
     @staticmethod
     def backward(
@@ -110,68 +115,89 @@ class FastWeightFunction(torch.autograd.Function):
             learning_rate,
         ) = ctx.saved_tensors
 
+        matmul_dtype = torch.bfloat16
         batch_size = remaining_gradient.shape[0]
-        lm_output_gradient = output_gradient[:batch_size]
+        lm_output_gradient = output_gradient.reshape(
+            batch_size,
+            2,
+            *output_gradient.shape[1:],
+        )[:, 0].to(matmul_dtype)
+        activations = activations.to(matmul_dtype)
+        down_weight_for_grad = down_weight.to(matmul_dtype)
 
-        with torch.enable_grad():
-            activation_leaf = (
-                activations.detach()
-                .to(torch.bfloat16)
-                .requires_grad_(True)
-            )
-            down_weight_leaf = (
-                down_weight.detach()
-                .to(torch.bfloat16)
-                .requires_grad_(True)
-            )
-            learning_rate_leaf = (
-                learning_rate.detach().requires_grad_(True)
-            )
+        value_gradient = F.linear(
+            lm_output_gradient,
+            down_weight_for_grad.transpose(0, 1),
+        )
+        local_raw_gradient = (
+            value_gradient.transpose(-2, -1) @ activations
+        )
+        raw_gradient = local_raw_gradient.to(ctx.grad_dtype)
+        future_gradient = (
+            remaining_gradient
+            - raw_gradient.to(remaining_gradient.dtype)
+        ).detach().to(matmul_dtype)
 
-            local_raw_gradient = _raw_fast_weight_gradient(
-                activation_leaf,
-                lm_output_gradient.detach(),
-                down_weight_leaf,
-                torch.bfloat16,
+        local_raw_gradient_float = local_raw_gradient.float()
+        inverse_rms = torch.rsqrt(
+            local_raw_gradient_float.square().mean(
+                dim=(-2, -1),
+                keepdim=True,
             )
-            raw_gradient = local_raw_gradient.detach().to(
-                ctx.grad_dtype
-            )
-            future_gradient = (
-                remaining_gradient
-                - raw_gradient.to(remaining_gradient.dtype)
-            ).detach()
-            normalized_gradient = F.rms_norm(
-                local_raw_gradient.float(),
-                local_raw_gradient.shape[-2:],
-                eps=ctx.grad_eps,
-            ).to(local_raw_gradient.dtype)
-            update = -(
-                learning_rate_leaf.to(normalized_gradient.dtype)
-                * normalized_gradient
-            )
+            + ctx.grad_eps
+        )
+        normalized_gradient = (
+            local_raw_gradient_float * inverse_rms
+        ).to(matmul_dtype)
 
+        learning_rate_for_grad = learning_rate.to(matmul_dtype)
+        normalized_gradient_gradient = -(
+            future_gradient * learning_rate_for_grad
+        )
+        normalized_gradient_gradient_float = (
+            normalized_gradient_gradient.float()
+        )
+        local_raw_gradient_gradient = (
             (
-                activation_gradient,
-                down_weight_gradient,
-                learning_rate_gradient,
-            ) = torch.autograd.grad(
-                update,
-                (
-                    activation_leaf,
-                    down_weight_leaf,
-                    learning_rate_leaf,
-                ),
-                grad_outputs=future_gradient.to(update.dtype),
+                normalized_gradient_gradient_float
+                - local_raw_gradient_float
+                * (
+                    normalized_gradient_gradient_float
+                    * local_raw_gradient_float
+                ).mean(dim=(-2, -1), keepdim=True)
+                * inverse_rms.square()
             )
+            * inverse_rms
+        ).to(matmul_dtype)
 
-        activation_gradient = torch.cat(
-            [
+        activation_gradient = (
+            value_gradient @ local_raw_gradient_gradient
+        )
+        value_gradient_gradient = (
+            activations
+            @ local_raw_gradient_gradient.transpose(-2, -1)
+        )
+        down_weight_gradient = (
+            lm_output_gradient.reshape(
+                -1,
+                lm_output_gradient.shape[-1],
+            ).transpose(0, 1)
+            @ value_gradient_gradient.reshape(
+                -1,
+                value_gradient_gradient.shape[-1],
+            )
+        )
+        learning_rate_gradient = -(
+            future_gradient * normalized_gradient
+        )
+
+        activation_gradient = torch.stack(
+            (
                 torch.zeros_like(activation_gradient),
                 activation_gradient,
-            ],
-            dim=0,
-        ).to(activations.dtype)
+            ),
+            dim=1,
+        ).flatten(0, 1).to(ctx.activation_dtype)
         activation_gradient = maybe_shard_with_gradients(
             activation_gradient
         )
@@ -346,15 +372,29 @@ class FastWeightMLP(nn.Module):
 
         state = self.state.detach()
         if self.mode == self.SECOND_PASS:
-            state = maybe_shard_with_gradients(
-                state.repeat(2, 1, 1)
+            batch_size = state.shape[0]
+            # Streams are interleaved per example. The reshape therefore keeps
+            # the original batch sharding on `batch_size` and broadcasts the
+            # state over a local size-two stream axis.
+            fast_hidden_streams = fast_hidden.reshape(
+                batch_size,
+                2,
+                *fast_hidden.shape[1:],
             )
-
-        fast_values = torch.einsum(
-            "boi,bsi->bso",
-            state,
-            fast_hidden,
-        )
+            fast_values = torch.einsum(
+                "boi,bnsi->bnso",
+                state,
+                fast_hidden_streams,
+            ).flatten(0, 1)
+            fast_values = maybe_shard_with_gradients(
+                fast_values
+            )
+        else:
+            fast_values = torch.einsum(
+                "boi,bsi->bso",
+                state,
+                fast_hidden,
+            )
         fast_output = self.down_fast(fast_values)
 
         if self.mode == self.FIRST_PASS:
@@ -564,10 +604,42 @@ class FoItttModel(LlamaForCausalLM):
             attention_mask,
         )
 
+    def second_pass_forward(
+        self,
+        input_ids: torch.LongTensor,
+        embeddings: torch.FloatTensor,
+        embedding_mask: torch.FloatTensor,
+        logits_to_keep: slice,
+    ) -> torch.FloatTensor:
+        """Run both residual streams but project logits for the loss stream."""
+        hidden_states = self.model(
+            input_ids=input_ids,
+            fast_weight_embeddings=embeddings,
+            fast_weight_embedding_mask=embedding_mask,
+        )
+        hidden_states = hidden_states.reshape(
+            embeddings.shape[0],
+            2,
+            *hidden_states.shape[1:],
+        )[:, 0, logits_to_keep, :].contiguous()
+        hidden_states = maybe_shard_with_gradients(hidden_states)
+        lm_states = self.model.norm(hidden_states)
+        return self.lm_head(lm_states).float()
+
     @torch.no_grad()
     def init_state(self, batch_size: int, device: torch.device):
         for module in self._fast_weight_mlps():
             module.init_state(batch_size, device)
+
+    @torch.no_grad()
+    def accumulate_gradients(self):
+        for module in self._fast_weight_mlps():
+            module.grad_buffer.add_(
+                module.grad_buffer.grad.to(
+                    module.grad_buffer.dtype
+                )
+            )
+            module.grad_buffer.grad.zero_()
 
     @torch.no_grad()
     def update_state(
