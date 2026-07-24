@@ -18,6 +18,8 @@ class FoItttTrainer(BaseTrainer):
         )
         for module in self.model._fast_weight_mlps():
             module.fast_log_lr.no_muon = True
+            module.fast_p_r.no_muon = True
+            module.fast_p_l.no_muon = True
 
     def get_trainable_parameters(self, model):
         slow = []
