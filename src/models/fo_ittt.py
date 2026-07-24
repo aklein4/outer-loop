@@ -519,6 +519,8 @@ class FoItttModel(LlamaForCausalLM):
         strict: bool = True,
         assign: bool = False,
     ):
+        # TODO: port this to oloop
+        
         fast_weight_suffixes = (
             ".up_fast.weight",
             ".gate_fast.weight",

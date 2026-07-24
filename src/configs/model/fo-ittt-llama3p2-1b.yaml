@@ -15,5 +15,5 @@ state_dtype: float32
 
 disable_fast_weights: false
 
-num_bidirectional_layers: 6
+num_bidirectional_layers: 4
 pad_attention_bias_value: -1000.0
