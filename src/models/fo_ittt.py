@@ -469,6 +469,57 @@ class FoItttModel(LlamaForCausalLM):
                 )
                 layer.mlp = fast_mlp
 
+    def load_state_dict(
+        self,
+        state_dict: dict[str, torch.Tensor],
+        strict: bool = True,
+        assign: bool = False,
+    ):
+        fast_weight_suffixes = (
+            ".up_fast.weight",
+            ".gate_fast.weight",
+            ".down_fast.weight",
+        )
+        has_fast_weights = any(
+            key.endswith(fast_weight_suffixes)
+            for key in state_dict
+        )
+
+        if self.disable_fast_weights or has_fast_weights:
+            return super().load_state_dict(
+                state_dict,
+                strict=strict,
+                assign=assign,
+            )
+
+        super().load_state_dict(
+            state_dict,
+            strict=False,
+            assign=assign,
+        )
+
+        with torch.no_grad():
+            for mlp in self._fast_weight_mlps():
+                
+                fast_weight_size = mlp.fast_weight_size
+                if fast_weight_size > mlp.intermediate_size:
+                    raise ValueError(
+                        "fast_weight_size must not exceed "
+                        "intermediate_size when initializing fast weights "
+                        "from regular MLP weights"
+                    )
+
+                mlp.up_fast.weight.copy_(
+                    mlp.up_proj.weight[:fast_weight_size]
+                )
+                mlp.gate_fast.weight.copy_(
+                    mlp.gate_proj.weight[:fast_weight_size]
+                )
+                mlp.down_fast.weight.copy_(
+                    mlp.down_proj.weight[:, :fast_weight_size]
+                )
+
+
     def _layer_mlp(self, layer) -> FastWeightMLP:
         try:
             return layer.get_submodule("mlp")
