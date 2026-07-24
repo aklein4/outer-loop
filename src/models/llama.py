@@ -466,7 +466,9 @@ class LlamaModel(nn.Module):
         if fast_weight_embeddings is not None:
             fast_weight_kwargs = {
                 "fast_weight_embeddings": fast_weight_embeddings,
-                "fast_weight_embedding_mask": fast_weight_embedding_mask,
+                "fast_weight_embedding_mask": (
+                    fast_weight_embedding_mask.float()
+                ),
             }
 
         # decoder layers
