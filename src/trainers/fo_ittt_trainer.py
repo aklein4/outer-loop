@@ -57,15 +57,15 @@ class FoItttTrainer(BaseTrainer):
 
     def _logit_iteration_loss_and_gradient(
         self,
-        hidden_states: torch.FloatTensor,
+        lm_states: torch.FloatTensor,
         labels: torch.LongTensor,
         token_weights: torch.FloatTensor,
     ):
         num_iterations = self.config.trainer.num_logit_iterations
-        hidden_states = hidden_states.detach().reshape(
+        lm_states = lm_states.detach().reshape(
             -1,
             num_iterations,
-            hidden_states.shape[-1],
+            lm_states.shape[-1],
         )
         labels = labels.reshape(
             -1,
@@ -75,22 +75,23 @@ class FoItttTrainer(BaseTrainer):
             -1,
             num_iterations,
         )
-        hidden_states = maybe_shard_with_gradients(hidden_states)
+        lm_states = maybe_shard_with_gradients(lm_states)
         labels = maybe_shard_with_gradients(labels)
         token_weights = maybe_shard_with_gradients(token_weights)
-        hidden_states.requires_grad_(True)
+        lm_states.requires_grad_(True)
 
         losses = []
         for i in range(num_iterations):
-            hs = hidden_states[:, i].contiguous()
+            iteration_states = lm_states[:, i].contiguous()
 
             with torch.autocast(
                 "xla",
                 dtype=torch.bfloat16,
                 enabled=self.config.trainer.use_autocast,
             ):
-                lm_states = self.model.model.norm(hs)
-                logits = self.model.lm_head(lm_states).float()
+                logits = self.model.lm_head(
+                    iteration_states
+                ).float()
                 token_losses = F.cross_entropy(
                     logits,
                     labels[:, i],
@@ -108,7 +109,7 @@ class FoItttTrainer(BaseTrainer):
 
         return (
             torch.stack(losses).sum(),
-            hidden_states.grad.detach(),
+            lm_states.grad.detach(),
         )
 
     def loss_and_hidden_gradient(
@@ -135,15 +136,41 @@ class FoItttTrainer(BaseTrainer):
             / batch_size
         )
 
-        loss, hidden_gradient = (
+        hidden_states_for_grad = maybe_shard_with_gradients(
+            hidden_states.detach()
+        )
+        hidden_states_for_grad.requires_grad_(True)
+        with torch.autocast(
+            "xla",
+            dtype=torch.bfloat16,
+            enabled=self.config.trainer.use_autocast,
+        ):
+            lm_states = self.model.model.norm(
+                hidden_states_for_grad
+            )
+
+        loss, lm_gradient = (
             self._logit_iteration_loss_and_gradient(
-                hidden_states,
+                lm_states,
                 input_ids[:, 1:],
                 token_weights,
             )
         )
+        lm_gradient = maybe_shard_with_gradients(
+            lm_gradient.reshape_as(lm_states)
+        )
+        torch.autograd.backward(
+            lm_states,
+            lm_gradient,
+        )
+        if hidden_states_for_grad.grad is None:
+            raise RuntimeError(
+                "no gradient was produced for the final-norm input"
+            )
         hidden_gradient = maybe_shard_with_gradients(
-            hidden_gradient.reshape_as(hidden_states)
+            hidden_states_for_grad.grad.detach().reshape_as(
+                hidden_states
+            )
         )
         return loss, hidden_gradient
 
@@ -153,6 +180,7 @@ class FoItttTrainer(BaseTrainer):
         assistant_mask,
         attention_mask,
         update_state=True,
+        fast_weight_gradients_only=True,
     ):
         self.model.set_fast_weight_mode(
             FastWeightMLP.FIRST_PASS
@@ -174,15 +202,21 @@ class FoItttTrainer(BaseTrainer):
                 )
             )
 
-        grad_buffers = tuple(
-            module.grad_buffer
-            for module in self.model._fast_weight_mlps()
-        )
-        if grad_buffers:
+        if fast_weight_gradients_only:
+            grad_buffers = tuple(
+                module.grad_buffer
+                for module in self.model._fast_weight_mlps()
+            )
+            if grad_buffers:
+                torch.autograd.backward(
+                    hidden_states[:, :-1],
+                    hidden_gradient,
+                    inputs=grad_buffers,
+                )
+        else:
             torch.autograd.backward(
                 hidden_states[:, :-1],
                 hidden_gradient,
-                inputs=grad_buffers,
             )
 
         if update_state:
@@ -330,6 +364,10 @@ class FoItttTrainer(BaseTrainer):
                 "assistant_mask and attention_mask must match "
                 "input_ids"
             )
+        if input_ids.shape[1] == 0:
+            raise ValueError(
+                "the training horizon must contain at least one episode"
+            )
 
         input_episodes = input_ids.unbind(dim=1)
         assistant_episodes = assistant_mask.unbind(dim=1)
@@ -384,28 +422,12 @@ class FoItttTrainer(BaseTrainer):
                 f"Second-pass horizon {index:02d} completed."
             )
 
-        self.model.set_fast_weight_mode(
-            FastWeightMLP.FIRST_PASS
-        )
-        with torch.autocast(
-            "xla",
-            dtype=torch.bfloat16,
-            enabled=self.config.trainer.use_autocast,
-        ):
-            hidden_states = self.model.model(
-                input_ids=input_episodes[terminal_index],
-            )
-            _, hidden_gradient = (
-                self.loss_and_hidden_gradient(
-                    input_episodes[terminal_index],
-                    assistant_episodes[terminal_index],
-                    hidden_states[:, :-1],
-                )
-            )
-
-        torch.autograd.backward(
-            hidden_states[:, :-1],
-            hidden_gradient,
+        self.first_pass(
+            input_episodes[terminal_index],
+            assistant_episodes[terminal_index],
+            attention_episodes[terminal_index],
+            update_state=False,
+            fast_weight_gradients_only=False,
         )
         self.model.accumulate_gradients()
         relative_grad_error = self.model.relative_grad_error()
