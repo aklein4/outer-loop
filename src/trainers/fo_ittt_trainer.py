@@ -127,12 +127,6 @@ class FoItttTrainer(BaseTrainer):
                 "the number of loss tokens must be divisible by "
                 "trainer.num_logit_iterations"
             )
-        iteration_size = token_count // num_iterations
-        if iteration_size % self.logit_batch_shards != 0:
-            raise ValueError(
-                "each logit iteration must be divisible by the "
-                "number of data/FSDP shards"
-            )
 
         output_mask = assistant_mask[:, 1:].float()
         token_weights = (
