@@ -332,6 +332,9 @@ class FastWeightMLP(nn.Module):
         self,
         tensor: torch.Tensor,
     ) -> torch.Tensor:
+        # XLA scan consumes the leading layer axis before calling the layer.
+        if tensor.ndim == 3:
+            return tensor
         return torch.index_select(
             tensor,
             0,
@@ -619,10 +622,18 @@ class FoItttModel(LlamaForCausalLM):
                 "fast-weight state and gradient buffer must have one "
                 "entry per layer"
             )
-        kwargs.update(
+        runtime_tensors = dict(
             fast_weight_state=self.fast_weight_state,
             fast_weight_grad_buffer=self.fast_weight_grad_buffer,
         )
+        if getattr(
+            self.model.layers,
+            "supports_scan_inputs",
+            False,
+        ):
+            kwargs["_scan_inputs"] = runtime_tensors
+        else:
+            kwargs.update(runtime_tensors)
         return kwargs
 
     def backbone_forward(self, *args, **kwargs):
