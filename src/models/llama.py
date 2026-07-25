@@ -303,8 +303,7 @@ class LlamaDecoderLayer(nn.Module):
         attention_mask: torch.Tensor | None = None,
         position_ids: torch.Tensor | None = None,
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,    # necessary, but kept here for BC
-        fast_weight_embeddings: torch.Tensor | None = None,
-        fast_weight_embedding_mask: torch.Tensor | None = None,
+        **mlp_kwargs,
     ) -> torch.Tensor:
         """
         Args:
@@ -336,13 +335,12 @@ class LlamaDecoderLayer(nn.Module):
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        if fast_weight_embeddings is None:
+        if not mlp_kwargs:
             hidden_states = self.mlp(hidden_states)
         else:
             hidden_states = self.mlp(
                 hidden_states,
-                fast_weight_embeddings=fast_weight_embeddings,
-                fast_weight_embedding_mask=fast_weight_embedding_mask,
+                **mlp_kwargs,
             )
         hidden_states = residual + hidden_states
 
@@ -401,8 +399,7 @@ class LlamaModel(nn.Module):
         inputs_embeds: torch.FloatTensor | None = None,
         attention_mask: torch.FloatTensor | None = None, # only used in non-kernel attention
         position_ids: torch.LongTensor | None = None,
-        fast_weight_embeddings: torch.Tensor | None = None,
-        fast_weight_embedding_mask: torch.Tensor | None = None,
+        **layer_kwargs,
     ) -> torch.Tensor:        
         """
         Args:
@@ -455,22 +452,6 @@ class LlamaModel(nn.Module):
         # create position embeddings to be shared across the decoder layers
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
 
-        if (
-            (fast_weight_embeddings is None)
-            != (fast_weight_embedding_mask is None)
-        ):
-            raise ValueError(
-                "fast-weight embeddings and mask must be provided together"
-            )
-        fast_weight_kwargs = {}
-        if fast_weight_embeddings is not None:
-            fast_weight_kwargs = {
-                "fast_weight_embeddings": fast_weight_embeddings,
-                "fast_weight_embedding_mask": (
-                    fast_weight_embedding_mask.float()
-                ),
-            }
-
         # decoder layers
         if (
             self.gradient_checkpointing
@@ -486,7 +467,7 @@ class LlamaModel(nn.Module):
                     position_ids=position_ids,
                     position_embeddings=position_embeddings,
                     use_reentrant=False,
-                    **fast_weight_kwargs,
+                    **layer_kwargs,
                 )
         else:
             hidden_states = self.layers(
@@ -494,7 +475,7 @@ class LlamaModel(nn.Module):
                 attention_mask=causal_mask,
                 position_ids=position_ids,
                 position_embeddings=position_embeddings,
-                **fast_weight_kwargs,
+                **layer_kwargs,
             )
 
         if self.do_norm:
@@ -558,8 +539,7 @@ class LlamaForCausalLM(nn.Module):
         logits_to_keep: slice | None = None,
         return_states: bool = False,
         cpu_logits: bool = False,
-        fast_weight_embeddings: torch.Tensor | None = None,
-        fast_weight_embedding_mask: torch.Tensor | None = None,
+        **model_kwargs,
     ) -> tuple[torch.FloatTensor, torch.FloatTensor | None]:
         """
         Args:
@@ -577,8 +557,7 @@ class LlamaForCausalLM(nn.Module):
             input_ids=input_ids,
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
-            fast_weight_embeddings=fast_weight_embeddings,
-            fast_weight_embedding_mask=fast_weight_embedding_mask,
+            **model_kwargs,
         )
 
         lm_states = self.model.norm(hidden_states)

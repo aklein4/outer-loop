@@ -216,7 +216,11 @@ class FastWeightMLP(nn.Module):
     SECOND_PASS = "second"
     PLAIN = "plain"
 
-    def __init__(self, config: DictConfig):
+    def __init__(
+        self,
+        config: DictConfig,
+        layer_index: int,
+    ):
         super().__init__()
 
         self.hidden_size = config.hidden_size
@@ -281,10 +285,14 @@ class FastWeightMLP(nn.Module):
             self.fast_weight_size,
             bias=False,
         )
-
-        self.state: nn.Buffer
-        self.grad_buffer: nn.Buffer
-        self.final_grad_buffer: nn.Buffer
+        self.register_buffer(
+            "fast_weight_index",
+            torch.tensor(
+                layer_index,
+                dtype=torch.int32,
+            ),
+            persistent=False,
+        )
 
         self.mode = self.FIRST_PASS
 
@@ -345,6 +353,8 @@ class FastWeightMLP(nn.Module):
     def forward(
         self,
         x: torch.FloatTensor,
+        fast_weight_state: torch.FloatTensor,
+        fast_weight_grad_buffer: torch.FloatTensor,
         fast_weight_embeddings: torch.FloatTensor | None = None,
         fast_weight_embedding_mask: torch.BoolTensor | None = None,
     ) -> torch.FloatTensor:
@@ -359,7 +369,18 @@ class FastWeightMLP(nn.Module):
             self.gate_fast(x),
         )
 
-        state = self.state.detach()
+        layer_index = self.fast_weight_index[None]
+        state = torch.index_select(
+            fast_weight_state,
+            0,
+            layer_index,
+        ).squeeze(0).detach()
+        if self.mode != self.PLAIN:
+            grad_buffer = torch.index_select(
+                fast_weight_grad_buffer,
+                0,
+                layer_index,
+            ).squeeze(0)
         if self.mode == self.SECOND_PASS:
             batch_size = state.shape[0]
             # Streams are interleaved per example. The reshape therefore keeps
@@ -391,7 +412,7 @@ class FastWeightMLP(nn.Module):
                 fast_hidden,
                 fast_output,
                 self.down_fast.weight,
-                self.grad_buffer,
+                grad_buffer,
                 None,
                 None,
                 self.grad_eps,
@@ -409,17 +430,16 @@ class FastWeightMLP(nn.Module):
                 fast_weight_embeddings,
                 fast_weight_embedding_mask,
             )
-            remaining_gradient = (
-                self.final_grad_buffer
-                - self.grad_buffer.to(
-                    self.final_grad_buffer.dtype
-                )
-            ).detach()
+            # After finalize_gradients, grad_buffer holds the first-pass
+            # gradient that has not yet been consumed by the second pass.
+            # Keeping the remainder directly avoids retaining and scanning a
+            # second full-size copy of the final gradient.
+            remaining_gradient = grad_buffer.detach()
             fast_output = FastWeightFunction.apply(
                 fast_hidden,
                 fast_output,
                 self.down_fast.weight,
-                self.grad_buffer,
+                grad_buffer,
                 remaining_gradient,
                 learning_rate,
                 self.grad_eps,
@@ -428,62 +448,29 @@ class FastWeightMLP(nn.Module):
         return base_output + fast_output
 
     @torch.no_grad()
-    def init_state(self, batch_size: int, device: torch.device):
-        state = torch.zeros(
-            batch_size,
-            self.fast_weight_size,
-            self.fast_weight_size,
-            device=device,
-            dtype=self.state_dtype,
-        )
-        grad_buffer = torch.zeros_like(
-            state,
-            dtype=torch.float32,
-        )
-        final_grad_buffer = torch.zeros_like(
-            state,
-            dtype=torch.float32,
-        )
-
-        state = maybe_shard_with_gradients(state)
-        grad_buffer = maybe_shard_with_gradients(grad_buffer)
-        final_grad_buffer = maybe_shard_with_gradients(
-            final_grad_buffer
-        )
-
-        self.register_buffer("state", state, persistent=False)
-        self.register_buffer(
-            "grad_buffer",
-            grad_buffer,
-            persistent=False,
-        )
-        self.register_buffer(
-            "final_grad_buffer",
-            final_grad_buffer,
-            persistent=False,
-        )
-
-        self.state.requires_grad_(False)
-        self.grad_buffer.requires_grad_(True)
-        self.grad_buffer.grad = maybe_shard_with_gradients(
-            torch.zeros_like(self.grad_buffer)
-        )
-        self.final_grad_buffer.requires_grad_(False)
-
-    @torch.no_grad()
-    def accumulate_gradients(self):
-        self.grad_buffer.add_(
-            self.grad_buffer.grad.to(self.grad_buffer.dtype)
-        )
-        self.grad_buffer.grad.zero_()
+    def accumulate_gradients(
+        self,
+        grad_buffer: torch.FloatTensor,
+        raw_gradient: torch.FloatTensor,
+        subtract: bool = False,
+    ):
+        gradient = raw_gradient.to(grad_buffer.dtype)
+        if subtract:
+            grad_buffer.sub_(gradient)
+        else:
+            grad_buffer.add_(gradient)
+        raw_gradient.zero_()
 
     @torch.no_grad()
     def update_state(
         self,
+        state: torch.FloatTensor,
+        grad_buffer: torch.FloatTensor,
+        raw_gradient: torch.FloatTensor,
         embeddings: torch.FloatTensor,
         embedding_mask: torch.FloatTensor,
+        subtract_gradients: bool = False,
     ):
-        raw_gradient = self.grad_buffer.grad
         normalized_gradient = F.rms_norm(
             raw_gradient.float(),
             raw_gradient.shape[-2:],
@@ -498,38 +485,53 @@ class FastWeightMLP(nn.Module):
             * normalized_gradient
         )
 
-        self.state.add_(update.to(self.state.dtype))
-        self.grad_buffer.add_(
-            raw_gradient.to(self.grad_buffer.dtype)
-        )
-        self.grad_buffer.grad.zero_()
+        state.add_(update.to(state.dtype))
+        gradient = raw_gradient.to(grad_buffer.dtype)
+        if subtract_gradients:
+            # The second pass consumes this episode from the remaining
+            # first-pass gradient.
+            grad_buffer.sub_(gradient)
+        else:
+            grad_buffer.add_(gradient)
+        raw_gradient.zero_()
 
     @torch.no_grad()
-    def finalize_gradients(self):
-        self.state.zero_()
-        self.final_grad_buffer.copy_(
-            self.grad_buffer.to(self.final_grad_buffer.dtype)
-        )
-        self.grad_buffer.zero_()
-        self.grad_buffer.grad.zero_()
+    def finalize_gradients(
+        self,
+        state: torch.FloatTensor,
+        grad_buffer: torch.FloatTensor,
+        raw_gradient: torch.FloatTensor,
+        final_grad_norm: torch.FloatTensor,
+    ):
+        state.zero_()
+        # Keep the first-pass total in grad_buffer as a second-pass countdown.
+        # Only its norm must survive after that countdown has been consumed.
+        final_grad_norm.copy_(grad_buffer.float().norm())
+        raw_gradient.zero_()
 
     @torch.no_grad()
-    def empty_state(self):
-        self.state.zero_()
-        self.grad_buffer.zero_()
-        self.grad_buffer.grad.zero_()
-        self.final_grad_buffer.zero_()
+    def empty_state(
+        self,
+        state: torch.FloatTensor,
+        grad_buffer: torch.FloatTensor,
+        raw_gradient: torch.FloatTensor,
+        final_grad_norm: torch.FloatTensor,
+    ):
+        state.zero_()
+        grad_buffer.zero_()
+        raw_gradient.zero_()
+        final_grad_norm.zero_()
 
     @torch.no_grad()
-    def relative_grad_error(self) -> torch.FloatTensor:
-        error = (
-            self.grad_buffer
-            - self.final_grad_buffer.to(self.grad_buffer.dtype)
-        ).norm()
-        denominator = (
-            self.final_grad_buffer.norm()
-            + self.grad_eps
-        )
+    def relative_grad_error(
+        self,
+        grad_buffer: torch.FloatTensor,
+        final_grad_norm: torch.FloatTensor,
+    ) -> torch.FloatTensor:
+        # After the terminal subtraction, the countdown is exactly the signed
+        # difference between the first- and second-pass raw gradients.
+        error = grad_buffer.norm()
+        denominator = final_grad_norm + self.grad_eps
         return error / denominator
 
 
@@ -549,10 +551,15 @@ class FoItttModel(LlamaForCausalLM):
             False,
         )
         if not self.disable_fast_weights:
-            for layer in self.model.layers:
+            for layer_index, layer in enumerate(
+                self.model.layers
+            ):
                 layer: LlamaDecoderLayer
 
-                fast_mlp = FastWeightMLP(config)
+                fast_mlp = FastWeightMLP(
+                    config,
+                    layer_index,
+                )
                 fast_mlp.apply(self._init_weights)
                 fast_mlp.reset_fast_parameters(
                     config.initializer_range
@@ -570,8 +577,6 @@ class FoItttModel(LlamaForCausalLM):
         strict: bool = True,
         assign: bool = False,
     ):
-        # TODO: port this to oloop
-        
         fast_weight_suffixes = (
             ".up_fast.weight",
             ".gate_fast.weight",
@@ -589,7 +594,7 @@ class FoItttModel(LlamaForCausalLM):
                 assign=assign,
             )
 
-        super().load_state_dict(
+        incompatible_keys = super().load_state_dict(
             state_dict,
             strict=False,
             assign=assign,
@@ -616,6 +621,7 @@ class FoItttModel(LlamaForCausalLM):
                     mlp.down_proj.weight[:, :fast_weight_size]
                 )
 
+        return incompatible_keys
 
     def _layer_mlp(self, layer) -> FastWeightMLP:
         try:
@@ -635,6 +641,55 @@ class FoItttModel(LlamaForCausalLM):
         for module in self._fast_weight_mlps():
             module.set_mode(mode)
 
+    def _prepare_backbone_kwargs(self, kwargs):
+        if self.disable_fast_weights:
+            kwargs.pop("fast_weight_embeddings", None)
+            kwargs.pop("fast_weight_embedding_mask", None)
+            return kwargs
+
+        embeddings = kwargs.get("fast_weight_embeddings")
+        embedding_mask = kwargs.get(
+            "fast_weight_embedding_mask"
+        )
+        if (embeddings is None) != (embedding_mask is None):
+            raise ValueError(
+                "fast-weight embeddings and mask must be provided together"
+            )
+        if embedding_mask is not None:
+            # Convert before entering scan so all layer arguments are floating
+            # tensors during functional-call/FakeTensor tracing.
+            kwargs["fast_weight_embedding_mask"] = (
+                embedding_mask.float()
+            )
+
+        if (
+            self.fast_weight_state.shape[0]
+            != len(self.model.layers)
+            or self.fast_weight_grad_buffer.shape[0]
+            != len(self.model.layers)
+        ):
+            raise ValueError(
+                "fast-weight state and gradient buffer must have one "
+                "entry per layer"
+            )
+        kwargs["fast_weight_state"] = self.fast_weight_state
+        kwargs["fast_weight_grad_buffer"] = (
+            self.fast_weight_grad_buffer
+        )
+        return kwargs
+
+    def backbone_forward(self, *args, **kwargs):
+        return self.model(
+            *args,
+            **self._prepare_backbone_kwargs(kwargs),
+        )
+
+    def forward(self, *args, **kwargs):
+        return super().forward(
+            *args,
+            **self._prepare_backbone_kwargs(kwargs),
+        )
+
     def bidirectional_forward(
         self,
         hidden_states: torch.FloatTensor,
@@ -651,7 +706,9 @@ class FoItttModel(LlamaForCausalLM):
         input_ids: torch.LongTensor,
         attention_mask: torch.BoolTensor,
     ) -> torch.FloatTensor:
-        hidden_states = self.model(input_ids=input_ids)
+        hidden_states = self.backbone_forward(
+            input_ids=input_ids
+        )
         return self.bidirectional_forward(
             hidden_states,
             attention_mask,
@@ -665,7 +722,7 @@ class FoItttModel(LlamaForCausalLM):
         logits_to_keep: slice,
     ) -> torch.FloatTensor:
         """Run both residual streams and return the loss stream."""
-        hidden_states = self.model(
+        hidden_states = self.backbone_forward(
             input_ids=input_ids,
             fast_weight_embeddings=embeddings,
             fast_weight_embedding_mask=embedding_mask,
@@ -679,41 +736,144 @@ class FoItttModel(LlamaForCausalLM):
 
     @torch.no_grad()
     def init_state(self, batch_size: int, device: torch.device):
-        for module in self._fast_weight_mlps():
-            module.init_state(batch_size, device)
+        modules = self._fast_weight_mlps()
+        if not modules:
+            return
+
+        fast_weight_size = modules[0].fast_weight_size
+        state = torch.zeros(
+            len(modules),
+            batch_size,
+            fast_weight_size,
+            fast_weight_size,
+            device=device,
+            dtype=modules[0].state_dtype,
+        )
+        grad_buffer = torch.zeros_like(
+            state,
+            dtype=torch.float32,
+        )
+        final_grad_norm = torch.zeros(
+            len(modules),
+            device=device,
+            dtype=torch.float32,
+        )
+
+        # Layer is the scan dimension and must remain replicated. Batch keeps
+        # the same data/FSDP sharding each per-layer buffer previously used.
+        state_spec = (
+            None,
+            ("data", "fsdp"),
+            None,
+            None,
+        )
+        state = maybe_shard_with_gradients(
+            state,
+            spec=state_spec,
+        )
+        grad_buffer = maybe_shard_with_gradients(
+            grad_buffer,
+            spec=state_spec,
+        )
+        grad_buffer.requires_grad_(True)
+        grad_buffer.grad = maybe_shard_with_gradients(
+            torch.zeros_like(grad_buffer),
+            spec=state_spec,
+        )
+
+        self.register_buffer(
+            "fast_weight_state",
+            state,
+            persistent=False,
+        )
+        self.register_buffer(
+            "fast_weight_grad_buffer",
+            grad_buffer,
+            persistent=False,
+        )
+        self.register_buffer(
+            "fast_weight_final_grad_norm",
+            final_grad_norm,
+            persistent=False,
+        )
+
+    def _fast_weight_tensors(self, index: int):
+        raw_gradient = self.fast_weight_grad_buffer.grad
+        if raw_gradient is None:
+            raise RuntimeError(
+                "fast-weight gradient buffer has no gradient storage"
+            )
+        return (
+            self.fast_weight_state[index],
+            self.fast_weight_grad_buffer[index],
+            raw_gradient[index],
+            self.fast_weight_final_grad_norm[index],
+        )
 
     @torch.no_grad()
-    def accumulate_gradients(self):
-        for module in self._fast_weight_mlps():
-            module.accumulate_gradients()
+    def accumulate_gradients(self, subtract: bool = False):
+        for index, module in enumerate(
+            self._fast_weight_mlps()
+        ):
+            _, grad_buffer, raw_gradient, _ = (
+                self._fast_weight_tensors(index)
+            )
+            module.accumulate_gradients(
+                grad_buffer,
+                raw_gradient,
+                subtract=subtract,
+            )
 
     @torch.no_grad()
     def update_state(
         self,
         embeddings: torch.FloatTensor,
         embedding_mask: torch.BoolTensor,
+        subtract_gradients: bool = False,
     ):
-        for module in self._fast_weight_mlps():
+        for index, module in enumerate(
+            self._fast_weight_mlps()
+        ):
+            state, grad_buffer, raw_gradient, _ = (
+                self._fast_weight_tensors(index)
+            )
             module.update_state(
+                state,
+                grad_buffer,
+                raw_gradient,
                 embeddings,
                 embedding_mask,
+                subtract_gradients=subtract_gradients,
             )
 
     @torch.no_grad()
     def finalize_gradients(self):
-        for module in self._fast_weight_mlps():
-            module.finalize_gradients()
+        for index, module in enumerate(
+            self._fast_weight_mlps()
+        ):
+            module.finalize_gradients(
+                *self._fast_weight_tensors(index),
+            )
 
     @torch.no_grad()
     def empty_state(self):
-        for module in self._fast_weight_mlps():
-            module.empty_state()
+        for index, module in enumerate(
+            self._fast_weight_mlps()
+        ):
+            module.empty_state(
+                *self._fast_weight_tensors(index),
+            )
 
     @torch.no_grad()
     def relative_grad_error(self) -> torch.FloatTensor:
         errors = [
-            module.relative_grad_error()
-            for module in self._fast_weight_mlps()
+            module.relative_grad_error(
+                self.fast_weight_grad_buffer[index],
+                self.fast_weight_final_grad_norm[index],
+            )
+            for index, module in enumerate(
+                self._fast_weight_mlps()
+            )
         ]
 
         if not errors:

@@ -13,6 +13,16 @@ class FoItttTrainer(BaseTrainer):
     model: FoItttModel
 
     def post_init(self):
+        if (
+            self.config.trainer.use_autocast
+            and "embeddings"
+            not in self.config.trainer.multiple_optimizers
+        ):
+            # The frozen vocabulary projection is already cast to BF16 by
+            # autocast for every use. Store it in that compute dtype to avoid
+            # retaining both a replicated FP32 weight and its BF16 cast.
+            self.model.lm_head.to(dtype=torch.bfloat16)
+
         self.model.init_state(
             self.global_batch_size,
             self.device,
@@ -193,7 +203,7 @@ class FoItttTrainer(BaseTrainer):
             dtype=torch.bfloat16,
             enabled=self.config.trainer.use_autocast,
         ):
-            hidden_states = self.model.model(
+            hidden_states = self.model.backbone_forward(
                 input_ids=input_ids,
             )
             loss, hidden_gradient = (
@@ -205,15 +215,13 @@ class FoItttTrainer(BaseTrainer):
             )
 
         if fast_weight_gradients_only:
-            grad_buffers = tuple(
-                module.grad_buffer
-                for module in self.model._fast_weight_mlps()
-            )
-            if grad_buffers:
+            if not self.model.disable_fast_weights:
                 torch.autograd.backward(
                     hidden_states[:, :-1],
                     hidden_gradient,
-                    inputs=grad_buffers,
+                    inputs=(
+                        self.model.fast_weight_grad_buffer,
+                    ),
                 )
         else:
             torch.autograd.backward(
@@ -332,6 +340,7 @@ class FoItttTrainer(BaseTrainer):
             self.model.update_state(
                 embeddings,
                 attention_mask,
+                subtract_gradients=True,
             )
 
         return embedding_loss
@@ -435,7 +444,7 @@ class FoItttTrainer(BaseTrainer):
             update_state=False,
             fast_weight_gradients_only=False,
         )
-        self.model.accumulate_gradients()
+        self.model.accumulate_gradients(subtract=True)
         relative_grad_error = self.model.relative_grad_error()
 
         post_metrics, grad_norm = self.post_forward()
