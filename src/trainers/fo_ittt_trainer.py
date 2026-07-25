@@ -31,6 +31,7 @@ class FoItttTrainer(BaseTrainer):
             module.fast_log_lr.no_muon = True
             module.fast_p_r.weight.no_muon = True
             module.fast_p_l.weight.no_muon = True
+            module.fast_m.no_muon = True
 
     def _autocast(self):
         return torch.autocast(

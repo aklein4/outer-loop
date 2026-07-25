@@ -239,12 +239,12 @@ class FastWeightMLP(nn.Module):
         self.up_fast = nn.Linear(
             config.hidden_size,
             self.fast_weight_size,
-            bias=True,
+            bias=False,
         )
         self.gate_fast = nn.Linear(
             config.hidden_size,
             self.fast_weight_size,
-            bias=True,
+            bias=False,
         )
         self.down_fast = nn.Linear(
             self.fast_weight_size,
@@ -269,10 +269,17 @@ class FastWeightMLP(nn.Module):
             self.fast_weight_size,
             bias=False,
         )
+        self.fast_m = nn.Parameter(
+            torch.empty(
+                self.fast_weight_size,
+                self.fast_weight_size,
+            )
+        )
         for parameter in (
             self.fast_log_lr,
             self.fast_p_r.weight,
             self.fast_p_l.weight,
+            self.fast_m,
         ):
             parameter.no_muon = True
         self.register_buffer(
@@ -285,15 +292,11 @@ class FastWeightMLP(nn.Module):
 
     @torch.no_grad()
     def reset_fast_parameters(self, initializer_range: float):
-        for projection in (self.up_fast, self.gate_fast):
-            projection.weight.normal_(std=initializer_range)
-            projection.bias.zero_()
-        self.down_fast.weight.normal_(std=initializer_range)
-
         self.fast_log_lr.normal_(std=0.25 / self.scalar_scaler)
         projection_std = 0.5 / self.scalar_scaler
         self.fast_p_r.weight.normal_(std=projection_std)
         self.fast_p_l.weight.normal_(std=projection_std)
+        self.fast_m.fill_(1.0 / self.scalar_scaler)
 
     def get_lr(
         self,
@@ -304,7 +307,7 @@ class FastWeightMLP(nn.Module):
         masked_embeddings = embeddings * embedding_mask[..., None]
         count = embedding_mask.sum(dim=-1).clamp_min(1.0)
 
-        offset = (
+        offset = self.fast_m[None] * (
             self.fast_p_l(masked_embeddings).transpose(-2, -1)
             @ self.fast_p_r(masked_embeddings)
         ) / count[..., None, None]
