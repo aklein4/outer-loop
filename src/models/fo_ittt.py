@@ -307,7 +307,7 @@ class FastWeightMLP(nn.Module):
         masked_embeddings = embeddings * embedding_mask[..., None]
         count = embedding_mask.sum(dim=-1).clamp_min(1.0)
 
-        offset = self.fast_m[None] * (
+        offset = (self.fast_m[None] * self.scalar_scaler) * (
             self.fast_p_l(masked_embeddings).transpose(-2, -1)
             @ self.fast_p_r(masked_embeddings)
         ) / count[..., None, None]
