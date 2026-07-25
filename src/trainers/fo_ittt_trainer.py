@@ -102,7 +102,7 @@ class FoItttTrainer(BaseTrainer):
                     * token_weights[:, i]
                 ).sum()
 
-            xm.optimization_barrier_([loss])
+            loss = xm.optimization_barrier_([loss])
 
             losses.append(loss.detach())
             loss.backward()
