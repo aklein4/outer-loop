@@ -174,6 +174,8 @@ class FoItttTrainer(BaseTrainer):
         )
         return loss, hidden_gradient
 
+
+    @torch_xla.compile(full_graph=True)
     def first_pass(
         self,
         input_ids,
@@ -243,6 +245,8 @@ class FoItttTrainer(BaseTrainer):
 
         return loss
 
+
+    @torch_xla.compile(full_graph=True)
     def second_pass(
         self,
         input_ids,
@@ -332,6 +336,7 @@ class FoItttTrainer(BaseTrainer):
 
         return embedding_loss
 
+
     @torch_xla.compile(full_graph=True)
     def post_forward(self):
         self.model.empty_state()
@@ -341,6 +346,7 @@ class FoItttTrainer(BaseTrainer):
 
         self.model.zero_grad(set_to_none=False)
         return metrics, grad_norm
+
 
     def train_step(self, batch):
         input_ids: torch.LongTensor = batch["input_ids"]
