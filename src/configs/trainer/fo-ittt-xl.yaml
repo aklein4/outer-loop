@@ -3,7 +3,7 @@ defaults:
   - _self_
 
 global_batch_size: 256
-num_logit_iterations: 8
+num_logit_iterations: 4
 
 type: fo_ittt_trainer.FoItttTrainer
 
