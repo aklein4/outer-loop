@@ -670,7 +670,7 @@ class FoItttModel(LlamaForCausalLM):
         hidden_states = self.backbone_forward(
             input_ids=input_ids
         )
-        return self.bidirectional_forward(hidden_states, attention_mask)
+        return self.bidirectional_forward(hidden_states.detach(), attention_mask)
 
     def second_pass_forward(
         self,
