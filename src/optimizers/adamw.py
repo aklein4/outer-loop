@@ -139,7 +139,7 @@ class AdamW(Optimizer):
 
                 update = (
                     exp_avg.to(p.dtype) /
-                    torch.clamp(exp_avg_sq.to(p.dtype), min=group["eps"]**2).sqrt()
+                    exp_avg_sq.to(p.dtype).clamp_min(0.0).sqrt().clamp_min(group["eps"])
                 )
                 if group["update_clip"] is not None:
                     update = torch.clamp(update, -group["update_clip"], group["update_clip"])

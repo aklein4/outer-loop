@@ -476,7 +476,7 @@ class RecurrentModel(LlamaForCausalLM):
         embeddings: torch.FloatTensor | None = None,
         embedding_mask: torch.BoolTensor | None = None,
     ) -> torch.FloatTensor:
-        if self.disable_fast_weights:
+        if self.disable_fast_weights or embeddings is None:
             return self.model(input_ids=input_ids)
         
         return self.model(

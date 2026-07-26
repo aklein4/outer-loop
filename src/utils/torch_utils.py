@@ -312,7 +312,8 @@ def newton_schulz(G, steps=5, eps=1e-7):
         X = X.transpose(-2, -1)
 
     # Ensure spectral norm is at most 1
-    X = X / (X.norm(dim=(-2, -1), keepdim=True) + eps)
+    X_f = X.float()
+    X = (X_f / (X_f.norm(dim=(-2, -1), keepdim=True) + eps)).to(X.dtype)
 
     # Perform the NS iterations
     if constants.XLA_AVAILABLE and False:
