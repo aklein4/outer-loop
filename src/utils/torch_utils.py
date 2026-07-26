@@ -391,6 +391,8 @@ def shift(
 
 
 def gaussian_init(module: nn.Module):
+    if getattr(module, "inited", False):
+        return
 
     if isinstance(module, nn.Linear):
         module.weight.data.normal_(mean=0.0, std=1/module.in_features**0.5)

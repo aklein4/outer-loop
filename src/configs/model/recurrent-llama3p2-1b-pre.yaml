@@ -1,5 +1,5 @@
 defaults:
-  - fo-ittt-llama3p2-1b
+  - recurrent-llama3p2-1b
   - _self_
 
 
