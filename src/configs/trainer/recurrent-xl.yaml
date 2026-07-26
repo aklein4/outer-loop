@@ -5,7 +5,7 @@ type: recurrent_trainer.RecurrentTrainer  # Used to import the trainer from this
 # This config is similar to the hyperparameters of GPT-3 XL which had 1.3B parameters.
 
 # total batch size across all devices
-global_batch_size: 256 # ~16M tokens total
+global_batch_size: 512 # ~16M tokens total
 
 # run for N steps
 max_steps: 1000000
@@ -29,7 +29,7 @@ multiple_optimizers:
       type: muon.ScaledMuon
 
       kwargs:
-        lr: 2.0e-4
+        lr: 3.0e-4
         betas: [0.9, 0.95]
         eps: 1e-10
         weight_decay: 0.01
