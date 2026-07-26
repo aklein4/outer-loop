@@ -1,5 +1,5 @@
 defaults:
-  - llama3p2-1b
+  - llama3p2-test
   - override sharding: recurrent-fsdp
   - override remat: recurrent
   - _self_
