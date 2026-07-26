@@ -483,7 +483,7 @@ class RecurrentModel(LlamaForCausalLM):
         return self.model(
             input_ids=input_ids,
             lr_embeddings=embeddings,
-            lr_embedding_mask=embedding_mask,
+            lr_embedding_mask=embedding_mask.float(),
         )
 
 
