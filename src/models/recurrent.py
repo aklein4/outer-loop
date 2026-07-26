@@ -96,7 +96,7 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
             )
 
         elif mode != RecurrentMode.TRAIN_SECOND:
-            raise RuntimeError(f"unexpected fast-weight mode in backward: {mode}")
+            raise RuntimeError(f"invalid fast-weight mode in backward: {mode}")
 
         (
             activations,
@@ -275,15 +275,16 @@ class RecurrentFastWeightMLP(nn.Module):
 
             lr = self.get_lr(lr_embeddings, lr_embedding_mask)
 
-        output = RecurrentFastWeightFunction.apply(
-            activations,
-            output,
-            self.down_fast.weight,
-            self.grad_buffer,
-            lr,
-            self.grad_eps,
-            self.mode,
-        )
+        if self.mode != RecurrentMode.INFERENCE:
+            output = RecurrentFastWeightFunction.apply(
+                activations,
+                output,
+                self.down_fast.weight,
+                self.grad_buffer,
+                lr,
+                self.grad_eps,
+                self.mode,
+            )
 
         return y_base + output
 
