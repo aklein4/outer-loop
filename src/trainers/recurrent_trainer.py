@@ -37,6 +37,7 @@ class RecurrentTrainer(BaseTrainer):
             module.fast_m.no_muon = True
             module.fast_p_r.weight.no_muon = True
             module.fast_p_l.weight.no_muon = True
+            module.fast_p_attn.weight.no_muon = True
 
 
     def _autocast(self):
@@ -277,7 +278,7 @@ class RecurrentTrainer(BaseTrainer):
             losses.append(loss)
 
             master_print(
-                f"First pass {index:02d} completed."
+                f"First  pass {index:02d} completed."
             )
 
         self.model.finalize_state()

@@ -227,6 +227,10 @@ class RecurrentFastWeightMLP(nn.Module):
         self.fast_p_l.weight.data.normal_(std=0.5/self.scalar_scaler)
         self.fast_p_l.inited = True
 
+        self.fast_p_attn = nn.Linear(
+            config.hidden_size, 1, bias=False
+        )
+
         # ephemeral state
         self.state: nn.Buffer
         self.grad_buffer: nn.Buffer
@@ -297,13 +301,15 @@ class RecurrentFastWeightMLP(nn.Module):
 
         embedding_mask = embedding_mask.to(embeddings.dtype)
         masked_embeddings = embeddings * embedding_mask[..., None]
-        count = embedding_mask.sum(dim=-1).clamp_min(1.0)
+
+        a = self.fast_p_attn(masked_embeddings)
+        a = torch.masked_fill(a, embedding_mask[..., None] < 0.5, -100.0)
+        attn = F.softmax(a, dim=-2)
 
         offset = (
             self.fast_p_l(masked_embeddings).mT @
-            self.fast_p_r(masked_embeddings)
+            (self.fast_p_r(masked_embeddings) * attn)
             * (self.fast_m[None] * self.scalar_scaler)
-            / count[..., None, None]
         )
         offset = 1 - F.elu(1 - offset)
 
