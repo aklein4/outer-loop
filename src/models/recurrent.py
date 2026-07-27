@@ -20,13 +20,8 @@ from utils.torch_utils import fixed_linear, gaussian_init
 def _get_G(
     activations: torch.FloatTensor,
     output_grad: torch.FloatTensor,
-    down_weight: torch.FloatTensor,
 ) -> torch.FloatTensor:
-    # all float to avoid gradient accumulation drift
-    value_gradient = fixed_linear(
-        output_grad.float(), down_weight.T.float()
-    )
-    return value_gradient.mT @ activations.float()
+    return output_grad.mT.float() @ activations.float()
 
 
 def _get_leaf(x: torch.FloatTensor) -> torch.FloatTensor:
@@ -47,7 +42,6 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
         ctx,
         activations: torch.FloatTensor,
         output: torch.FloatTensor,
-        down_weight: torch.FloatTensor,
         grad_buffer: torch.FloatTensor,
         lr: torch.FloatTensor | None,
         grad_eps: float,
@@ -56,7 +50,6 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
 
         to_save = (
             activations,
-            down_weight,
         )
         if mode == RecurrentMode.TRAIN_SECOND:
             to_save += (grad_buffer, lr)
@@ -77,18 +70,13 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
         mode = ctx.mode
 
         if mode == RecurrentMode.TRAIN_FIRST:
-            activations, down_weight = ctx.saved_tensors
+            activations, = ctx.saved_tensors
 
-            G = _get_G(
-                activations,
-                output_grad,
-                down_weight,
-            )
+            G = _get_G(activations, output_grad)
 
             return (
                 None,
                 output_grad,
-                None,
                 G,
                 None,
                 None,
@@ -100,25 +88,16 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
 
         (
             activations,
-            down_weight,
             remaining_grad, # grad_buffer
             lr,
         ) = ctx.saved_tensors
 
+        G = _get_G(activations, output_grad)
+
+        future_grad = (remaining_grad - G).detach()
+
         with torch.enable_grad():
-            activations_leaf = _get_leaf(activations)
-            down_weight_leaf = _get_leaf(down_weight)
             lr_leaf = _get_leaf(lr)
-
-            G = _get_G(
-                activations_leaf,
-                output_grad,
-                down_weight_leaf,
-            )
-
-            future_grad = (
-                remaining_grad - G
-            ).detach()
 
             with torch.autocast(
                 str(future_grad.device.type),
@@ -130,21 +109,15 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
                 )
                 state_update = -lr_leaf * G_normed
 
-                local_loss = (future_grad * state_update).sum()
-
-            (
-                activation_grad,
-                down_weight_grad,
-                lr_grad,
-            ) = torch.autograd.grad(
-                local_loss,
-                (activations_leaf, down_weight_leaf, lr_leaf),
+            lr_grad, = torch.autograd.grad(
+                outputs=state_update,
+                inputs=lr_leaf,
+                grad_outputs=future_grad,
             )
 
         return (
-            activation_grad.to(activations.dtype),
+            None,
             output_grad,
-            down_weight_grad.to(down_weight.dtype),
             G,
             lr_grad.to(lr.dtype),
             None,
@@ -274,33 +247,26 @@ class RecurrentFastWeightMLP(nn.Module):
             self.up_fast(x),
             self.gate_fast(x),
         )
-        value = torch.einsum("boi,bli->blo", self.state, h_fast)
-        output = self.down_fast(value)
-
-        activations = h_fast.detach()
-        lr = None
-        if self.mode == RecurrentMode.TRAIN_SECOND:
-
-            x_d = x.detach()
-            activations = unit_glu(
-                self.up_fast(x_d),
-                self.gate_fast(x_d),
-            )
-
-            lr = self.get_lr(lr_embeddings, lr_embedding_mask)
+        output = torch.einsum("boi,bli->blo", self.state, h_fast)
 
         if self.mode != RecurrentMode.INFERENCE:
+
+            lr = None
+            if self.mode == RecurrentMode.TRAIN_SECOND:
+                lr = self.get_lr(lr_embeddings, lr_embedding_mask)
+
             output = RecurrentFastWeightFunction.apply(
-                activations,
+                h_fast.detach(),
                 output,
-                self.down_fast.weight,
                 self.grad_buffer,
                 lr,
                 self.grad_eps,
                 self.mode,
             )
 
-        return y_base + output
+        y_fast = self.down_fast(output)
+
+        return y_base + y_fast
 
 
     def get_lr(
