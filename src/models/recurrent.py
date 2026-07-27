@@ -20,8 +20,13 @@ from utils.torch_utils import fixed_linear, gaussian_init
 def _get_G(
     activations: torch.FloatTensor,
     output_grad: torch.FloatTensor,
+    down_weight: torch.FloatTensor,
 ) -> torch.FloatTensor:
-    return output_grad.mT.float() @ activations.float()
+    # all float to avoid gradient accumulation drift
+    value_gradient = fixed_linear(
+        output_grad.float(), down_weight.T.float()
+    )
+    return value_gradient.mT @ activations.float()
 
 
 def _get_leaf(x: torch.FloatTensor) -> torch.FloatTensor:
@@ -42,6 +47,7 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
         ctx,
         activations: torch.FloatTensor,
         output: torch.FloatTensor,
+        down_weight: torch.FloatTensor,
         grad_buffer: torch.FloatTensor,
         lr: torch.FloatTensor | None,
         grad_eps: float,
@@ -50,6 +56,7 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
 
         to_save = (
             activations,
+            down_weight,
         )
         if mode == RecurrentMode.TRAIN_SECOND:
             to_save += (grad_buffer, lr)
@@ -70,13 +77,18 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
         mode = ctx.mode
 
         if mode == RecurrentMode.TRAIN_FIRST:
-            activations, = ctx.saved_tensors
+            activations, down_weight = ctx.saved_tensors
 
-            G = _get_G(activations, output_grad)
+            G = _get_G(
+                activations,
+                output_grad,
+                down_weight,
+            )
 
             return (
                 None,
                 output_grad,
+                None,
                 G,
                 None,
                 None,
@@ -88,16 +100,25 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
 
         (
             activations,
+            down_weight,
             remaining_grad, # grad_buffer
             lr,
         ) = ctx.saved_tensors
 
-        G = _get_G(activations, output_grad)
-
-        future_grad = (remaining_grad - G).detach()
-
         with torch.enable_grad():
+            activations_leaf = _get_leaf(activations)
+            down_weight_leaf = _get_leaf(down_weight)
             lr_leaf = _get_leaf(lr)
+
+            G = _get_G(
+                activations_leaf,
+                output_grad,
+                down_weight_leaf,
+            )
+
+            future_grad = (
+                remaining_grad - G
+            ).detach()
 
             with torch.autocast(
                 str(future_grad.device.type),
@@ -109,15 +130,21 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
                 )
                 state_update = -lr_leaf * G_normed
 
-            lr_grad, = torch.autograd.grad(
-                outputs=state_update,
-                inputs=lr_leaf,
-                grad_outputs=future_grad,
+                local_loss = (future_grad * state_update).sum()
+
+            (
+                activation_grad,
+                down_weight_grad,
+                lr_grad,
+            ) = torch.autograd.grad(
+                local_loss,
+                (activations_leaf, down_weight_leaf, lr_leaf),
             )
 
         return (
-            None,
+            activation_grad.to(activations.dtype),
             output_grad,
+            down_weight_grad.to(down_weight.dtype),
             G,
             lr_grad.to(lr.dtype),
             None,
@@ -139,6 +166,7 @@ class RecurrentFastWeightMLP(nn.Module):
         self.fast_weight_size = config.fast_weight_size
 
         self.base_lr = config.base_lr
+        self.rms_norm_eps = config.rms_norm_eps
         self.grad_eps = config.grad_rms_eps
         self.scalar_scaler = math.sqrt(config.hidden_size)
 
@@ -185,7 +213,7 @@ class RecurrentFastWeightMLP(nn.Module):
         )
         self.fast_m = nn.Parameter(
             torch.ones(self.fast_weight_size, self.fast_weight_size)
-            / self.scalar_scaler
+            * 0.25 / self.scalar_scaler
         )
 
         self.fast_p_r = nn.Linear(
@@ -193,16 +221,12 @@ class RecurrentFastWeightMLP(nn.Module):
             self.fast_weight_size,
             bias=False,
         )
-        self.fast_p_r.weight.data.normal_(std=0.5/self.scalar_scaler)
-        self.fast_p_r.inited = True
-
         self.fast_p_l = nn.Linear(
             config.hidden_size,
             self.fast_weight_size,
             bias=False,
         )
-        self.fast_p_l.weight.data.normal_(std=0.5/self.scalar_scaler)
-        self.fast_p_l.inited = True
+
 
         self.fast_p_attn = nn.Linear(
             config.hidden_size, 1, bias=False
@@ -247,26 +271,33 @@ class RecurrentFastWeightMLP(nn.Module):
             self.up_fast(x),
             self.gate_fast(x),
         )
-        output = torch.einsum("boi,bli->blo", self.state, h_fast)
+        value = torch.einsum("boi,bli->blo", self.state, h_fast)
+        output = self.down_fast(value)
+
+        activations = h_fast.detach()
+        lr = None
+        if self.mode == RecurrentMode.TRAIN_SECOND:
+
+            x_d = x.detach()
+            activations = unit_glu(
+                self.up_fast(x_d),
+                self.gate_fast(x_d),
+            )
+
+            lr = self.get_lr(lr_embeddings, lr_embedding_mask)
 
         if self.mode != RecurrentMode.INFERENCE:
-
-            lr = None
-            if self.mode == RecurrentMode.TRAIN_SECOND:
-                lr = self.get_lr(lr_embeddings, lr_embedding_mask)
-
             output = RecurrentFastWeightFunction.apply(
-                h_fast.detach(),
+                activations,
                 output,
+                self.down_fast.weight,
                 self.grad_buffer,
                 lr,
                 self.grad_eps,
                 self.mode,
             )
 
-        y_fast = self.down_fast(output)
-
-        return y_base + y_fast
+        return y_base + output
 
 
     def get_lr(
@@ -282,11 +313,16 @@ class RecurrentFastWeightMLP(nn.Module):
         a = torch.masked_fill(a, embedding_mask[..., None] < 0.5, -100.0)
         attn = F.softmax(a, dim=-2)
 
+        l = self.fast_p_l(masked_embeddings)
+        l = F.rms_norm(l, l.shape[-1:], eps=self.rms_norm_eps)
+
+        r = self.fast_p_r(masked_embeddings)
+        r = attn * F.rms_norm(r, r.shape[-1:], eps=self.rms_norm_eps)
+
         offset = (
-            self.fast_p_l(masked_embeddings).mT @
-            (self.fast_p_r(masked_embeddings) * attn)
-            * (self.fast_m[None] * self.scalar_scaler)
-        )
+            l.mT @ r
+            
+        ) * (self.fast_m[None] * self.scalar_scaler)
         offset = 1 - F.elu(1 - offset)
 
         log_lr = (

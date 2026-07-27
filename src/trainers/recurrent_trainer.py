@@ -35,8 +35,6 @@ class RecurrentTrainer(BaseTrainer):
         for module in self.model.fast_modules():
             module.fast_log_lr.no_muon = True
             module.fast_m.no_muon = True
-            module.fast_p_r.weight.no_muon = True
-            module.fast_p_l.weight.no_muon = True
             module.fast_p_attn.weight.no_muon = True
 
 
@@ -208,9 +206,7 @@ class RecurrentTrainer(BaseTrainer):
         with self._autocast():
 
             self.model.set_mode(RecurrentMode.INFERENCE)
-            with torch.set_grad_enabled(
-                self.config.trainer.get("propagate_embedding_grads", False)
-            ):
+            with torch.set_grad_enabled(self.config.trainer.propagate_embedding_grads):
                 hidden_states = self.model.forward_backbone(
                     input_ids,
                 )
