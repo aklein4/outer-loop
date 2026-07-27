@@ -64,9 +64,9 @@ pure_modules: []
 # You can add any additional configuration options for your model here
 # They will appear as attributes of config.model
 
-fast_weight_size: 1536
+fast_weight_size: 1024
 
-base_lr: 1.0e-3
+base_lr: 3e-4
 momentum_beta: 0.9
 
 inv_quantile: 0.25

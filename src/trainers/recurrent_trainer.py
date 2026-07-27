@@ -245,12 +245,15 @@ class RecurrentTrainer(BaseTrainer):
     @torch_xla.compile(full_graph=True)
     def post_forward(self):
 
+        err = self.model.relative_grad_error()
         self.model.empty_state()
 
         grad_norm = self.clip_gradients()
         aux = self.optimization_step()
 
         self.model.zero_grad(set_to_none=False)
+
+        aux["relative_grad_error"] = err
 
         return aux, grad_norm
 
@@ -273,6 +276,7 @@ class RecurrentTrainer(BaseTrainer):
         for index, episode in enumerate(episodes):
 
             loss = self.first_pass(*episode)
+            torch_xla.sync(wait=True)
 
             aux[f"lm_loss/episode_{index:02d}"] = loss
             losses.append(loss)
@@ -283,11 +287,13 @@ class RecurrentTrainer(BaseTrainer):
 
         self.model.finalize_state()
         self.model.zero_grad(set_to_none=False)
+        torch_xla.sync(wait=True)
 
         # second loop
         for index, episode in enumerate(episodes[:-1]):
 
             self.second_pass(*episode)
+            torch_xla.sync(wait=True)
         
             master_print(
                 f"Second pass {index:02d} completed."
@@ -299,13 +305,16 @@ class RecurrentTrainer(BaseTrainer):
             no_slow_grads=False,
             second_state_update=True
         )
-        aux["relative_grad_error"] = self.model.relative_grad_error()
+        torch_xla.sync(wait=True)
+
         master_print(
             f"Second pass {terminal_index:02d} completed."
         )
 
         # optimizer step
         post_aux, grad_norm = self.post_forward()
+        torch_xla.sync(wait=True)
+
         aux.update(post_aux)
         master_print("Optimization step completed.")
 

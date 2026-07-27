@@ -315,9 +315,12 @@ class FastWeight(nn.Module):
 
 
 class UnitGLU(nn.Module):
-
     def forward(self, x, gate):
         return x * F.silu(gate) / 0.6
+
+class StandardGLU(nn.Module):
+    def forward(self, x, gate):
+        return x * F.silu(gate)
 
 
 class FastWeightMLP(nn.Module):
@@ -361,24 +364,14 @@ class FastWeightMLP(nn.Module):
             self.fast_weight_size, self.hidden_size, bias=False
         )
 
-        self.register_buffer(
-            "in_scale", torch.ones(self.hidden_size), persistent=True
-        )
-        self.register_buffer(
-            "out_scale", torch.ones(self.hidden_size), persistent=True
-        )
-
         self.do_init = False
         self.init_mask = None
 
 
     @torch.no_grad()
     def init_input(self, x):
-        _, std, _ = _masked_statistics(x, self.init_mask)
-
-        self.in_scale.copy_(1 / (std + self.eps))
-        x = x.float() * self.in_scale[None]
-
+        x = x.float()
+        
         scaled_mean, _, covariance = _masked_statistics(x, self.init_mask)
         whitening = cut_inv_sqrt(covariance, self.inv_quantile)
 
@@ -410,10 +403,7 @@ class FastWeightMLP(nn.Module):
 
     @torch.no_grad()
     def init_output(self, y):
-        _, std, _ = _masked_statistics(y, self.init_mask)
-
-        self.out_scale.copy_(std)
-        y = y.float() / (self.out_scale[None] + self.eps)
+        y = y.float()
 
         _, _, covariance = _masked_statistics(y, self.init_mask)
 
@@ -443,13 +433,11 @@ class FastWeightMLP(nn.Module):
             self.init_output(y_base)
             return y_base
 
-        x_fast = x * self.in_scale[None]
         h_fast = self.fast_act_fn(
-            self.up_fast(x_fast), self.gate_fast(x_fast)
+            self.up_fast(x), self.gate_fast(x)
         )
         h_fast = self.fast(h_fast)
         y_fast = self.down_fast(h_fast)
-        y_fast = y_fast * self.out_scale[None]
 
         return y_base + y_fast
 

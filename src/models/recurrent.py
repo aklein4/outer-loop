@@ -152,6 +152,10 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
         )
 
 
+def unit_glu(x: torch.FloatTensor, gate: torch.FloatTensor) -> torch.FloatTensor:
+    return x * F.silu(gate) / 0.6
+
+
 class RecurrentFastWeightMLP(nn.Module):
 
     def __init__(self, config: DictConfig):
@@ -188,12 +192,12 @@ class RecurrentFastWeightMLP(nn.Module):
         self.up_fast = nn.Linear(
             config.hidden_size,
             self.fast_weight_size,
-            bias=False,
+            bias=True,
         )
         self.gate_fast = nn.Linear(
             config.hidden_size,
             self.fast_weight_size,
-            bias=False,
+            bias=True,
         )
         self.down_fast = nn.Linear(
             self.fast_weight_size,
@@ -266,7 +270,10 @@ class RecurrentFastWeightMLP(nn.Module):
         y_base = self.down_proj(h_base)
 
         # fast mlp
-        h_fast = self.act_fn(self.gate_fast(x)) * self.up_fast(x)
+        h_fast = unit_glu(
+            self.up_fast(x),
+            self.gate_fast(x),
+        )
         value = torch.einsum("boi,bli->blo", self.state, h_fast)
         output = self.down_fast(value)
 
@@ -275,7 +282,10 @@ class RecurrentFastWeightMLP(nn.Module):
         if self.mode == RecurrentMode.TRAIN_SECOND:
 
             x_d = x.detach()
-            activations = self.act_fn(self.gate_fast(x_d)) * self.up_fast(x_d)
+            activations = unit_glu(
+                self.up_fast(x_d),
+                self.gate_fast(x_d),
+            )
 
             lr = self.get_lr(lr_embeddings, lr_embedding_mask)
 
@@ -442,7 +452,7 @@ class RecurrentModel(LlamaForCausalLM):
         self.apply(gaussian_init)
 
 
-    def load_state_dict(
+    def _old_load_state_dict(
         self,
         state_dict: dict[str, torch.Tensor],
         strict: bool = True,
