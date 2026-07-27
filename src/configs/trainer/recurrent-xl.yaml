@@ -86,4 +86,4 @@ input_sharding_spec: [[data, fsdp], null, null]
 
 num_logit_iterations: 4
 
-propagate_embedding_grads: false
+propagate_embedding_grads: true
