@@ -208,12 +208,14 @@ class RecurrentTrainer(BaseTrainer):
         with self._autocast():
 
             self.model.set_mode(RecurrentMode.INFERENCE)
-            with torch.no_grad():
+            with torch.set_grad_enabled(
+                self.config.trainer.get("propagate_embedding_grads", False)
+            ):
                 hidden_states = self.model.forward_backbone(
                     input_ids,
                 )
             embeddings = self.model.forward_embeddings(
-                hidden_states.detach(),
+                hidden_states,
                 pad_mask,
             )
 
