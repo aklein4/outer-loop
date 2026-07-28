@@ -7,8 +7,6 @@ defaults:
 
 type: recurrent.RecurrentModel
 
-pure_modules:
-  - DynamicLR
 
 fast_weight_size: 1024
 base_lr: 3e-4
