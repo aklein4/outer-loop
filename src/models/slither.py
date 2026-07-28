@@ -455,6 +455,7 @@ class SlitherModel(nn.Module):
         self.gradient_checkpointing = False
 
         self.apply(gaussian_init)
+        self.embed_tokens.weight.data.normal_(mean=0.0, std=config.initializer_range)
 
 
     def gradient_checkpointing_enable(self, enable: bool = True):

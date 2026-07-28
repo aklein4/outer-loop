@@ -33,9 +33,12 @@ class RecurrentTrainer(BaseTrainer):
         )
 
         for module in self.model.fast_modules():
-            module.fast_log_lr.no_muon = True
-            module.fast_m.no_muon = True
-            module.fast_p_attn.weight.no_muon = True
+            try:
+                module.dynamic_lr.fast_log_lr.no_muon = True
+                module.dynamic_lr.fast_m.no_muon = True
+            except AttributeError:
+                module.dynamic_lr._module.fast_log_lr.no_muon = True
+                module.dynamic_lr._module.fast_m.no_muon = True
 
 
     def _autocast(self):

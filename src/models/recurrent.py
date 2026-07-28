@@ -185,6 +185,86 @@ def unit_glu(x: torch.FloatTensor, gate: torch.FloatTensor) -> torch.FloatTensor
     return x * F.silu(gate) / 0.6
 
 
+class DynamicLR(nn.Module):
+
+    def __init__(self, config: DictConfig):
+        super().__init__()
+
+        self.fast_weight_size = config.fast_weight_size
+
+        self.base_lr = config.base_lr
+
+        self.scalar_scaler = math.sqrt(self.fast_weight_size)
+        self.rms_norm_eps = config.rms_norm_eps
+
+        # learning-rate parameters
+        self.fast_log_lr = nn.Parameter(
+            torch.randn(self.fast_weight_size, self.fast_weight_size)
+            * 0.35 / self.scalar_scaler
+        )
+        self.fast_m = nn.Parameter(
+            torch.ones(self.fast_weight_size, self.fast_weight_size)
+            * 0.35 / self.scalar_scaler
+        )
+
+        self.fast_p_r = nn.Linear(
+            config.hidden_size,
+            self.fast_weight_size,
+            bias=False,
+        )
+        self.fast_p_l = nn.Linear(
+            config.hidden_size,
+            self.fast_weight_size,
+            bias=False,
+        )
+
+        self.fast_attn_r = nn.Linear(
+            config.hidden_size, 1, bias=False
+        )
+        self.fast_attn_l = nn.Linear(
+            config.hidden_size, 1, bias=False
+        )
+
+
+    def forward(
+        self,
+        embeddings: torch.FloatTensor,
+        embedding_mask: torch.BoolTensor,
+    ) -> torch.FloatTensor:
+
+        embedding_mask = embedding_mask.to(embeddings.dtype)
+        masked_embeddings = embeddings * embedding_mask[..., None]
+
+        a_r = self.fast_attn_r(masked_embeddings)
+        a_r = torch.masked_fill(a_r, embedding_mask[..., None] < 0.5, -100.0)
+        attn_r = F.softmax(a_r, dim=-2)
+
+        a_l = self.fast_attn_l(masked_embeddings)
+        a_l = torch.masked_fill(a_l, embedding_mask[..., None] < 0.5, -100.0)
+        attn_l = F.softmax(a_l, dim=-2)
+
+        l = (self.fast_p_l(masked_embeddings) * attn_l).sum(dim=-2)
+        l = F.rms_norm(l, l.shape[-1:], eps=self.rms_norm_eps)
+
+        r = (self.fast_p_r(masked_embeddings) * attn_r).sum(dim=-2)
+        r = F.rms_norm(r, r.shape[-1:], eps=self.rms_norm_eps)
+
+        offset = (
+            l[:, :, None] + r[:, None, :]
+        ) * (self.fast_m[None] * self.scalar_scaler)
+
+        log_lr = (
+            self.fast_log_lr * self.scalar_scaler
+            + offset
+        )
+
+        return (
+            torch.exp(log_lr)
+            * self.base_lr
+            / math.sqrt(self.fast_weight_size)
+        )
+
+
 class RecurrentFastWeightMLP(nn.Module):
 
     def __init__(self, config: DictConfig):
@@ -194,10 +274,7 @@ class RecurrentFastWeightMLP(nn.Module):
         self.intermediate_size = config.intermediate_size
         self.fast_weight_size = config.fast_weight_size
 
-        self.base_lr = config.base_lr
-        self.rms_norm_eps = config.rms_norm_eps
         self.grad_eps = config.grad_rms_eps
-        self.scalar_scaler = math.sqrt(config.hidden_size)
 
         self.act_fn = ACT2FN[config.hidden_act]
 
@@ -235,36 +312,13 @@ class RecurrentFastWeightMLP(nn.Module):
             bias=False,
         )
 
-        # learning-rate parameters
-        self.fast_log_lr = nn.Parameter(
-            torch.randn(self.fast_weight_size, self.fast_weight_size)
-            * 0.25 / self.scalar_scaler
-        )
-        self.fast_m = nn.Parameter(
-            torch.ones(self.fast_weight_size, self.fast_weight_size)
-            * 0.25 / self.scalar_scaler
-        )
-
-        self.fast_p_r = nn.Linear(
-            config.hidden_size,
-            self.fast_weight_size,
-            bias=False,
-        )
-        self.fast_p_l = nn.Linear(
-            config.hidden_size,
-            self.fast_weight_size,
-            bias=False,
-        )
-
-
-        self.fast_p_attn = nn.Linear(
-            config.hidden_size, 1, bias=False
-        )
+        self.dynamic_lr = DynamicLR(config)
 
         # ephemeral state
         self.state: nn.Buffer
         self.grad_buffer: nn.Buffer
         self.final_grad_norm: nn.Buffer
+
 
     @torch.no_grad()
     def pretrained_init(self) -> None:
@@ -314,7 +368,7 @@ class RecurrentFastWeightMLP(nn.Module):
                 self.gate_fast(x_d),
             )
 
-            lr = self.get_lr(lr_embeddings, lr_embedding_mask)
+            lr = self.dynamic_lr(lr_embeddings, lr_embedding_mask)
 
         if mode != RecurrentMode.INFERENCE:
             output = RecurrentFastWeightFunction.apply(
@@ -328,43 +382,6 @@ class RecurrentFastWeightMLP(nn.Module):
             )
 
         return y_base + output
-
-
-    def get_lr(
-        self,
-        embeddings: torch.FloatTensor,
-        embedding_mask: torch.BoolTensor,
-    ) -> torch.FloatTensor:
-
-        embedding_mask = embedding_mask.to(embeddings.dtype)
-        masked_embeddings = embeddings * embedding_mask[..., None]
-
-        a = self.fast_p_attn(masked_embeddings)
-        a = torch.masked_fill(a, embedding_mask[..., None] < 0.5, -100.0)
-        attn = F.softmax(a, dim=-2)
-
-        l = self.fast_p_l(masked_embeddings)
-        l = F.rms_norm(l, l.shape[-1:], eps=self.rms_norm_eps)
-
-        r = self.fast_p_r(masked_embeddings)
-        r = attn * F.rms_norm(r, r.shape[-1:], eps=self.rms_norm_eps)
-
-        offset = (
-            l.mT @ r
-            
-        ) * (self.fast_m[None] * self.scalar_scaler)
-        offset = 1 - F.elu(1 - offset)
-
-        log_lr = (
-            self.fast_log_lr * self.scalar_scaler
-            + offset
-        )
-
-        return (
-            torch.exp(log_lr)
-            * self.base_lr
-            / math.sqrt(self.fast_weight_size)
-        )
 
 
     @torch.no_grad()
@@ -412,7 +429,7 @@ class RecurrentFastWeightMLP(nn.Module):
             G.float(), G.shape[-2:], eps=self.grad_eps,
         )
 
-        lr = self.get_lr(embeddings, embedding_mask)
+        lr = self.dynamic_lr(embeddings, embedding_mask)
 
         state_update = -lr * G_norm
 
