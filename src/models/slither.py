@@ -187,16 +187,9 @@ class GroupRMSNorm(nn.Module):
 
 class SlitherStateMechanism(nn.Module):
 
-    def __init__(self, config: DictConfig, layer_idx):
+    def __init__(self, config: DictConfig):
         super().__init__()
         self.config = config
-
-        self.layer_idx: nn.Buffer
-        self.register_buffer(
-            "layer_idx",
-            torch.tensor(layer_idx, dtype=torch.long).reshape(1),
-            persistent=False
-        )
 
         self.hidden_size = config.hidden_size
         self.mem_size = config.hidden_size
@@ -251,24 +244,19 @@ class SlitherStateMechanism(nn.Module):
             / math.sqrt(self.state_size)
         )
 
+        # ephemeral state
+        self.state: nn.Buffer
 
-    def select_state(self, state: torch.FloatTensor) -> torch.FloatTensor:
-        # [B, L, D, D] -> [B, D, D]
-        return torch.index_select(
-            state, 1, self.layer_idx
-        ).squeeze(1)
 
     def forward(
         self,
         hidden_states: torch.FloatTensor,
-        full_state: torch.FloatTensor,
     ):
-        state = self.select_state(full_state)
 
         query_states = self.q_proj(hidden_states)
         query_states = self.rms_norm(self.activation(query_states))
 
-        scaled_state = state * self.odot[None]
+        scaled_state = self.state * self.odot[None]
         output = torch.einsum("boi,bli->blo", scaled_state, query_states)
 
         gate = torch.sigmoid(self.read_gate(hidden_states))
@@ -293,7 +281,50 @@ class SlitherStateMechanism(nn.Module):
 
         return update
 
-        
+
+    @torch.no_grad()
+    def init_state(self, bs: int, device: torch.device) -> None:
+
+        state = torch.zeros(
+            bs, self.state_size, self.state_size,
+            device=device, dtype=torch.float32
+        )
+        state = maybe_shard_with_gradients(state)
+
+        self.register_buffer("state", state, persistent=False)
+
+        self.state.requires_grad_(True)
+        self.state.grad = maybe_shard_with_gradients(
+            torch.zeros_like(self.state)
+        )
+
+
+    @torch.no_grad()
+    def empty_state(self) -> None:
+        self.state.zero_()
+        self.state.grad.zero_()
+
+
+
+    @torch.no_grad()
+    def increment_state(self, mem_states: torch.FloatTensor) -> None:
+        self.state.add_(
+            self.get_update(mem_states)
+        )
+
+
+    def decrement_state(self, mem_states: torch.FloatTensor) -> None:
+
+        update = self.get_update(mem_states)
+        torch.autograd.backward(
+            update,
+            self.state.grad
+        )
+
+        with torch.no_grad():
+            self.state.sub_(update)
+
+
 class SlitherLayer(nn.Module):
 
     offload_name = "slither_layer_input"
@@ -307,9 +338,7 @@ class SlitherLayer(nn.Module):
         self.self_attn = SlitherAttention(
             config=config, layer_idx=layer_idx, is_causal=self.is_causal
         )
-        self.state_mechanism = SlitherStateMechanism(
-            config=config, layer_idx=layer_idx
-        )
+        self.state_mechanism = SlitherStateMechanism(config)
         self.mlp = LlamaMLP(config)
 
         self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -323,7 +352,6 @@ class SlitherLayer(nn.Module):
         self,
         hidden_states: torch.Tensor,
         mem_states: torch.Tensor,
-        full_state: torch.FloatTensor,
         attention_mask: torch.Tensor | None = None,
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> torch.Tensor:
@@ -345,7 +373,6 @@ class SlitherLayer(nn.Module):
         state_states = self.state_layernorm(hidden_states)
         state_states = self.state_mechanism(
             hidden_states=state_states,
-            full_state=full_state,
         )
         hidden_states = hidden_states + state_states
 
@@ -426,14 +453,12 @@ class SlitherModel(nn.Module):
         input_ids: torch.LongTensor | None = None,
         inputs_embeds: torch.FloatTensor | None = None,
         mem_states: torch.FloatTensor | None = None,
-        full_state: torch.FloatTensor | None = None,
         attention_mask: torch.FloatTensor | None = None, # only used in non-kernel attention
         position_ids: torch.LongTensor | None = None,
         logits_to_keep: slice | None = None,
         skip_logits: bool = False,
     ) -> torch.Tensor:        
-        assert full_state is not None, "full_state must be provided for SlitherModel"
-        
+
         # convert input ids to embeddings
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
@@ -464,8 +489,10 @@ class SlitherModel(nn.Module):
             # dummy value
             if constants.XLA_AVAILABLE:
                 causal_mask = torch.zeros_like(position_ids)
+                noncausal_mask = torch.zeros_like(position_ids)
             else:
                 causal_mask = None
+                noncausal_mask = None
 
         else:
 
@@ -474,10 +501,17 @@ class SlitherModel(nn.Module):
                 diagonal=1,
             )
 
+            # TODO: correct broadcasting for different attention mask shapes
             if attention_mask is not None:
                 causal_mask = causal_mask + attention_mask
 
             causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)  # Add batch and head dimension
+
+            noncausal_mask = attention_mask
+            if noncausal_mask is None:
+                noncausal_mask = torch.zeros_like(causal_mask)
+            else:
+                noncausal_mask = noncausal_mask.unsqueeze(0).unsqueeze(0)  # Add batch and head dimension
 
         # create position embeddings to be shared across the decoder layers
         # inputs are only used for dtypes
@@ -496,7 +530,6 @@ class SlitherModel(nn.Module):
                     layer,
                     hidden_states,
                     mem_states=mem_states,
-                    full_state=full_state,
                     attention_mask=causal_mask,
                     position_embeddings=position_embeddings,
                     use_reentrant=False,
@@ -508,8 +541,7 @@ class SlitherModel(nn.Module):
                     layer,
                     new_mem_states,
                     mem_states=mem_states,
-                    full_state=full_state,
-                    attention_mask=causal_mask,
+                    attention_mask=noncausal_mask,
                     position_embeddings=position_embeddings,
                     use_reentrant=False,
                 )
@@ -518,15 +550,13 @@ class SlitherModel(nn.Module):
             hidden_states = self.causal_layers(
                 inputs_embeds,
                 mem_states=mem_states,
-                full_state=full_state,
                 attention_mask=causal_mask,
                 position_embeddings=position_embeddings,
             )
             new_mem_states = self.noncausal_layers(
                 hidden_states,
                 mem_states=mem_states,
-                full_state=full_state,
-                attention_mask=causal_mask,
+                attention_mask=noncausal_mask,
                 position_embeddings=position_embeddings,
             )
 
@@ -545,7 +575,7 @@ class SlitherModel(nn.Module):
 
 
     def _set_ignore_mem(self, ignore_mem: bool):
-        for i, attention in self._enumerate_attentions():
+        for attention in self._attentions():
             attention.ignore_mem = ignore_mem
 
 
@@ -556,57 +586,43 @@ class SlitherModel(nn.Module):
             return layer._orig_mod.get_submodule(name)
 
 
-    def _enumerate_attentions(self):
-        attentions = (
-            [self._layer_module(layer, "self_attn") for layer in self.causal_layers]
-            + [self._layer_module(layer, "self_attn") for layer in self.noncausal_layers]
-        )
-        return enumerate(attentions)
-        
+    def _attentions(self):
+        for layer in self.causal_layers:
+            yield self._layer_module(layer, "self_attn")
+        for layer in self.noncausal_layers:
+            yield self._layer_module(layer, "self_attn")
 
 
-    def _enumerate_mechanisms(self):
-        mechanisms = (
-            [self._layer_module(layer, "state_mechanism") for layer in self.causal_layers]
-            + [self._layer_module(layer, "state_mechanism") for layer in self.noncausal_layers]
-        )
-        return enumerate(mechanisms)
+    def _mechanisms(self):
+        for layer in self.causal_layers:
+            yield self._layer_module(layer, "state_mechanism")
+        for layer in self.noncausal_layers:
+            yield self._layer_module(layer, "state_mechanism")
 
 
     @torch.no_grad()
-    def init_state(self, bs: int, device: torch.device) -> torch.FloatTensor:
-        state = torch.zeros(
-            bs, self.config.num_hidden_layers + self.config.num_noncausal_layers, self.state_size, self.state_size,
-            device=device
-        )
-        state = maybe_shard_with_gradients(state)
-        return state
+    def init_state(self, bs: int, device: torch.device) -> None:
+        for mechanism in self._mechanisms():
+            mechanism.init_state(bs, device)
+
+    @torch.no_grad()
+    def empty_state(self) -> None:
+        for mechanism in self._mechanisms():
+            mechanism.empty_state()
+
+    @torch.no_grad()
+    def increment_state(self, mem_states: torch.FloatTensor) -> None:
+        for mechanism in self._mechanisms():
+            mechanism.increment_state(mem_states)
+
+    def decrement_state(self, mem_states: torch.FloatTensor) -> None:
+        for mechanism in self._mechanisms():
+            mechanism.decrement_state(mem_states)
 
 
     @torch.no_grad()
-    def increment_state(
-        self,
-        mem_states: torch.FloatTensor,
-        full_state: torch.FloatTensor,
-    ) -> None:
-        for i, mechanism in self._enumerate_mechanisms():
-            full_state[:, i].add_(
-                mechanism.get_update(mem_states)
-            )
-
-
-    def decrement_state(
-        self,
-        mem_states: torch.FloatTensor,
-        full_state: torch.FloatTensor,
-    ) -> None:
-        for i, mechanism in self._enumerate_mechanisms():
-
-            update = mechanism.get_update(mem_states)
-            torch.autograd.backward(
-                update,
-                full_state.grad[:, i]
-            )
- 
-            with torch.no_grad():
-                full_state[:, i].sub_(update)
+    def get_state_norm(self) -> torch.FloatTensor:
+        norms = []
+        for mechanism in self._mechanisms():
+            norms.append(mechanism.state.norm(dim=(-2, -1)))
+        return torch.stack(norms, dim=1)

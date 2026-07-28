@@ -19,12 +19,10 @@ class SlitherTrainer(BaseTrainer):
 
     def post_init(self):
 
-        self.state = self.model.init_state(
+        self.model.init_state(
             self.global_batch_size,
             self.device,
         )
-        self.state.requires_grad_(True)
-
 
         self.model.embed_tokens.weight.no_muon = True
         try:
@@ -32,7 +30,7 @@ class SlitherTrainer(BaseTrainer):
         except AttributeError:
             self.model.lm_head._orig_mod.weight.no_muon = True
     
-        for i, module in self.model._enumerate_mechanisms():
+        for module in self.model._mechanisms():
             module.read_gate.weight.no_muon = True
             module.write_gate.weight.no_muon = True
             module.odot.no_muon = True
@@ -59,11 +57,10 @@ class SlitherTrainer(BaseTrainer):
                 _, mem_states = self.model.forward(
                     input_ids=input_ids,
                     mem_states=mem_states,
-                    full_state=self.state
                 )
 
             mem_states = mem_states.float()
-            self.model.increment_state(mem_states, self.state)
+            self.model.increment_state(mem_states)
 
         mem_states = mem_states.detach().requires_grad_(True)
         
@@ -81,14 +78,13 @@ class SlitherTrainer(BaseTrainer):
     ):
 
         if curr_mem_states is not None:
-            self.model.decrement_state(curr_mem_states, self.state)
+            self.model.decrement_state(curr_mem_states)
 
         with self._autocast():
 
             logits, mem_states = self.model.forward(
                 input_ids=input_ids,
                 mem_states=prev_mem_states,
-                full_state=self.state
             )
 
             sum_loss = lm_loss_fn(
@@ -117,16 +113,12 @@ class SlitherTrainer(BaseTrainer):
     @torch_xla.compile(full_graph=True)
     def post_forward(self, state_norm):
 
-        with torch.no_grad():
-            res = self.state.norm(dim=(-2, -1))
-            err = (
-                res / state_norm.clamp_min(self.model.config.rms_norm_eps)
-            ).mean()
+        res = self.model.get_state_norm()
+        err = (
+            res / state_norm.clamp_min(self.model.config.rms_norm_eps)
+        ).mean()
 
-            self.state.zero_()
-            self.state.grad.zero_()
-            self.state.detach_()
-            self.state.requires_grad_(True)
+        self.model.empty_state()
 
         grad_norm = self.clip_gradients()
         aux = self.optimization_step()
@@ -156,22 +148,27 @@ class SlitherTrainer(BaseTrainer):
         mem_stack = []
         portion_losses = []
 
+        assert len(episodes) >= 2
+        torch_xla.sync(wait=True)
+
         # first loop
         for index, episode in enumerate(episodes[:-1]):
             input_ids, labels = episode
 
             mem_states = self.go_forward(
                 input_ids=input_ids,
-                mem_states=mem_stack[-1] if len(mem_stack) > 0 else None,
+                mem_states=(mem_stack[-1] if len(mem_stack) > 0 else None),
             )
             torch_xla.sync(wait=True)
+
             mem_stack.append(mem_states)
 
             master_print(
                 f"Forward  {index:02d} completed."
             )
 
-        state_norm = self.state.norm(dim=(-2, -1))
+        state_norm = self.model.get_state_norm()
+        torch_xla.sync(wait=True)
   
         # second loop
         for index, episode in list(enumerate(episodes))[::-1]:
