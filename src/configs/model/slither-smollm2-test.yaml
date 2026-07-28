@@ -42,9 +42,6 @@ hidden_act: silu
 max_position_embeddings: 4096
 rope_theta: 10000
 
-# initialization
-initializer_range: 0.02
-
 # misc
 rms_norm_eps: 1.0e-05
 

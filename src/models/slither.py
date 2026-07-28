@@ -416,6 +416,7 @@ class SlitherModel(nn.Module):
         self.config = config
         self.state_size = config.state_size
         self.chunk_length = config.chunk_length
+        self.embed_scale = math.sqrt(config.hidden_size)
 
         self.vocab_size = config.vocab_size
         self.pad_token_id = config.pad_token_id
@@ -455,7 +456,7 @@ class SlitherModel(nn.Module):
         self.gradient_checkpointing = False
 
         self.apply(gaussian_init)
-        self.embed_tokens.weight.data.normal_(mean=0.0, std=config.initializer_range)
+        self.embed_tokens.weight.data.normal_(mean=0.0, std=1/self.embed_scale)
 
 
     def gradient_checkpointing_enable(self, enable: bool = True):
@@ -477,7 +478,7 @@ class SlitherModel(nn.Module):
 
         # convert input ids to embeddings
         if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids)
+            inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
         seq_length = inputs_embeds.shape[1]
 
         # handle mem
