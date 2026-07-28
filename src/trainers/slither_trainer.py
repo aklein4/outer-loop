@@ -188,7 +188,7 @@ class SlitherTrainer(BaseTrainer):
             aux[f"lm_loss/chunk_{index:02d}"] = chunk_loss
             portion_losses.append(portion_loss)
 
-            if len(mem_stack) > 0:
+            if curr_mem_states is not None:
                 mem_stack.pop()
 
             master_print(
