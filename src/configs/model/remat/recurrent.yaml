@@ -7,6 +7,7 @@ advanced:
       optimization_barrier_layers:
         - LlamaDecoderLayer
       scan_layers: model.layers
+      is_layer_pure: true
       offload_tensors:
         - decoder_input
 
@@ -17,5 +18,6 @@ advanced:
       optimization_barrier_layers:
         - BidirectionalDecoderLayer
       scan_layers: layers
+      is_layer_pure: true
       offload_tensors:
         - bidirectional_head_input

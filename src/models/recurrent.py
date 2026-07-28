@@ -39,6 +39,35 @@ class RecurrentMode(Enum):
     TRAIN_SECOND = "train_second"
 
 
+_MODE_NUM_ELEMENTS = {
+    RecurrentMode.INFERENCE: 1,
+    RecurrentMode.TRAIN_FIRST: 2,
+    RecurrentMode.TRAIN_SECOND: 3,
+}
+
+
+def _mode_to_tensor(
+    mode: RecurrentMode,
+    reference: torch.Tensor,
+) -> torch.Tensor:
+    try:
+        num_elements = _MODE_NUM_ELEMENTS[mode]
+    except KeyError:
+        raise ValueError(f"unknown recurrent mode: {mode}") from None
+    return reference.new_zeros(num_elements)
+
+
+def _tensor_to_mode(mode_tensor: torch.Tensor) -> RecurrentMode:
+    num_elements = mode_tensor.numel()
+    for mode, expected_num_elements in _MODE_NUM_ELEMENTS.items():
+        if num_elements == expected_num_elements:
+            return mode
+    raise ValueError(
+        f"mode tensor num elements must be in {list(_MODE_NUM_ELEMENTS.values())}, "
+        f"got {num_elements}"
+    )
+
+
 class RecurrentFastWeightFunction(torch.autograd.Function):
     """Collect raw fast-weight gradients and inject the local FO gradient."""
 
@@ -237,10 +266,6 @@ class RecurrentFastWeightMLP(nn.Module):
         self.grad_buffer: nn.Buffer
         self.final_grad_norm: nn.Buffer
 
-        # toggles
-        self.mode = RecurrentMode.INFERENCE
-
-
     @torch.no_grad()
     def pretrained_init(self) -> None:
         if self.fast_weight_size > self.intermediate_size:
@@ -258,9 +283,14 @@ class RecurrentFastWeightMLP(nn.Module):
     def forward(
         self,
         x: torch.FloatTensor,
+        fast_weight_mode: torch.Tensor | None = None,
         lr_embeddings: torch.FloatTensor | None = None,
         lr_embedding_mask: torch.BoolTensor | None = None,
     ) -> torch.FloatTensor:
+
+        mode = RecurrentMode.INFERENCE
+        if fast_weight_mode is not None:
+            mode = _tensor_to_mode(fast_weight_mode)
 
         # base mlp
         h_base = self.act_fn(self.gate_proj(x)) * self.up_proj(x)
@@ -276,7 +306,7 @@ class RecurrentFastWeightMLP(nn.Module):
 
         activations = h_fast.detach()
         lr = None
-        if self.mode == RecurrentMode.TRAIN_SECOND:
+        if mode == RecurrentMode.TRAIN_SECOND:
 
             x_d = x.detach()
             activations = unit_glu(
@@ -286,7 +316,7 @@ class RecurrentFastWeightMLP(nn.Module):
 
             lr = self.get_lr(lr_embeddings, lr_embedding_mask)
 
-        if self.mode != RecurrentMode.INFERENCE:
+        if mode != RecurrentMode.INFERENCE:
             output = RecurrentFastWeightFunction.apply(
                 activations,
                 output,
@@ -294,7 +324,7 @@ class RecurrentFastWeightMLP(nn.Module):
                 self.grad_buffer,
                 lr,
                 self.grad_eps,
-                self.mode,
+                mode,
             )
 
         return y_base + output
@@ -337,12 +367,6 @@ class RecurrentFastWeightMLP(nn.Module):
         )
 
 
-    def set_mode(self, mode: str) -> None:
-        if mode not in tuple(RecurrentMode):
-            raise ValueError(f"unknown fast-weight mode: {mode}")
-        self.mode = mode
-    
-
     @torch.no_grad()
     def init_state(self, bs: int, device: torch.device) -> None:
 
@@ -379,6 +403,7 @@ class RecurrentFastWeightMLP(nn.Module):
         self,
         embeddings: torch.FloatTensor,
         embedding_mask: torch.BoolTensor,
+        mode: RecurrentMode,
     ) -> None:
 
         G = self.grad_buffer.grad
@@ -393,10 +418,12 @@ class RecurrentFastWeightMLP(nn.Module):
 
         self.state.add_(state_update)
 
-        if self.mode == RecurrentMode.TRAIN_FIRST:
+        if mode == RecurrentMode.TRAIN_FIRST:
             self.grad_buffer.add_(G)
-        elif self.mode == RecurrentMode.TRAIN_SECOND:
+        elif mode == RecurrentMode.TRAIN_SECOND:
             self.grad_buffer.sub_(G)
+        else:
+            raise ValueError(f"invalid state update mode: {mode}")
 
         self.grad_buffer.grad.zero_()
 
@@ -494,14 +521,26 @@ class RecurrentModel(LlamaForCausalLM):
         input_ids: torch.LongTensor,
         embeddings: torch.FloatTensor | None = None,
         embedding_mask: torch.BoolTensor | None = None,
+        mode: RecurrentMode | None = None,
     ) -> torch.FloatTensor:
-        if self.disable_fast_weights or embeddings is None:
+        if self.disable_fast_weights:
             return self.model(input_ids=input_ids)
-        
+
+        model_kwargs = {}
+        if mode is not None:
+            model_kwargs["fast_weight_mode"] = _mode_to_tensor(
+                mode,
+                self.model.embed_tokens.weight,
+            )
+
+        if embeddings is not None:
+            model_kwargs["lr_embeddings"] = embeddings
+        if embedding_mask is not None:
+            model_kwargs["lr_embedding_mask"] = embedding_mask.float()
+
         return self.model(
             input_ids=input_ids,
-            lr_embeddings=embeddings,
-            lr_embedding_mask=embedding_mask.float(),
+            **model_kwargs,
         )
 
 
@@ -544,11 +583,6 @@ class RecurrentModel(LlamaForCausalLM):
         ]
 
 
-    def set_mode(self, mode: str) -> None:
-        for mlp in self.fast_modules():
-            mlp.set_mode(mode)
-
-
     @torch.no_grad()
     def init_state(self, bs: int, device: torch.device) -> None:
         for mlp in self.fast_modules():
@@ -560,9 +594,10 @@ class RecurrentModel(LlamaForCausalLM):
         self,
         embeddings: torch.FloatTensor,
         embedding_mask: torch.BoolTensor,
+        mode: RecurrentMode,
     ) -> None:
         for mlp in self.fast_modules():
-            mlp.update_state(embeddings, embedding_mask)
+            mlp.update_state(embeddings, embedding_mask, mode)
 
 
     @torch.no_grad()

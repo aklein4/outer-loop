@@ -153,12 +153,11 @@ class RecurrentTrainer(BaseTrainer):
         second_state_update=False,
     ):
         
-        self.model.set_mode(RecurrentMode.TRAIN_FIRST)
-
         with self._autocast():
 
             hidden_states = self.model.forward_backbone(
                 input_ids,
+                mode=RecurrentMode.TRAIN_FIRST,
             )
             lm_states = self.model.model.norm(hidden_states[:, :-1])
             loss, lm_grad = self.loss_and_lm_grad(
@@ -184,12 +183,15 @@ class RecurrentTrainer(BaseTrainer):
                 lm_states, lm_grad
             )
 
-        if second_state_update:
-            self.model.set_mode(RecurrentMode.TRAIN_SECOND)
         with self._autocast():
             self.model.update_state(
                 embeddings,
                 pad_mask,
+                mode=(
+                    RecurrentMode.TRAIN_SECOND
+                    if second_state_update
+                    else RecurrentMode.TRAIN_FIRST
+                ),
             )
         
         return loss
@@ -205,10 +207,9 @@ class RecurrentTrainer(BaseTrainer):
 
         with self._autocast():
 
-            self.model.set_mode(RecurrentMode.INFERENCE)
             with torch.set_grad_enabled(self.config.trainer.propagate_embedding_grads):
                 hidden_states = self.model.forward_backbone(
-                    input_ids,
+                    input_ids, mode=RecurrentMode.INFERENCE
                 )
             embeddings = self.model.forward_embeddings(
                 hidden_states,
@@ -217,9 +218,11 @@ class RecurrentTrainer(BaseTrainer):
 
             embeddings_leaf = embeddings.detach().requires_grad_(True)
 
-            self.model.set_mode(RecurrentMode.TRAIN_SECOND)
             hidden_states = self.model.forward_backbone(
-                input_ids, embeddings_leaf, pad_mask
+                input_ids,
+                embeddings_leaf,
+                pad_mask,
+                mode=RecurrentMode.TRAIN_SECOND,
             )
             lm_states = self.model.model.norm(hidden_states[:, :-1])
 
@@ -234,16 +237,15 @@ class RecurrentTrainer(BaseTrainer):
         )
 
         if not self.model.disable_fast_weights:
-            self.model.set_mode(RecurrentMode.INFERENCE)
             torch.autograd.backward(
                 embeddings, embeddings_leaf.grad
             )
 
-        self.model.set_mode(RecurrentMode.TRAIN_SECOND)
         with self._autocast():
             self.model.update_state(
                 embeddings,
                 pad_mask,
+                mode=RecurrentMode.TRAIN_SECOND,
             )
         
         return loss
