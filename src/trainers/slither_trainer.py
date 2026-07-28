@@ -141,8 +141,7 @@ class SlitherTrainer(BaseTrainer):
 
         self.model.empty_state()
 
-        g = [p.grad for p in self.model.noncausal_layers.parameters() if p.grad is not None]
-        noncausal_grad_norm = nn.utils.get_total_norm(g)
+        num_none_grad = len([p for p in self.model.parameters() if p.grad is None])
 
         grad_norm = self.clip_gradients()
         aux = self.optimization_step()
@@ -150,7 +149,7 @@ class SlitherTrainer(BaseTrainer):
         self.model.zero_grad(set_to_none=False)
 
         aux["relative_grad_error"] = err
-        aux["noncausal_grad_norm"] = noncausal_grad_norm
+        aux["num_none_grad"] = num_none_grad
 
         return aux, grad_norm
 
