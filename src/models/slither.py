@@ -105,16 +105,24 @@ class SlitherAttention(nn.Module):
         value_states = self.v_proj(hidden_states)
 
         if not self.ignore_mem:
+
+            # attn kernel needs square attention, weights
+            # discard this later
+            mem_query_states = query_states.new_zeros(
+                bsz, mem_states.shape[1], query_states.shape[-1]
+            )
+            
             mem_key_states = self.k_proj_mem(mem_states)
             mem_value_states = self.v_proj_mem(mem_states)
 
+            query_states = torch.cat([mem_query_states, query_states], dim=1)
             key_states = torch.cat([mem_key_states, key_states], dim=1)
             value_states = torch.cat([mem_value_states, value_states], dim=1)
 
         kv_len = key_states.shape[1]
 
         query_states = query_states.view(
-            bsz, q_len, self.num_heads, self.head_dim
+            bsz, kv_len, self.num_heads, self.head_dim
         ).transpose(1, 2)
         key_states = key_states.view(
             bsz, kv_len, self.num_key_value_heads, self.head_dim
@@ -133,6 +141,10 @@ class SlitherAttention(nn.Module):
             attention_mask,
             attention_probe=self.probe,
         )
+
+        # discard previous padding
+        if not self.ignore_mem:
+            attn_output = attn_output[:, :, -q_len:, :]
 
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
@@ -234,10 +246,9 @@ class SlitherStateMechanism(nn.Module):
             bias=False,
         )
 
-        self.scalar_scaler = math.sqrt(self.state_size)
         self.odot = torch.nn.Parameter(
             torch.ones(self.state_size, self.state_size)
-            / self.state_size
+            / math.sqrt(self.state_size)
         )
 
 
@@ -246,11 +257,6 @@ class SlitherStateMechanism(nn.Module):
         return torch.index_select(
             state, 1, self.layer_idx
         ).squeeze(1)
-
-
-    def apply_odot(self, state: torch.FloatTensor) -> torch.FloatTensor:
-        return state * self.odot[None] * self.scalar_scaler
-
 
     def forward(
         self,
@@ -262,8 +268,8 @@ class SlitherStateMechanism(nn.Module):
         query_states = self.q_proj(hidden_states)
         query_states = self.rms_norm(self.activation(query_states))
 
-        odot_state = self.apply_odot(state)
-        output = torch.einsum("boi,bli->blo", odot_state, query_states)
+        scaled_state = state * self.odot[None]
+        output = torch.einsum("boi,bli->blo", scaled_state, query_states)
 
         gate = torch.sigmoid(self.read_gate(hidden_states))
         output = self.group_norm(output, scales=gate)
@@ -328,7 +334,7 @@ class SlitherLayer(nn.Module):
         # Self Attention
         attn_states = self.input_layernorm(hidden_states)
         attn_states = self.self_attn(
-            hidden_states=hidden_states,
+            hidden_states=attn_states,
             mem_states=mem_states,
             position_embeddings=position_embeddings,
             attention_mask=attention_mask,
@@ -386,7 +392,10 @@ class SlitherModel(nn.Module):
 
         self.noncausal_layers = HomogeneousSequential(
             *[
-                SlitherNonCausalLayer(config, layer_idx=layer_idx)
+                SlitherNonCausalLayer(
+                    config,
+                    layer_idx=config.num_hidden_layers+layer_idx,
+                )
                 for layer_idx in range(config.num_noncausal_layers)
             ]
         )
@@ -464,10 +473,9 @@ class SlitherModel(nn.Module):
                 torch.full((full_seq_length, full_seq_length), float("-inf"), device=inputs_embeds.device),
                 diagonal=1,
             )
-            causal_mask = causal_mask[full_seq_length-seq_length:, :]
 
             if attention_mask is not None:
-                causal_mask = causal_mask * attention_mask
+                causal_mask = causal_mask + attention_mask
 
             causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)  # Add batch and head dimension
 
@@ -496,7 +504,7 @@ class SlitherModel(nn.Module):
 
             new_mem_states = hidden_states
             for layer in self.noncausal_layers:
-                hidden_states = checkpoint(
+                new_mem_states = checkpoint(
                     layer,
                     new_mem_states,
                     mem_states=mem_states,

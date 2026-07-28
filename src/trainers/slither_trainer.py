@@ -27,7 +27,10 @@ class SlitherTrainer(BaseTrainer):
 
 
         self.model.embed_tokens.weight.no_muon = True
-        self.model.lm_head._orig_mod.weight.no_muon = True
+        try:
+            self.model.lm_head.weight.no_muon = True
+        except AttributeError:
+            self.model.lm_head._orig_mod.weight.no_muon = True
     
         for i, module in self.model._enumerate_mechanisms():
             module.read_gate.weight.no_muon = True
@@ -60,7 +63,7 @@ class SlitherTrainer(BaseTrainer):
                 )
 
             mem_states = mem_states.float()
-            self.model.increment_state(mem_states)
+            self.model.increment_state(mem_states, self.state)
 
         mem_states = mem_states.detach().requires_grad_(True)
         
@@ -74,11 +77,11 @@ class SlitherTrainer(BaseTrainer):
         labels: torch.LongTensor,
         curr_mem_states: torch.FloatTensor | None,
         prev_mem_states: torch.FloatTensor | None,
-        total_labels: int,
+        total_labels: torch.LongTensor,
     ):
 
         if curr_mem_states is not None:
-            self.model.decrement_state(curr_mem_states)
+            self.model.decrement_state(curr_mem_states, self.state)
 
         with self._autocast():
 
@@ -99,8 +102,10 @@ class SlitherTrainer(BaseTrainer):
             if curr_mem_states is not None:
                 mem_loss = (mem_states * curr_mem_states.grad.detach()).sum()
 
-            portion_loss = sum_loss / total_labels
-            chunk_loss = sum_loss / labels.numel()
+            portion_loss = sum_loss / total_labels.to(sum_loss.dtype)
+            chunk_loss = sum_loss / (
+                labels != self.model.config.pad_token_id
+            ).long().sum().clamp_min(1).to(sum_loss.dtype)
 
             loss_for_backward = portion_loss + mem_loss
 
@@ -114,7 +119,9 @@ class SlitherTrainer(BaseTrainer):
 
         with torch.no_grad():
             res = self.state.norm(dim=(-2, -1))
-            err = (res / state_norm).mean()
+            err = (
+                res / state_norm.clamp_min(self.model.config.rms_norm_eps)
+            ).mean()
 
             self.state.zero_()
             self.state.grad.zero_()
@@ -141,7 +148,9 @@ class SlitherTrainer(BaseTrainer):
             self.model.chunk_length, dim=1
         )
         episodes = list(zip(input_ids, labels))
-        total_labels = tokens[:, 1:].numel()
+        total_labels = (
+            tokens[:, 1:] != self.model.config.pad_token_id
+        ).long().sum().clamp_min(1)
 
         aux = {}
         mem_stack = []
@@ -155,6 +164,7 @@ class SlitherTrainer(BaseTrainer):
                 input_ids=input_ids,
                 mem_states=mem_stack[-1] if len(mem_stack) > 0 else None,
             )
+            torch_xla.sync(wait=True)
             mem_stack.append(mem_states)
 
             master_print(
@@ -177,11 +187,13 @@ class SlitherTrainer(BaseTrainer):
                 prev_mem_states=prev_mem_states,
                 total_labels=total_labels,
             )
+            torch_xla.sync(wait=True)
         
             aux[f"lm_loss/chunk_{index:02d}"] = chunk_loss
             portion_losses.append(portion_loss)
 
-            mem_stack.pop()
+            if len(mem_stack) > 0:
+                mem_stack.pop()
 
             master_print(
                 f"Backward {index:02d} completed."
@@ -189,6 +201,7 @@ class SlitherTrainer(BaseTrainer):
 
         # optimizer step
         post_aux, grad_norm = self.post_forward(state_norm)
+        torch_xla.sync(wait=True)
 
         aux.update(post_aux)
         master_print("Optimization step completed.")
