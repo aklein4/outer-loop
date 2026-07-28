@@ -64,10 +64,9 @@ class SlitherTrainer(BaseTrainer):
             mem_states = mem_states.float()
             self.model.increment_state(mem_states)
 
-        mem_states = mem_states.detach().requires_grad_(True)
+        return mem_states.detach()
         
-        return mem_states
-    
+
 
     @torch_xla.compile(full_graph=True)
     def go_backward(
@@ -83,17 +82,14 @@ class SlitherTrainer(BaseTrainer):
         if curr_mem_states is not None:
             assert curr_mem_grad is not None
 
-            curr_mem_states = nn.Parameter(
-                curr_mem_states.detach(),
-                requires_grad=True
-            )
+            curr_mem_states = curr_mem_states.detach().requires_grad_(True)
+            with torch.no_grad():
+                curr_mem_states.grad = curr_mem_grad.detach()
+
             self.model.decrement_state(curr_mem_states)
 
         if prev_mem_states is not None:
-            prev_mem_states = nn.Parameter(
-                prev_mem_states.detach(),
-                requires_grad=True
-            )
+            prev_mem_states = prev_mem_states.detach().requires_grad_(True)
 
         with self._autocast():
 
