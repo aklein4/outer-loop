@@ -148,7 +148,7 @@ class SlitherTrainer(BaseTrainer):
         portion_losses = []
 
         assert len(episodes) >= 2
-        torch_xla.sync(wait=self.config.trainer.wait_sync)
+        # torch_xla.sync(wait=self.config.trainer.wait_sync)
 
         # first loop
         for index, episode in enumerate(episodes[:-1]):
@@ -158,7 +158,7 @@ class SlitherTrainer(BaseTrainer):
                 input_ids=input_ids,
                 mem_states=(mem_stack[-1] if len(mem_stack) > 0 else None),
             )
-            torch_xla.sync(wait=self.config.trainer.wait_sync)
+            # torch_xla.sync(wait=self.config.trainer.wait_sync)
 
             mem_stack.append(mem_states)
 
@@ -167,7 +167,7 @@ class SlitherTrainer(BaseTrainer):
             )
 
         state_norm = self.model.get_state_norm()
-        torch_xla.sync(wait=self.config.trainer.wait_sync)
+        # torch_xla.sync(wait=self.config.trainer.wait_sync)
   
         # second loop
         for index, episode in list(enumerate(episodes))[::-1]:
@@ -183,7 +183,7 @@ class SlitherTrainer(BaseTrainer):
                 prev_mem_states=prev_mem_states,
                 total_labels=total_labels,
             )
-            torch_xla.sync(wait=self.config.trainer.wait_sync)
+            # torch_xla.sync(wait=self.config.trainer.wait_sync)
         
             aux[f"lm_loss/chunk_{index:02d}"] = chunk_loss
             portion_losses.append(portion_loss)
@@ -197,7 +197,7 @@ class SlitherTrainer(BaseTrainer):
 
         # optimizer step
         post_aux, grad_norm = self.post_forward(state_norm)
-        torch_xla.sync(wait=self.config.trainer.wait_sync)
+        # torch_xla.sync(wait=self.config.trainer.wait_sync)
 
         aux.update(post_aux)
         master_print("Optimization step completed.")
