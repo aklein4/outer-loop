@@ -80,12 +80,6 @@ class SlitherTrainer(BaseTrainer):
     ):
 
         if curr_mem_states is not None:
-            assert curr_mem_grad is not None
-
-            curr_mem_states = curr_mem_states.detach().requires_grad_(True)
-            with torch.no_grad():
-                curr_mem_states.grad = curr_mem_grad.detach()
-
             self.model.decrement_state(curr_mem_states)
 
         if prev_mem_states is not None:
@@ -105,17 +99,27 @@ class SlitherTrainer(BaseTrainer):
                 reduction="sum",
             )
 
-            mem_loss = 0.0
-            if curr_mem_states is not None:
-                mem_loss = (mem_states * curr_mem_states.grad.detach()).sum()
-
             portion_loss = sum_loss / total_labels.to(sum_loss.dtype)
             chunk_loss = sum_loss / (
                 labels != self.model.config.pad_token_id
             ).long().sum().clamp_min(1).to(sum_loss.dtype)
 
-            loss_for_backward = portion_loss + mem_loss
+            mem_attn_loss = 0.0
+            if curr_mem_grad is not None:
+                mem_attn_loss = (mem_states * curr_mem_grad.detach()).sum()
 
+        # this should be outside of autocast
+        mem_state_loss = 0.0
+        if curr_mem_states is not None:
+            mem_state_loss = self.model.get_state_update_loss(
+                mem_states.float()
+            )
+  
+        loss_for_backward = (
+            portion_loss +
+            mem_attn_loss +
+            mem_state_loss
+        )
         loss_for_backward.backward()
 
         prev_mem_grad = (
