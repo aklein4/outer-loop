@@ -32,9 +32,9 @@ class SlitherTrainer(BaseTrainer):
             module.read_gate.weight.no_muon = True
             module.odot.no_muon = True
             try:
-                module.write_gate.weight.no_muon = True
+                module.writer.write_gate.weight.no_muon = True
             except AttributeError:
-                module.write_gate._module.weight.no_muon = True
+                module.writer._module.write_gate.weight.no_muon = True
 
 
     def _autocast(self):
