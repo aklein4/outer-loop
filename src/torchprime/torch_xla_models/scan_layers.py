@@ -11,19 +11,21 @@ class HomogeneousSequentialScan(HomogeneousSequential):
     super().__init__(*args)
     self.partition_fn = partition_fn
     self.is_layer_pure = is_layer_pure
+    # scan_layers caches by the identity of its representative layer. Keep
+    # these lightweight wrappers stable across forwards so purity caching can
+    # reuse the traced forward/backward computations.
+    self._scan_layer_wrappers = tuple(
+      BroadcastArguments(m) for m in self.children()
+    )
 
   def forward(self, *input, **broadcasted_inputs: PyTree):
-    # `self.children()` returns an iterator over the immediate submodules, i.e.
-    # the layers we want to scan over. In the `BroadcastArguments` we extend each
-    # layer's return value to also output the broadcasted inputs
-    # (position IDs in case of LLMs, etc). This plumbs those values across scan
-    # iterations so the same values are available to all layers.
-    layers = [BroadcastArguments(m) for m in self.children()]
     if len(input) == 1:
       # Handle single argument case: we don't need to call the module with a tuple.
       input = input[0]
     out, _broadcasted_inputs_back = scan_layers(
-      layers, (input, broadcasted_inputs), partition_fn=self.partition_fn,
+      self._scan_layer_wrappers,
+      (input, broadcasted_inputs),
+      partition_fn=self.partition_fn,
       is_layer_pure=self.is_layer_pure
     )
     return out

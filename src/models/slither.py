@@ -87,7 +87,6 @@ class SlitherAttention(nn.Module):
             bias=False,
         )
 
-        self.ignore_mem = False
         self.probe = AtttentionProbe(layer_idx)
 
 
@@ -99,12 +98,13 @@ class SlitherAttention(nn.Module):
         attention_mask: torch.Tensor | None = None,
     ) -> torch.FloatTensor:
         bsz, q_len, _ = hidden_states.shape
+        has_mem = mem_states.ndim == 3
 
         query_states = self.q_proj(hidden_states)
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
 
-        if not self.ignore_mem:
+        if has_mem:
 
             # attn kernel needs square attention, weights
             # discard this later
@@ -143,7 +143,7 @@ class SlitherAttention(nn.Module):
         )
 
         # discard previous padding
-        if not self.ignore_mem:
+        if has_mem:
             attn_output = attn_output[:, :, -q_len:, :]
 
         attn_output = attn_output.transpose(1, 2).contiguous()
@@ -466,13 +466,13 @@ class SlitherModel(nn.Module):
 
         # handle mem
         if mem_states is None:
-            # must be float tensor for scan
+            # Scan inputs must be tensors. A scalar is a distinct cache key
+            # from the rank-3 memory tensor used by subsequent chunks.
             mem_states = torch.zeros_like(inputs_embeds.sum())
-            self._set_ignore_mem(True)
             full_seq_length = seq_length
 
         else:
-            self._set_ignore_mem(False)
+            assert mem_states.ndim == 3, f"Expected mem_states to be rank-3, got {mem_states.ndim}"
             full_seq_length = mem_states.shape[1] + seq_length
 
         # TODO(https://github.com/pytorch/xla/issues/8783): Pass position_ids as `long()`
@@ -574,23 +574,11 @@ class SlitherModel(nn.Module):
         return logits, new_mem_states
 
 
-    def _set_ignore_mem(self, ignore_mem: bool):
-        for attention in self._attentions():
-            attention.ignore_mem = ignore_mem
-
-
     def _layer_module(self, layer, name: str) -> nn.Module:
         try:
             return layer.get_submodule(name)
         except AttributeError:
             return layer._orig_mod.get_submodule(name)
-
-
-    def _attentions(self):
-        for layer in self.causal_layers:
-            yield self._layer_module(layer, "self_attn")
-        for layer in self.noncausal_layers:
-            yield self._layer_module(layer, "self_attn")
 
 
     def _mechanisms(self):

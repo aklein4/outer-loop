@@ -7,6 +7,7 @@ advanced:
       optimization_barrier_layers:
         - SlitherCausalLayer
       scan_layers: causal_layers
+      is_layer_pure: true
       offload_tensors:
         - slither_causal_layer_input
 
@@ -17,5 +18,6 @@ advanced:
       optimization_barrier_layers:
         - SlitherNonCausalLayer
       scan_layers: noncausal_layers
+      is_layer_pure: true
       offload_tensors:
         - slither_noncausal_layer_input
