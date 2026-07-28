@@ -83,11 +83,8 @@ class SlitherTrainer(BaseTrainer):
         if curr_mem_states is not None:
             assert curr_mem_grad is not None
 
-            curr_mem_states = curr_mem_states.detach().requires_grad_(True)
-            with torch.no_grad():
-                curr_mem_states.grad = curr_mem_grad.detach()
-
-            self.model.decrement_state(curr_mem_states)
+            state_mem_grad = self.model.decrement_state(curr_mem_states)
+            curr_mem_grad = curr_mem_grad.detach() + state_mem_grad
 
         if prev_mem_states is not None:
             prev_mem_states = prev_mem_states.detach().requires_grad_(True)
@@ -108,7 +105,7 @@ class SlitherTrainer(BaseTrainer):
 
             mem_loss = 0.0
             if curr_mem_states is not None:
-                mem_loss = (mem_states * curr_mem_states.grad.detach()).sum()
+                mem_loss = (mem_states * curr_mem_grad).sum()
 
             portion_loss = sum_loss / total_labels.to(sum_loss.dtype)
             chunk_loss = sum_loss / (
@@ -140,7 +137,7 @@ class SlitherTrainer(BaseTrainer):
 
         g = [p.grad for p in self.model.noncausal_layers.parameters() if p.grad is not None]
         noncausal_grad_norm = nn.utils.get_total_norm(g)
-        
+
         grad_norm = self.clip_gradients()
         aux = self.optimization_step()
 

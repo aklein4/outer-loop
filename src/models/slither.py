@@ -611,9 +611,14 @@ class SlitherModel(nn.Module):
         for mechanism in self._mechanisms():
             mechanism.increment_state(mem_states)
 
-    def decrement_state(self, mem_states: torch.FloatTensor) -> None:
+    def decrement_state(
+        self,
+        mem_states: torch.FloatTensor,
+    ) -> torch.FloatTensor:
+        mem_states = mem_states.detach().requires_grad_(True)
         for mechanism in self._mechanisms():
             mechanism.decrement_state(mem_states)
+        return mem_states.grad.detach()
 
 
     @torch.no_grad()
