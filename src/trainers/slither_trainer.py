@@ -30,8 +30,11 @@ class SlitherTrainer(BaseTrainer):
     
         for module in self.model._mechanisms():
             module.read_gate.weight.no_muon = True
-            module.write_gate.weight.no_muon = True
             module.odot.no_muon = True
+            try:
+                module.write_gate.weight.no_muon = True
+            except AttributeError:
+                module.write_gate._module.weight.no_muon = True
 
 
     def _autocast(self):

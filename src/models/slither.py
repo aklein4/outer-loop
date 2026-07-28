@@ -185,6 +185,53 @@ class GroupRMSNorm(nn.Module):
         return x.view(*og_shape)
 
 
+class SlitherStateWriter(nn.Module):
+
+    def __init__(self, config: DictConfig):
+        super().__init__()
+
+        self.state_size = config.state_size
+        self.num_heads = config.num_state_heads
+
+        self.activation = OddActivation()
+        self.rms_norm = LlamaRMSNorm(
+            self.state_size, eps=config.rms_norm_eps, elementwise_affine=False
+        )
+        self.group_norm = GroupRMSNorm(
+            self.state_size, self.num_heads, eps=config.rms_norm_eps
+        )
+
+        self.k_proj = nn.Linear(
+            config.hidden_size,
+            self.state_size,
+            bias=False,
+        )
+        self.v_proj = nn.Linear(
+            config.hidden_size,
+            self.state_size,
+            bias=False,
+        )
+        self.write_gate = nn.Linear(
+            config.hidden_size,
+            self.num_heads,
+            bias=False,
+        )
+
+
+    def forward(
+        self,
+        mem_states: torch.FloatTensor,
+    ) -> torch.FloatTensor:
+        key_states = self.k_proj(mem_states)
+        key_states = self.rms_norm(self.activation(key_states))
+
+        value_states = self.v_proj(mem_states)
+        gate = torch.sigmoid(self.write_gate(mem_states))
+        value_states = self.group_norm(value_states, scales=gate)
+
+        return value_states.mT @ key_states
+
+
 class SlitherStateMechanism(nn.Module):
 
     def __init__(self, config: DictConfig):
@@ -192,7 +239,6 @@ class SlitherStateMechanism(nn.Module):
         self.config = config
 
         self.hidden_size = config.hidden_size
-        self.mem_size = config.hidden_size
 
         self.state_size = config.state_size
         self.num_heads = config.num_state_heads
@@ -211,24 +257,8 @@ class SlitherStateMechanism(nn.Module):
             bias=False,
         )
 
-        self.k_proj = nn.Linear(
-            self.mem_size,
-            self.state_size,
-            bias=False,
-        )
-        self.v_proj = nn.Linear(
-            self.mem_size,
-            self.state_size,
-            bias=False,
-        )
-
         self.read_gate = nn.Linear(
             self.hidden_size,
-            self.num_heads,
-            bias=False,
-        )
-        self.write_gate = nn.Linear(
-            self.mem_size,
             self.num_heads,
             bias=False,
         )
@@ -243,6 +273,8 @@ class SlitherStateMechanism(nn.Module):
             torch.ones(self.state_size, self.state_size)
             / math.sqrt(self.state_size)
         )
+
+        self.writer = SlitherStateWriter(config)
 
         # ephemeral state
         self.state: nn.Buffer
@@ -263,23 +295,6 @@ class SlitherStateMechanism(nn.Module):
         output = self.group_norm(output, scales=gate)
 
         return self.o_proj(output)
-
-
-    def get_update(
-        self,
-        mem_states: torch.FloatTensor,
-    ):
-
-        key_states = self.k_proj(mem_states)
-        key_states = self.rms_norm(self.activation(key_states))
-
-        value_states = self.v_proj(mem_states)
-        gate = torch.sigmoid(self.write_gate(mem_states))
-        value_states = self.group_norm(value_states, scales=gate)
-
-        update = value_states.mT @ key_states
-
-        return update
 
 
     @torch.no_grad()
@@ -309,13 +324,13 @@ class SlitherStateMechanism(nn.Module):
     @torch.no_grad()
     def increment_state(self, mem_states: torch.FloatTensor) -> None:
         self.state.add_(
-            self.get_update(mem_states)
+            self.writer(mem_states)
         )
 
 
     def decrement_state(self, mem_states: torch.FloatTensor) -> None:
 
-        update = self.get_update(mem_states)
+        update = self.writer(mem_states)
         torch.autograd.backward(
             update,
             self.state.grad

@@ -1,3 +1,5 @@
+from types import MethodType
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -5,7 +7,6 @@ import torch.nn.functional as F
 import utils.constants as constants
 if constants.XLA_AVAILABLE:
     from torch_xla.experimental.scan import scan
-    from torch_xla.distributed.spmd.xla_sharding import XLAPatchedLinear
 
 """
 A collection of PyTorch utility functions that might be useful.
@@ -464,7 +465,65 @@ def slerp(
     return result.to(return_dtype)
 
 
+def einsum_linear(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor | None = None,
+) -> torch.Tensor:
+    
+    device_type = x.device.type
+    if torch.is_autocast_enabled(device_type):
+        autocast_dtype = torch.get_autocast_dtype(device_type)
+
+        def do_cast(t):
+            return (
+                t.is_floating_point() and
+                t.device.type == device_type and
+                t.dtype is not torch.float64
+            )
+
+        if do_cast(x):
+            x = x.to(autocast_dtype)
+        if do_cast(weight):
+            weight = weight.to(autocast_dtype)
+        if bias is not None and do_cast(bias):
+            bias = bias.to(autocast_dtype)
+
+        # Match `custom_fwd(cast_inputs=...)`: after casting its floating-point
+        # inputs, the decorated function executes with autocast locally disabled.
+        with torch.autocast(device_type, enabled=False):
+            output = torch.einsum("...i,oi->...o", x, weight)
+            if bias is not None:
+                output = output + bias
+            return output
+
+    output = torch.einsum("...i,oi->...o", x, weight)
+    if bias is not None:
+        output = output + bias
+    return output
+
+
+def _pure_einsum_linear_forward(
+    module: nn.Linear,
+    x: torch.Tensor,
+) -> torch.Tensor:
+    return einsum_linear(x, module.weight, module.bias)
+
+
+def apply_pure_einsum_to_nn_linear(module: nn.Module) -> nn.Module:
+    """Use a pure, rank-preserving einsum forward for every ``nn.Linear``.
+
+    This preserves the modules, parameters, hooks, and state-dict keys. Unlike
+    PyTorch/XLA's patched linear, the resulting forward contains only upstream
+    PyTorch operations and can therefore be used inside ``PureModule``.
+    """
+    for child in module.modules():
+        if isinstance(child, nn.Linear):
+            child.forward = MethodType(_pure_einsum_linear_forward, child)
+    return module
+
+
 def fixed_linear(x, weight, bias=None):
     if constants.XLA_AVAILABLE:
-        return XLAPatchedLinear.apply(x, weight, bias)
+        return einsum_linear(x, weight, bias)
     return F.linear(x, weight, bias)

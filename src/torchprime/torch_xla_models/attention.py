@@ -29,6 +29,31 @@ class AttentionModule(nn.Module):
     self.kernel_config = kernel_config
     self.is_causal = is_causal
 
+    # PyTorch/XLA exposes these settings through class state rather than through
+    # `flash_attention` arguments. Configure that state once, outside the
+    # forward pass, so a forward marked pure does not mutate global state.
+    if (
+      constants.XLA_AVAILABLE
+      and self.config.attention_kernel
+      in ("flash_attention", "nan_safe_flash_attention")
+    ):
+      block_sizes = {
+        "block_q": 512, # 2048,
+        "block_k_major": 512,
+        "block_k": 512,
+        "block_b": 2,
+        "block_q_major_dkv": 512, # 2048,
+        "block_k_major_dkv": 512,
+        "block_q_dkv": 512, # 2048,
+        "block_k_dkv": 512,
+        "block_q_dq": 512, # 2048,
+        "block_k_dq": 256,
+        "block_k_major_dq": 512,
+      }
+      if self.kernel_config is not None:
+        block_sizes.update(self.kernel_config)
+      FlashAttention.DEFAULT_BLOCK_SIZES = block_sizes
+
   # @xp.trace_me("AttentionModule")
   def forward(
     self,
@@ -55,10 +80,10 @@ class AttentionModule(nn.Module):
     kv_seq_len = key_states.shape[-2]
 
     # Non FA path doesn't deal with 2D sharding.
-    self.partition_spec = None
+    partition_spec = None
     segment_ids_partition_spec = None
     if constants.XLA_AVAILABLE and xs.get_global_mesh() is not None:
-      self.partition_spec = (("data", "fsdp"), "tensor", None, None)
+      partition_spec = (("data", "fsdp"), "tensor", None, None)
       segment_ids_partition_spec = (("data", "fsdp"), None)
 
     match self.config.attention_kernel:
@@ -93,7 +118,7 @@ class AttentionModule(nn.Module):
 
         sa_config = SplashAttentionConfig(
           mesh=str(xs.get_global_mesh()),
-          qkv_partition_spec=self.partition_spec,
+          qkv_partition_spec=partition_spec,
           segment_ids_partition_spec=segment_ids_partition_spec,
         )
         if self.kernel_config is not None:
@@ -120,22 +145,6 @@ class AttentionModule(nn.Module):
       case "flash_attention" | "nan_safe_flash_attention":
         assert constants.XLA_AVAILABLE, "Flash Attention requires XLA"
         # Integrated with PyTorch/XLA Pallas Flash Attention:
-        default_block_sizes = {
-          "block_q": 512, # 2048,
-          "block_k_major": 512,
-          "block_k": 512,
-          "block_b": 2,
-          "block_q_major_dkv": 512, # 2048,
-          "block_k_major_dkv": 512,
-          "block_q_dkv": 512, # 2048,
-          "block_k_dkv": 512,
-          "block_q_dq": 512, # 2048,
-          "block_k_dq": 256,
-          "block_k_major_dq": 512,
-        }
-        if self.kernel_config is not None:
-          default_block_sizes.update(self.kernel_config)
-        FlashAttention.DEFAULT_BLOCK_SIZES = default_block_sizes
 
         def _pad(x, l):
           if x.shape[-2] % l != 0:
@@ -158,7 +167,7 @@ class AttentionModule(nn.Module):
             key_states,
             value_states,
             causal=self.is_causal,
-            partition_spec=self.partition_spec,
+            partition_spec=partition_spec,
           )
         else:
           attn_output = nan_safe_flash_attention(
@@ -166,7 +175,7 @@ class AttentionModule(nn.Module):
             key_states,
             value_states,
             causal=self.is_causal,
-            partition_spec=self.partition_spec,
+            partition_spec=partition_spec,
           )
         attn_output = attn_output[:, :, :og_len, :]
 

@@ -12,6 +12,17 @@ from utils.logging_utils import master_print
 from utils import constants
 
 
+def _clean_wrapped_state_dict(state_dict):
+    return {
+        ".".join(
+            component
+            for component in key.split(".")
+            if component not in ("_orig_mod", "_module")
+        ): value
+        for key, value in state_dict.items()
+    }
+
+
 def load_checkpoint(
     url: str,
     step: int,
@@ -72,10 +83,7 @@ def load_checkpoint(
         state_dict = torch.load(state_path, map_location="cpu")
 
         # remove and xla specific keys
-        cleaned_state_dict = {
-            k.replace("_orig_mod.", ""): v
-            for k, v in state_dict.items()
-        }
+        cleaned_state_dict = _clean_wrapped_state_dict(state_dict)
 
         model.load_state_dict(cleaned_state_dict, strict=strict)
 
@@ -127,10 +135,7 @@ def load_checkpoint_state(
     state_dict = torch.load(state_path, map_location="cpu")
 
     # remove and xla specific keys
-    cleaned_state_dict = {
-        k.replace("_orig_mod.", ""): v
-        for k, v in state_dict.items()
-    }
+    cleaned_state_dict = _clean_wrapped_state_dict(state_dict)
 
     keys = model.load_state_dict(cleaned_state_dict, strict=strict)
 
