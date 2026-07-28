@@ -320,13 +320,9 @@ class SlitherStateMechanism(nn.Module):
         self.state.grad.zero_()
 
 
-
     @torch.no_grad()
     def increment_state(self, mem_states: torch.FloatTensor) -> None:
-        self.state.add_(
-            self.writer(mem_states)
-        )
-
+        self.state.add_(self.writer(mem_states))
 
     @torch.no_grad()
     def decrement_state(self, mem_states: torch.FloatTensor) -> None:
@@ -411,6 +407,50 @@ class SlitherNonCausalLayer(SlitherLayer):
     is_causal = False
 
 
+class LayerStack(nn.Module):
+
+    def __init__(
+        self,
+        config: DictConfig,
+        layer_cls: type[SlitherLayer],
+        num_layers: int,
+        layer_offset: int = 0,
+    ):
+        super().__init__()
+        self.layers = HomogeneousSequential(*[
+            layer_cls(config, layer_idx=layer_idx+layer_offset)
+            for layer_idx in range(num_layers)
+        ])
+
+        self.gradient_checkpointing = False
+
+
+    def _iter_layers(self):
+        for layer in self.layers:
+            yield layer
+
+
+    def forward(self, carry, **kwargs):
+
+        if (
+            self.gradient_checkpointing
+            and self.training
+            and torch.is_grad_enabled()
+        ):
+            for layer in self._iter_layers():
+                carry = checkpoint(
+                    layer,
+                    carry,
+                    use_reentrant=False,
+                    **kwargs,
+                )
+
+        else:
+            carry = self.layers(carry, **kwargs)
+
+        return carry
+
+
 class SlitherModel(nn.Module):
 
     def __init__(self, config: DictConfig):
@@ -428,22 +468,19 @@ class SlitherModel(nn.Module):
 
         # `HomogeneousSequential` is similar to `nn.Sequential` but can be compiled with
         # `scan` described in https://pytorch.org/xla/release/r2.6/features/scan.html.
-        self.causal_layers = HomogeneousSequential(
-            *[
-                SlitherCausalLayer(config, layer_idx=layer_idx)
-                for layer_idx in range(config.num_hidden_layers)
-            ]
+        self.causal_layers = LayerStack(
+            config,
+            SlitherCausalLayer,
+            config.num_hidden_layers,
+            0
         )
         self.lm_norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
-        self.noncausal_layers = HomogeneousSequential(
-            *[
-                SlitherNonCausalLayer(
-                    config,
-                    layer_idx=config.num_hidden_layers+layer_idx,
-                )
-                for layer_idx in range(config.num_noncausal_layers)
-            ]
+        self.noncausal_layers = LayerStack(
+            config,
+            SlitherNonCausalLayer,
+            config.num_noncausal_layers,
+            config.num_hidden_layers
         )
         self.mem_norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=False)
 
@@ -456,8 +493,6 @@ class SlitherModel(nn.Module):
             head_dim=head_dim, rope_theta=config.rope_theta, scaling=rope_scaling
         )
 
-        self.gradient_checkpointing = False
-
         self.apply(gaussian_init)
         self.embed_tokens.weight.data.normal_(mean=0.0, std=1/self.embed_scale)
 
@@ -465,7 +500,9 @@ class SlitherModel(nn.Module):
     def gradient_checkpointing_enable(self, enable: bool = True):
         if constants.XLA_AVAILABLE:
             raise NotImplementedError("Gradient checkpointing is not supported on XLA devices")
-        self.gradient_checkpointing = enable
+        for module in self.modules():
+            if hasattr(module, "gradient_checkpointing"):
+                module.gradient_checkpointing = enable
     
 
     def forward(
@@ -536,40 +573,12 @@ class SlitherModel(nn.Module):
         causal_layer_kwargs = _no_none({**layer_kwargs, "attention_mask": causal_mask})
         noncausal_layer_kwargs = _no_none({**layer_kwargs, "attention_mask": noncausal_mask})
         
-        # causal layers
-        if (
-            self.gradient_checkpointing
-            and self.training
-            and torch.is_grad_enabled()
-        ):
-            
-            hidden_states = inputs_embeds
-            for layer in self.causal_layers:
-                hidden_states = checkpoint(
-                    layer,
-                    hidden_states,
-                    use_reentrant=False,
-                    **causal_layer_kwargs,
-                )
-
-            new_mem_states = hidden_states
-            for layer in self.noncausal_layers:
-                new_mem_states = checkpoint(
-                    layer,
-                    new_mem_states,
-                    use_reentrant=False,
-                    **noncausal_layer_kwargs,
-                )
-            
-        else:
-            hidden_states = self.causal_layers(
-                inputs_embeds,
-                **causal_layer_kwargs,
-            )
-            new_mem_states = self.noncausal_layers(
-                hidden_states,
-                **noncausal_layer_kwargs,
-            )
+        hidden_states = self.causal_layers(
+            inputs_embeds, **causal_layer_kwargs
+        )
+        new_mem_states = self.noncausal_layers(
+            hidden_states, **noncausal_layer_kwargs
+        )
 
         lm_states = hidden_states
         if logits_to_keep is not None:
@@ -593,9 +602,9 @@ class SlitherModel(nn.Module):
 
 
     def _mechanisms(self):
-        for layer in self.causal_layers:
+        for layer in self.causal_layers._iter_layers():
             yield self._layer_module(layer, "state_mechanism")
-        for layer in self.noncausal_layers:
+        for layer in self.noncausal_layers._iter_layers():
             yield self._layer_module(layer, "state_mechanism")
 
 
@@ -609,15 +618,14 @@ class SlitherModel(nn.Module):
         for mechanism in self._mechanisms():
             mechanism.empty_state()
 
+
     @torch.no_grad()
     def increment_state(self, mem_states: torch.FloatTensor) -> None:
         for mechanism in self._mechanisms():
             mechanism.increment_state(mem_states)
 
-    def decrement_state(
-        self,
-        mem_states: torch.FloatTensor,
-    ) -> None:
+    @torch.no_grad()
+    def decrement_state(self, mem_states: torch.FloatTensor) -> None:
         for mechanism in self._mechanisms():
             mechanism.decrement_state(mem_states)
 

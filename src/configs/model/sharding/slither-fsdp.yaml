@@ -1,7 +1,7 @@
 # See docs/sharding.md for more details about sharding configuration.
 
 # Activations
-causal_layers.*: [[data, fsdp], null, null]
-noncausal_layers.*: [[data, fsdp], null, null]
+causal_layers.layers.*: [[data, fsdp], null, null]
+noncausal_layers.layers.*: [[data, fsdp], null, null]
 
 lm_head: [[data, fsdp], null, null]
