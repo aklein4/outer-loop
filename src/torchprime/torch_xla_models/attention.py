@@ -200,7 +200,7 @@ class AttentionModule(nn.Module):
           attn_weights, dim=-1, dtype=torch.float32
         ).to(query_states.dtype)
         attn_weights = nn.functional.dropout(
-          attn_weights, p=self.config.attention_dropout, training=self.training
+          attn_weights, p=self.config.get("attention_dropout", 0.0), training=self.training
         )
         attn_output = torch.matmul(attn_weights, value_states)
 

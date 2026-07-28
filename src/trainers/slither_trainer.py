@@ -1,0 +1,214 @@
+import torch
+import torch.nn.functional as F
+import torch_xla
+import torch_xla.core.xla_model as xm
+
+from collections import defaultdict
+
+from models.slither import SlitherModel
+from trainers.base_trainer import BaseTrainer
+from utils.logging_utils import master_print
+from utils.loss_utils import lm_loss_fn
+from utils.sharding_utils import maybe_shard_with_gradients
+
+
+class SlitherTrainer(BaseTrainer):
+
+    model: SlitherModel
+
+
+    def post_init(self):
+
+        self.state = self.model.init_state(
+            self.global_batch_size,
+            self.device,
+        )
+        self.state.requires_grad_(True)
+
+
+        self.model.embed_tokens.weight.no_muon = True
+        self.model.lm_head._orig_mod.weight.no_muon = True
+    
+        for i, module in self.model._enumerate_mechanisms():
+            module.read_gate.weight.no_muon = True
+            module.write_gate.weight.no_muon = True
+            module.odot.no_muon = True
+
+
+    def _autocast(self):
+        return torch.autocast(
+            "xla",
+            dtype=torch.bfloat16,
+            enabled=self.config.trainer.use_autocast,
+        )
+    
+    
+    @torch_xla.compile(full_graph=True)
+    def go_forward(
+        self,
+        input_ids: torch.LongTensor,
+        mem_states: torch.FloatTensor,
+    ):
+
+        with torch.no_grad():
+
+            with self._autocast():
+                _, mem_states = self.model.forward(
+                    input_ids=input_ids,
+                    mem_states=mem_states,
+                    full_state=self.state
+                )
+
+            mem_states = mem_states.float()
+            self.model.increment_state(mem_states)
+
+        mem_states = mem_states.detach().requires_grad_(True)
+        
+        return mem_states
+    
+
+    @torch_xla.compile(full_graph=True)
+    def go_backward(
+        self,
+        input_ids: torch.LongTensor,
+        labels: torch.LongTensor,
+        curr_mem_states: torch.FloatTensor | None,
+        prev_mem_states: torch.FloatTensor | None,
+        total_labels: int,
+    ):
+
+        if curr_mem_states is not None:
+            self.model.decrement_state(curr_mem_states)
+
+        with self._autocast():
+
+            logits, mem_states = self.model.forward(
+                input_ids=input_ids,
+                mem_states=prev_mem_states,
+                full_state=self.state
+            )
+
+            sum_loss = lm_loss_fn(
+                logits, labels,
+                shift_logits=False, shift_labels=False,
+                ignore_index=self.model.config.pad_token_id,
+                reduction="sum",
+            )
+
+            mem_loss = 0.0
+            if curr_mem_states is not None:
+                mem_loss = (mem_states * curr_mem_states.grad.detach()).sum()
+
+            portion_loss = sum_loss / total_labels
+            chunk_loss = sum_loss / labels.numel()
+
+            loss_for_backward = portion_loss + mem_loss
+
+        loss_for_backward.backward()
+
+        return portion_loss.detach(), chunk_loss.detach()
+
+
+    @torch_xla.compile(full_graph=True)
+    def post_forward(self, state_norm):
+
+        with torch.no_grad():
+            res = self.state.norm(dim=(-2, -1))
+            err = (res / state_norm).mean()
+
+            self.state.zero_()
+            self.state.grad.zero_()
+            self.state.detach_()
+            self.state.requires_grad_(True)
+
+        grad_norm = self.clip_gradients()
+        aux = self.optimization_step()
+
+        self.model.zero_grad(set_to_none=False)
+
+        aux["relative_grad_error"] = err
+
+        return aux, grad_norm
+
+
+    def train_step(self, batch):
+        tokens: torch.LongTensor = batch["input_ids"]
+
+        input_ids = tokens[:, :-1].split(
+            self.model.chunk_length, dim=1
+        )
+        labels = tokens[:, 1:].split(
+            self.model.chunk_length, dim=1
+        )
+        episodes = list(zip(input_ids, labels))
+        total_labels = tokens[:, 1:].numel()
+
+        aux = {}
+        mem_stack = []
+        portion_losses = []
+
+        # first loop
+        for index, episode in enumerate(episodes[:-1]):
+            input_ids, labels = episode
+
+            mem_states = self.go_forward(
+                input_ids=input_ids,
+                mem_states=mem_stack[-1] if len(mem_stack) > 0 else None,
+            )
+            mem_stack.append(mem_states)
+
+            master_print(
+                f"Forward  {index:02d} completed."
+            )
+
+        state_norm = self.state.norm(dim=(-2, -1))
+  
+        # second loop
+        for index, episode in list(enumerate(episodes))[::-1]:
+            input_ids, labels = episode
+
+            curr_mem_states = mem_stack[index] if index < len(episodes)-1 else None
+            prev_mem_states = mem_stack[index-1] if index > 0 else None
+
+            portion_loss, chunk_loss = self.go_backward(
+                input_ids=input_ids,
+                labels=labels,
+                curr_mem_states=curr_mem_states,
+                prev_mem_states=prev_mem_states,
+                total_labels=total_labels,
+            )
+        
+            aux[f"lm_loss/chunk_{index:02d}"] = chunk_loss
+            portion_losses.append(portion_loss)
+
+            mem_stack.pop()
+
+            master_print(
+                f"Backward {index:02d} completed."
+            )
+
+        # optimizer step
+        post_aux, grad_norm = self.post_forward(state_norm)
+
+        aux.update(post_aux)
+        master_print("Optimization step completed.")
+
+        # metricsc
+        final_loss = torch.stack(portion_losses).sum()
+        aux["atom_count"] = total_labels
+
+        decades = defaultdict(list)
+        for key, value in aux.items():
+
+            if "chunk_" not in key or key.endswith("00"):
+                continue
+
+            decade = int(key.split("_")[-1][0])
+            decades[decade].append(value)
+
+        for decade, values in decades.items():
+            aux[
+                f"grouped_lm_loss/decade_{decade:02d}"
+            ] = torch.stack(values).mean()
+
+        return final_loss, aux, grad_norm

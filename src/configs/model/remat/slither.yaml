@@ -1,0 +1,21 @@
+advanced:
+
+  - name: self
+    settings:
+      activation_checkpoint_layers:
+        - SlitherCausalLayer
+      optimization_barrier_layers:
+        - SlitherCausalLayer
+      scan_layers: causal_layers
+      offload_tensors:
+        - slither_causal_layer_input
+
+  - name: self
+    settings:
+      activation_checkpoint_layers:
+        - SlitherNonCausalLayer
+      optimization_barrier_layers:
+        - SlitherNonCausalLayer
+      scan_layers: noncausal_layers
+      offload_tensors:
+        - slither_noncausal_layer_input
