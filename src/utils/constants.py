@@ -1,5 +1,6 @@
 import torch
 
+from pathlib import Path
 import os
 import dotenv
 
@@ -16,8 +17,10 @@ BASE_PATH = os.path.dirname( # src
         __file__ # utils.constants
     )
 )
+BASE_PATH = Path(BASE_PATH).resolve()
+
 # path of the repo (easy-torch-tpu)
-REPO_PATH = os.path.dirname(BASE_PATH)
+REPO_PATH = Path(os.path.dirname(BASE_PATH))
 
 # load environment variables from .env file
 dotenv.load_dotenv(os.path.join(REPO_PATH, ".env"))
@@ -44,10 +47,15 @@ def DT():
     return torch.float32
 
 # path to local data folder
-LOCAL_DATA_PATH = os.path.join(BASE_PATH, "local_data")
+LOCAL_DATA_PATH = BASE_PATH / "local_data"
 
 # path to checkpoint folder
-CHECKPOINTS_PATH = os.path.join(LOCAL_DATA_PATH, "checkpoints")
+CHECKPOINTS_PATH = LOCAL_DATA_PATH / "checkpoints"
+
+def CONFIG_PATH(name):
+    if name.endswith(".yaml"):
+        return BASE_PATH / "configs" / name
+    return BASE_PATH / "configs" / f"{name}.yaml"
 
 # modules for dynamic importing
 MODEL_MODULE = "models"
