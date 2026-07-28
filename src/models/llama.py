@@ -244,7 +244,6 @@ class LlamaAttention(nn.Module):
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
-        position_ids: torch.LongTensor | None = None,
     ) -> torch.FloatTensor:
         bsz, q_len, _ = hidden_states.shape
 
@@ -301,7 +300,6 @@ class LlamaDecoderLayer(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
-        position_ids: torch.Tensor | None = None,
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,    # necessary, but kept here for BC
         **mlp_kwargs,
     ) -> torch.Tensor:
@@ -327,7 +325,6 @@ class LlamaDecoderLayer(nn.Module):
         hidden_states = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
-            position_ids=position_ids,
             position_embeddings=position_embeddings,
         )
         hidden_states = residual + hidden_states
@@ -417,22 +414,15 @@ class LlamaModel(nn.Module):
 
         seq_length = inputs_embeds.shape[1]
 
-        # TODO(https://github.com/pytorch/xla/issues/8783): Pass position_ids as `long()`
-        # when `scan` can take non-differentiable inputs.
         if position_ids is None:
             position_ids = torch.arange(
                 seq_length, device=inputs_embeds.device
-            ).unsqueeze(0).float()
+            ).unsqueeze(0)
 
         # Create a causal attention mask
         if self.config.attention_kernel is not None and "lash" in self.config.attention_kernel:
             assert attention_mask is None, "Custom attention mask not compatible with flash attention"
-
-            # dummy value
-            if constants.XLA_AVAILABLE:
-                causal_mask = torch.zeros_like(position_ids)
-            else:
-                causal_mask = None
+            causal_mask = None
 
         else:
             causal_mask = torch.triu(
@@ -445,6 +435,10 @@ class LlamaModel(nn.Module):
 
         # create position embeddings to be shared across the decoder layers
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
+        decoder_kwargs = dict(layer_kwargs)
+        decoder_kwargs["position_embeddings"] = position_embeddings
+        if causal_mask is not None:
+            decoder_kwargs["attention_mask"] = causal_mask
 
         # decoder layers
         if (
@@ -457,19 +451,13 @@ class LlamaModel(nn.Module):
                 hidden_states = checkpoint(
                     layer,
                     hidden_states,
-                    attention_mask=causal_mask,
-                    position_ids=position_ids,
-                    position_embeddings=position_embeddings,
                     use_reentrant=False,
-                    **layer_kwargs,
+                    **decoder_kwargs,
                 )
         else:
             hidden_states = self.layers(
                 inputs_embeds,
-                attention_mask=causal_mask,
-                position_ids=position_ids,
-                position_embeddings=position_embeddings,
-                **layer_kwargs,
+                **decoder_kwargs,
             )
 
         if self.do_norm:

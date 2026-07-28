@@ -93,12 +93,12 @@ class SlitherAttention(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        mem_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        mem_states: torch.Tensor | None = None,
         attention_mask: torch.Tensor | None = None,
     ) -> torch.FloatTensor:
         bsz, q_len, _ = hidden_states.shape
-        has_mem = mem_states.ndim == 3
+        has_mem = mem_states is not None
 
         query_states = self.q_proj(hidden_states)
         key_states = self.k_proj(hidden_states)
@@ -366,7 +366,7 @@ class SlitherLayer(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        mem_states: torch.Tensor,
+        mem_states: torch.Tensor | None = None,
         attention_mask: torch.Tensor | None = None,
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> torch.Tensor:
@@ -481,33 +481,22 @@ class SlitherModel(nn.Module):
 
         # handle mem
         if mem_states is None:
-            # Scan inputs must be tensors. A scalar is a distinct cache key
-            # from the rank-3 memory tensor used by subsequent chunks.
-            mem_states = torch.zeros_like(inputs_embeds.sum())
             full_seq_length = seq_length
 
         else:
             assert mem_states.ndim == 3, f"Expected mem_states to be rank-3, got {mem_states.ndim}"
             full_seq_length = mem_states.shape[1] + seq_length
 
-        # TODO(https://github.com/pytorch/xla/issues/8783): Pass position_ids as `long()`
-        # when `scan` can take non-differentiable inputs.
         if position_ids is None:
             position_ids = torch.arange(
                 full_seq_length, device=inputs_embeds.device
-            ).unsqueeze(0).float()
+            ).unsqueeze(0)
 
         # Create a causal attention mask
         if self.config.attention_kernel is not None and "lash" in self.config.attention_kernel:
             assert attention_mask is None, "Custom attention mask not compatible with flash attention"
-
-            # dummy value
-            if constants.XLA_AVAILABLE:
-                causal_mask = torch.zeros_like(position_ids)
-                noncausal_mask = torch.zeros_like(position_ids)
-            else:
-                causal_mask = None
-                noncausal_mask = None
+            causal_mask = None
+            noncausal_mask = None
 
         else:
 
@@ -531,7 +520,17 @@ class SlitherModel(nn.Module):
         # create position embeddings to be shared across the decoder layers
         # inputs are only used for dtypes
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
-
+        
+        # prepare the arguments
+        def _no_none(d):
+            return {k: v for k, v in d.items() if v is not None}
+        layer_kwargs = {
+            "position_embeddings": position_embeddings,
+            "mem_states": mem_states,
+        }
+        causal_layer_kwargs = _no_none({**layer_kwargs, "attention_mask": causal_mask})
+        noncausal_layer_kwargs = _no_none({**layer_kwargs, "attention_mask": noncausal_mask})
+        
         # causal layers
         if (
             self.gradient_checkpointing
@@ -544,10 +543,8 @@ class SlitherModel(nn.Module):
                 hidden_states = checkpoint(
                     layer,
                     hidden_states,
-                    mem_states=mem_states,
-                    attention_mask=causal_mask,
-                    position_embeddings=position_embeddings,
                     use_reentrant=False,
+                    **causal_layer_kwargs,
                 )
 
             new_mem_states = hidden_states
@@ -555,24 +552,18 @@ class SlitherModel(nn.Module):
                 new_mem_states = checkpoint(
                     layer,
                     new_mem_states,
-                    mem_states=mem_states,
-                    attention_mask=noncausal_mask,
-                    position_embeddings=position_embeddings,
                     use_reentrant=False,
+                    **noncausal_layer_kwargs,
                 )
             
         else:
             hidden_states = self.causal_layers(
                 inputs_embeds,
-                mem_states=mem_states,
-                attention_mask=causal_mask,
-                position_embeddings=position_embeddings,
+                **causal_layer_kwargs,
             )
             new_mem_states = self.noncausal_layers(
                 hidden_states,
-                mem_states=mem_states,
-                attention_mask=noncausal_mask,
-                position_embeddings=position_embeddings,
+                **noncausal_layer_kwargs,
             )
 
         lm_states = hidden_states

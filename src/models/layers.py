@@ -65,10 +65,9 @@ class BidirectionalAttention(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
+        elementwise_pad_mask,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
-        position_ids: torch.LongTensor | None = None,
-        elementwise_pad_mask=None,
     ) -> torch.FloatTensor:
         batch_size, sequence_length, _ = hidden_states.shape
 
@@ -103,21 +102,21 @@ class BidirectionalAttention(nn.Module):
             sin,
         )
 
-        if elementwise_pad_mask is not None:
-            query_pad, key_pad = elementwise_pad_mask
-            query_scale, query_offset = query_pad
-            key_scale, key_offset = key_pad
+        # handle elementwise_pad_mask
+        query_pad, key_pad = elementwise_pad_mask
+        query_scale, query_offset = query_pad
+        key_scale, key_offset = key_pad
 
-            query_states = (
-                query_states
-                * query_scale[:, None].to(query_states.dtype)
-                + query_offset[:, None].to(query_states.dtype)
-            )
-            key_states = (
-                key_states
-                * key_scale[:, None].to(key_states.dtype)
-                + key_offset[:, None].to(key_states.dtype)
-            )
+        query_states = (
+            query_states
+            * query_scale[:, None].to(query_states.dtype)
+            + query_offset[:, None].to(query_states.dtype)
+        )
+        key_states = (
+            key_states
+            * key_scale[:, None].to(key_states.dtype)
+            + key_offset[:, None].to(key_states.dtype)
+        )
 
         attn_output = self.attention_block(
             query_states,
@@ -154,10 +153,9 @@ class BidirectionalDecoderLayer(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
+        elementwise_pad_mask: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
-        position_ids: torch.Tensor | None = None,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
-        elementwise_pad_mask=None,
     ) -> torch.Tensor:
         if constants.XLA_AVAILABLE:
             hidden_states = offloading.offload_name(
@@ -170,7 +168,6 @@ class BidirectionalDecoderLayer(nn.Module):
         hidden_states = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
-            position_ids=position_ids,
             position_embeddings=position_embeddings,
             elementwise_pad_mask=elementwise_pad_mask,
         )
@@ -210,6 +207,7 @@ class BidirectionalHead(nn.Module):
         )
 
         self._init_elementwise_pad_mask()
+
 
     def _init_elementwise_pad_mask(self):
         head_dim = self.config.hidden_size // self.config.num_attention_heads
@@ -251,6 +249,7 @@ class BidirectionalHead(nn.Module):
             persistent=True,
         )
 
+
     def _elementwise_pad_mask(self, mask: torch.BoolTensor):
         mask = mask.long()
         return (
@@ -264,10 +263,12 @@ class BidirectionalHead(nn.Module):
             ),
         )
 
+
     def forward(
         self,
         hidden_states: torch.FloatTensor,
         elementwise_pad_mask: torch.BoolTensor | None = None,
+        attention_mask: torch.FloatTensor | None = None,
     ) -> torch.FloatTensor:
         batch_size, sequence_length, _ = hidden_states.shape
 
@@ -290,7 +291,7 @@ class BidirectionalHead(nn.Module):
 
         position_ids = (
             torch.cumsum(elementwise_pad_mask.long(), dim=-1) - 1
-        ).float()
+        )
         position_embeddings = self.rotary_emb(
             hidden_states,
             position_ids,
@@ -299,16 +300,14 @@ class BidirectionalHead(nn.Module):
             elementwise_pad_mask
         )
 
-        attention_mask = None
-        if constants.XLA_AVAILABLE:
-            # scan currently requires tensor-valued broadcast inputs.
-            attention_mask = torch.zeros_like(position_ids)
+        kwargs = {}
+        if attention_mask is not None:
+            kwargs["attention_mask"] = attention_mask
 
         hidden_states = self.layers(
             hidden_states,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            position_embeddings=position_embeddings,
             elementwise_pad_mask=elementwise_pad_mask,
+            position_embeddings=position_embeddings,
+            **kwargs
         )
         return self.norm(hidden_states)
