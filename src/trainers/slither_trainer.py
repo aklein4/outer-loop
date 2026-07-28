@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import torch_xla
 
@@ -74,12 +75,22 @@ class SlitherTrainer(BaseTrainer):
         input_ids: torch.LongTensor,
         labels: torch.LongTensor,
         curr_mem_states: torch.FloatTensor | None,
+        curr_mem_grad: torch.FloatTensor | None,
         prev_mem_states: torch.FloatTensor | None,
         total_labels: torch.LongTensor,
     ):
 
         if curr_mem_states is not None:
+            assert curr_mem_grad is not None
+
+            curr_mem_states = curr_mem_states.detach().requires_grad_(True)
+            with torch.no_grad():
+                curr_mem_states.grad = curr_mem_grad.detach()
+
             self.model.decrement_state(curr_mem_states)
+
+        if prev_mem_states is not None:
+            prev_mem_states = prev_mem_states.detach().requires_grad_(True)
 
         with self._autocast():
 
@@ -108,7 +119,13 @@ class SlitherTrainer(BaseTrainer):
 
         loss_for_backward.backward()
 
-        return portion_loss.detach(), chunk_loss.detach()
+        prev_mem_grad = (
+            prev_mem_states.grad.detach()
+            if prev_mem_states is not None
+            else None
+        )
+
+        return portion_loss.detach(), chunk_loss.detach(), prev_mem_grad
 
 
     @torch_xla.compile(full_graph=True)
@@ -121,12 +138,16 @@ class SlitherTrainer(BaseTrainer):
 
         self.model.empty_state()
 
+        g = [p.grad for p in self.model.noncausal_layers.parameters() if p.grad is not None]
+        noncausal_grad_norm = nn.utils.get_total_norm(g)
+        
         grad_norm = self.clip_gradients()
         aux = self.optimization_step()
 
         self.model.zero_grad(set_to_none=False)
 
         aux["relative_grad_error"] = err
+        aux["noncausal_grad_norm"] = noncausal_grad_norm
 
         return aux, grad_norm
 
@@ -169,16 +190,18 @@ class SlitherTrainer(BaseTrainer):
         state_norm = self.model.get_state_norm()
   
         # second loop
+        curr_mem_grad = None
         for index, episode in list(enumerate(episodes))[::-1]:
             input_ids, labels = episode
 
             curr_mem_states = mem_stack[index] if index < len(episodes)-1 else None
             prev_mem_states = mem_stack[index-1] if index > 0 else None
 
-            portion_loss, chunk_loss = self.go_backward(
+            portion_loss, chunk_loss, curr_mem_grad = self.go_backward(
                 input_ids=input_ids,
                 labels=labels,
                 curr_mem_states=curr_mem_states,
+                curr_mem_grad=curr_mem_grad,
                 prev_mem_states=prev_mem_states,
                 total_labels=total_labels,
             )

@@ -14,7 +14,7 @@ from models.llama import (
     LlamaRMSNorm,
 )
 from utils.sharding_utils import maybe_shard_with_gradients
-from utils.torch_utils import fixed_linear, gaussian_init
+from utils.torch_utils import fixed_linear, gaussian_init, unsqueeze_to_channel
 
 
 def _get_G(
@@ -197,6 +197,13 @@ class DynamicLR(nn.Module):
         self.scalar_scaler = math.sqrt(self.fast_weight_size)
         self.rms_norm_eps = config.rms_norm_eps
 
+        self.fw_norm = LlamaRMSNorm(
+            self.fast_weight_size, eps=self.rms_norm_eps, elementwise_affine=False
+        )
+        self.hs_norm = LlamaRMSNorm(
+            config.hidden_size, eps=self.rms_norm_eps, elementwise_affine=False
+        )
+
         # learning-rate parameters
         self.fast_log_lr = nn.Parameter(
             torch.randn(self.fast_weight_size, self.fast_weight_size)
@@ -225,6 +232,17 @@ class DynamicLR(nn.Module):
             config.hidden_size, 1, bias=False
         )
 
+        self.fast_glob_proj = nn.Linear(
+            config.hidden_size, 1, bias=False
+        )
+        self.fast_glob_proj.weight.data.zero_()
+        self.fast_glob_proj.inited = True
+
+        self.fast_cap = nn.Parameter(
+            torch.ones(1)
+            * 2 / self.scalar_scaler
+        )
+
 
     def forward(
         self,
@@ -244,18 +262,24 @@ class DynamicLR(nn.Module):
         attn_l = F.softmax(a_l, dim=-2)
 
         l = (self.fast_p_l(masked_embeddings) * attn_l).sum(dim=-2)
-        l = F.rms_norm(l, l.shape[-1:], eps=self.rms_norm_eps)
+        l = self.fw_norm(l)
 
         r = (self.fast_p_r(masked_embeddings) * attn_r).sum(dim=-2)
-        r = F.rms_norm(r, r.shape[-1:], eps=self.rms_norm_eps)
+        r = self.fw_norm(r)
 
-        offset = (
-            l[:, :, None] + r[:, None, :]
-        ) * (self.fast_m[None] * self.scalar_scaler)
+        offset = l[:, :, None] + r[:, None, :]
+        cap = (self.fast_cap * self.scalar_scaler) - 1.0
+        offset = cap - F.elu(cap - offset)
+        offset = offset * (self.fast_m[None] * self.scalar_scaler)
+
+        mean_embed = masked_embeddings.mean(dim=-2)
+        mean_embed = self.hs_norm(mean_embed)
+        glob = self.fast_glob_proj(mean_embed) # [B, 1]
 
         log_lr = (
-            self.fast_log_lr * self.scalar_scaler
+            self.fast_log_lr[None] * self.scalar_scaler
             + offset
+            + unsqueeze_to_channel(glob, offset)
         )
 
         return (
@@ -580,6 +604,8 @@ class RecurrentModel(LlamaForCausalLM):
 
 
     def _layer_module(self, layer, name: str) -> nn.Module:
+        if isinstance(layer, int):
+            layer = self.model.layers[layer]
         try:
             return layer.get_submodule(name)
         except AttributeError:

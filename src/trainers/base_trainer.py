@@ -558,7 +558,8 @@ class BaseTrainer:
             parameters = list(parameters)
 
         if max_grad_norm is None or max_grad_norm <= 0:
-            grad_norm = nn_utils.get_total_norm(parameters, norm_type=2)
+            g = [p.grad for p in parameters if p.grad is not None]
+            grad_norm = nn_utils.get_total_norm(g, norm_type=2)
         else:
             grad_norm = nn_utils.clip_grad_norm_(
                 parameters, max_norm=max_grad_norm, norm_type=2
