@@ -41,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-step", type=int, required=True)
     parser.add_argument("--layer", type=int, required=True)
     parser.add_argument("--index", type=int, required=True)
+    parser.add_argument("--not-strict", action="store_true")
     parser.add_argument("--data-config", type=str, default=DEFAULT_DATA_CONFIG)
     parser.add_argument("--autocast-dtype", default="bfloat16")
     return parser.parse_args()
@@ -49,11 +50,13 @@ def parse_args() -> argparse.Namespace:
 def load_model(
     checkpoint: str,
     step: int,
+    strict=True,
 ) -> RecurrentModel:
 
     model: RecurrentModel = load_checkpoint(
         checkpoint, step,
         attention_kernel=("gpu_flash_attention" if DEVICE.type == "cuda" else None),
+        strict=strict,
     )  
 
     model.to(device=DEVICE, dtype=torch.float32)
@@ -188,9 +191,11 @@ def print_explained_variance(offsets: np.ndarray, n_components: int = 10) -> Non
 
     values = explained_variance[:n_components]
 
-    print(f"Explained variance of first {len(values)} principal components:")
+    print(f"Explained variance of first {len(values)} principal components:\n")
     for i, value in enumerate(values):
         print(f"  PC {i + 1}: {value:.6f}")
+
+    print(f"Elementwise std: {offsets.std():.6f}")
 
 
 def plot_average_offsets(offsets: np.ndarray, output: Path) -> None:
@@ -251,7 +256,7 @@ def main() -> int:
     args = parse_args()
     autocast_dtype = getattr(torch, args.autocast_dtype)
 
-    model = load_model(args.checkpoint, args.checkpoint_step)
+    model = load_model(args.checkpoint, args.checkpoint_step, not args.not_strict)
     dynamic_lr = get_layer_lr_module(model, args.layer)
     data_url, batch = load_trajectory(args.data_config, args.index)
 
