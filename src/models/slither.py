@@ -324,19 +324,17 @@ class SlitherStateMechanism(nn.Module):
     def increment_state(self, mem_states: torch.FloatTensor) -> None:
         self.state.add_(self.writer(mem_states))
 
-    @torch.no_grad()
+
     def decrement_state(self, mem_states: torch.FloatTensor) -> None:
-        self.state.sub_(self.writer(mem_states))
 
-
-    def get_state_update_loss(
-        self,
-        mem_states: torch.FloatTensor,
-    ) -> torch.FloatTensor:
-        """Expose the state-update VJP as an ordinary autograd dependency."""
         update = self.writer(mem_states)
-        state_grad = self.state.grad.detach().clone()
-        return (update * state_grad).sum()
+        torch.autograd.backward(
+            update,
+            self.state.grad
+        )
+
+        with torch.no_grad():
+            self.state.sub_(update)
 
 
 class SlitherLayer(nn.Module):
@@ -624,20 +622,10 @@ class SlitherModel(nn.Module):
         for mechanism in self._mechanisms():
             mechanism.increment_state(mem_states)
 
-    @torch.no_grad()
+    
     def decrement_state(self, mem_states: torch.FloatTensor) -> None:
         for mechanism in self._mechanisms():
             mechanism.decrement_state(mem_states)
-
-
-    def get_state_update_loss(
-        self,
-        mem_states: torch.FloatTensor,
-    ) -> torch.FloatTensor:
-        return torch.stack([
-            mechanism.get_state_update_loss(mem_states)
-            for mechanism in self._mechanisms()
-        ]).sum()
 
 
     @torch.no_grad()

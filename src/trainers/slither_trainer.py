@@ -80,6 +80,8 @@ class SlitherTrainer(BaseTrainer):
     ):
 
         if curr_mem_states is not None:
+            curr_mem_states = curr_mem_states.detach().requires_grad_(True)
+
             self.model.decrement_state(curr_mem_states)
 
         if prev_mem_states is not None:
@@ -98,7 +100,6 @@ class SlitherTrainer(BaseTrainer):
                 ignore_index=self.model.config.pad_token_id,
                 reduction="sum",
             )
-
             portion_loss = sum_loss / total_labels.to(sum_loss.dtype)
             chunk_loss = sum_loss / (
                 labels != self.model.config.pad_token_id
@@ -108,18 +109,16 @@ class SlitherTrainer(BaseTrainer):
             if curr_mem_grad is not None:
                 mem_attn_loss = (mem_states * curr_mem_grad.detach()).sum()
 
-        # this should be outside of autocast
-        mem_state_loss = 0.0
-        if curr_mem_states is not None:
-            mem_state_loss = self.model.get_state_update_loss(
-                mem_states.float()
-            )
+            mem_state_loss = 0.0
+            if curr_mem_states is not None:
+                mem_state_loss = (mem_states * curr_mem_states.grad.detach()).sum()
   
-        loss_for_backward = (
-            portion_loss +
-            mem_attn_loss +
-            mem_state_loss
-        )
+            loss_for_backward = (
+                portion_loss +
+                mem_attn_loss +
+                mem_state_loss
+            )
+            
         loss_for_backward.backward()
 
         prev_mem_grad = (
