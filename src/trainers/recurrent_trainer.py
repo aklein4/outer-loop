@@ -260,12 +260,15 @@ class RecurrentTrainer(BaseTrainer):
         err = self.model.relative_grad_error()
         self.model.empty_state()
 
+        num_none_grad = len([p for p in self.model.parameters() if p.grad is None])
+
         grad_norm = self.clip_gradients()
         aux = self.optimization_step()
 
         self.model.zero_grad(set_to_none=False)
 
         aux["relative_grad_error"] = err
+        aux["num_none_grad"] = num_none_grad
 
         return aux, grad_norm
 

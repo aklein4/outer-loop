@@ -148,7 +148,7 @@ class SlitherTrainer(BaseTrainer):
 
         self.model.zero_grad(set_to_none=False)
 
-        aux["relative_grad_error"] = err
+        aux["relative_state_error"] = err
         aux["num_none_grad"] = num_none_grad
 
         return aux, grad_norm
