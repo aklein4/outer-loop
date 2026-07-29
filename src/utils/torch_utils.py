@@ -333,6 +333,7 @@ def newton_schulz(G, steps=5, eps=1e-7, polar=False, safety=None):
     # Ensure spectral norm is at most 1
     X_f = X.float()
     X = (X_f / (X_f.norm(dim=(-2, -1), keepdim=True) + eps)).to(X.dtype)
+    X = X * safety
 
     # Perform the NS iterations
     for t in range(steps):
