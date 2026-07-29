@@ -84,6 +84,9 @@ class SlitherTrainer(BaseTrainer):
 
             self.model.decrement_state(curr_mem_states)
 
+        if self.config.trainer.decay is not None:
+            self.model.scale_state_grad(self.config.trainer.decay)
+
         if prev_mem_states is not None:
             prev_mem_states = prev_mem_states.detach().requires_grad_(True)
 

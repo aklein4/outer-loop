@@ -337,6 +337,11 @@ class SlitherStateMechanism(nn.Module):
             self.state.sub_(update)
 
 
+    @torch.no_grad()
+    def scale_state_grad(self, scale: float) -> None:
+        self.state.grad.mul_(scale)
+
+
 class SlitherLayer(nn.Module):
 
     offload_name = "slither_layer_input"
@@ -627,6 +632,12 @@ class SlitherModel(nn.Module):
         for mechanism in self._mechanisms():
             mechanism.decrement_state(mem_states)
 
+
+    @torch.no_grad()
+    def scale_state_grad(self, scale: float) -> None:
+        for mechanism in self._mechanisms():
+            mechanism.scale_state_grad(scale)
+            
 
     @torch.no_grad()
     def get_state_norm(self) -> torch.FloatTensor:
