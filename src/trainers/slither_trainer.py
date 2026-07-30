@@ -24,11 +24,16 @@ class SlitherTrainer(BaseTrainer):
         )
 
         self.model.embed_tokens.weight.no_muon = True
+        self.model.embed_positions.no_muon = True
+        self.model.position_proj.weight.no_muon = True
         try:
             self.model.lm_head.weight.no_muon = True
         except AttributeError:
             self.model.lm_head._orig_mod.weight.no_muon = True
     
+        for module in self.model._attentions():
+            module.gate_proj.weight.no_muon = True
+
         for module in self.model._mechanisms():
             module.in_gate.weight.no_muon = True
             module.out_gate.weight.no_muon = True
@@ -36,12 +41,11 @@ class SlitherTrainer(BaseTrainer):
             module.odot.no_muon = True
 
             try:
-                module.writer.in_gate.weight.no_muon = True
-                module.writer.out_gate.weight.no_muon = True
-            except AttributeError:
                 writer = module.writer._module
-                writer.in_gate.weight.no_muon = True
-                writer.out_gate.weight.no_muon = True
+            except AttributeError:
+                writer = module.writer
+            writer.in_gate.weight.no_muon = True
+            writer.out_gate.weight.no_muon = True
 
 
     def _autocast(self):

@@ -28,7 +28,7 @@ pad_token_id: 49152
 
 # architecture size
 hidden_size: 2048
-num_hidden_layers: 16
+num_hidden_layers: 14
 
 # attention configuration
 num_attention_heads: 32
@@ -55,7 +55,9 @@ pure_modules:
 # You can add any additional configuration options for your model here
 # They will appear as attributes of config.model
 
-num_output_layers: 2
+position_embedding_dim: 256
+
+num_output_layers: 4
 num_memory_layers: 4
 
 state_size: 1536

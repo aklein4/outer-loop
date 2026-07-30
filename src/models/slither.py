@@ -14,7 +14,7 @@ from utils import constants
 if constants.XLA_AVAILABLE:
     from torchprime.torch_xla_models import offloading
 from utils.attention_utils import AtttentionProbe
-from utils.torch_utils import gaussian_init, inv_softplus
+from utils.torch_utils import gaussian_init, inv_softplus, unsqueeze_to_batch
 from utils.sharding_utils import maybe_shard_with_gradients
 from utils.torch_modules import LayerStack, ScaledEmbedding
 
@@ -80,6 +80,11 @@ class SlitherAttention(nn.Module):
             bias=False,
         )
 
+        self.gate_proj = nn.Linear(
+            self.hidden_size,
+            self.num_heads,
+            bias=False,
+        )
         self.o_proj = nn.Linear(
             self.num_heads * self.head_dim,
             self.hidden_size,
@@ -146,6 +151,10 @@ class SlitherAttention(nn.Module):
             attn_output = attn_output[:, :, -q_len:, :]
 
         attn_output = attn_output.transpose(1, 2).contiguous()
+
+        g = 2 * torch.sigmoid(self.gate_proj(hidden_states))
+        attn_output = attn_output * g[..., None]
+
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
         attn_output = self.o_proj(attn_output)
 
@@ -237,7 +246,7 @@ class SlitherStateWriter(nn.Module):
         key_states = self.in_norm(key_states, scales=in_gate)
 
         value_states = self.v_proj(mem_states)
-        gate = torch.sigmoid(self.out_gate(mem_states))
+        gate = 2 * torch.sigmoid(self.out_gate(mem_states))
         value_states = self.out_norm(value_states, scales=gate)
 
         update = value_states.mT @ key_states
@@ -393,7 +402,7 @@ class SlitherStateMechanism(nn.Module):
         s = self.get_s()
         output = torch.einsum("boi,bli->blo", s, query_states)
 
-        out_gate = torch.sigmoid(self.out_gate(hidden_states))
+        out_gate = 2 * torch.sigmoid(self.out_gate(hidden_states))
         output = self.out_norm(output, scales=out_gate)
 
         return self.o_proj(output) * self.get_out_scale()
@@ -559,10 +568,24 @@ class SlitherModel(nn.Module):
         self.state_size = config.state_size
         self.chunk_length = config.chunk_length
 
+        self.scalar_scaler = math.sqrt(config.hidden_size)
+
         self.vocab_size = config.vocab_size
         self.pad_token_id = config.pad_token_id
         self.embed_tokens = ScaledEmbedding(config.vocab_size, config.hidden_size)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+
+        self.embed_positions = nn.Parameter(
+            torch.randn(self.chunk_length, config.position_embedding_dim) * 0.1
+            / self.scalar_scaler
+        )
+        self.position_proj = nn.Linear(
+            config.position_embedding_dim, config.hidden_size, bias=False
+        )
+        self.embed_first = nn.Parameter(
+            torch.randn(config.hidden_size) * 0.1
+            / self.scalar_scaler
+        )
 
         # `HomogeneousSequential` is similar to `nn.Sequential` but can be compiled with
         # `scan` described in https://pytorch.org/xla/release/r2.6/features/scan.html.
@@ -614,6 +637,7 @@ class SlitherModel(nn.Module):
         position_ids: torch.LongTensor | None = None,
         logits_to_keep: slice | None = None,
         skip_logits: bool = False,
+        position_slice: slice | None = None,
     ) -> torch.Tensor:        
 
         # convert input ids to embeddings
@@ -621,9 +645,21 @@ class SlitherModel(nn.Module):
             inputs_embeds = self.embed_tokens(input_ids)
         seq_length = inputs_embeds.shape[1]
 
+        assert seq_length <= self.chunk_length, f"Input sequence length {seq_length} exceeds chunk length {self.chunk_length}"
+        if position_slice is None:
+            position_slice = slice(0, seq_length)
+        inputs_embeds = inputs_embeds + unsqueeze_to_batch(
+            self.position_proj(self.embed_positions[position_slice] * self.scalar_scaler),
+            inputs_embeds
+        )
+
         # handle mem
         if mem_states is None:
             full_seq_length = seq_length
+            inputs_embeds = inputs_embeds + unsqueeze_to_batch(
+                self.embed_first * self.scalar_scaler,
+                inputs_embeds
+            )
 
         else:
             assert mem_states.ndim == 3, f"Expected mem_states to be rank-3, got {mem_states.ndim}"
@@ -702,13 +738,20 @@ class SlitherModel(nn.Module):
         except AttributeError:
             return layer._orig_mod.get_submodule(name)
 
+    def _layers(self):
+        for layer in self.backbone_layers._iter_layers():
+            yield layer
+        for layer in self.output_layers._iter_layers():
+            yield layer
+        for layer in self.memory_layers._iter_layers():
+            yield layer
+
+    def _attentions(self):
+        for layer in self._layers():
+            yield self._layer_module(layer, "self_attn")
 
     def _mechanisms(self):
-        for layer in self.backbone_layers._iter_layers():
-            yield self._layer_module(layer, "state_mechanism")
-        for layer in self.output_layers._iter_layers():
-            yield self._layer_module(layer, "state_mechanism")
-        for layer in self.memory_layers._iter_layers():
+        for layer in self._layers():
             yield self._layer_module(layer, "state_mechanism")
 
 

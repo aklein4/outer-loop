@@ -55,6 +55,8 @@ pure_modules:
 # You can add any additional configuration options for your model here
 # They will appear as attributes of config.model
 
+position_embedding_dim: 24
+
 num_output_layers: 2
 num_memory_layers: 3
 
