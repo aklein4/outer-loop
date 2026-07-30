@@ -25,17 +25,16 @@ import torch.nn.functional as F
 from transformers.activations import ACT2FN
 from transformers.utils import logging
 
-from torchprime.layers.sequential import HomogeneousSequential
 from torchprime.rope.rope import RopeScaling, llama3_rope_frequencies
 from torchprime.torch_xla_models.attention import AttentionModule
 
 from utils import constants
 if constants.XLA_AVAILABLE:
     from torchprime.torch_xla_models import offloading
-else:
-    from torch.utils.checkpoint import checkpoint
 from utils.attention_utils import AtttentionProbe
 from utils.loss_utils import lm_loss_fn
+from utils.torch_modules import ScaledEmbedding, LayerStack
+from utils.torch_utils import gaussian_init
 
 
 logger = logging.get_logger(__name__)
@@ -52,7 +51,7 @@ class LlamaRMSNorm(nn.Module):
         self.normalized_shape = (hidden_size,)
 
         if self.elementwise_affine:
-            self.weight = nn.Parameter(torch.ones(hidden_size))
+            self.weight = nn.Parameter(torch.zeros(hidden_size))
         else:
             self.register_parameter("weight", None)
         
@@ -61,10 +60,12 @@ class LlamaRMSNorm(nn.Module):
         input_dtype = hidden_states.dtype
         hidden_states = hidden_states.to(torch.float32)
         
+        w = 1.0 + self.weight if self.elementwise_affine else None
+
         out = F.rms_norm(
             hidden_states,
             self.normalized_shape,
-            weight=self.weight,
+            weight=w,
             eps=self.variance_epsilon,
         )
         
@@ -216,23 +217,24 @@ class LlamaAttention(nn.Module):
                 f" and `num_heads`: {self.num_heads})."
             )
 
+        attn_bias = config.get("attention_bias", False)
         self.q_proj = nn.Linear(
             self.hidden_size,
             self.num_heads * self.head_dim,
-            bias=config.attention_bias,
+            bias=attn_bias,
         )
         self.k_proj = nn.Linear(
             self.hidden_size,
             self.num_key_value_heads * self.head_dim,
-            bias=config.attention_bias,
+            bias=attn_bias,
         )
         self.v_proj = nn.Linear(
             self.hidden_size,
             self.num_key_value_heads * self.head_dim,
-            bias=config.attention_bias,
+            bias=attn_bias
         )
         self.o_proj = nn.Linear(
-            self.hidden_size, self.hidden_size, bias=config.attention_bias
+            self.hidden_size, self.hidden_size, bias=attn_bias
         )
 
         self.probe = AtttentionProbe(layer_idx)
@@ -353,15 +355,14 @@ class LlamaModel(nn.Module):
         super().__init__()
         self.config = config
         self.vocab_size = config.vocab_size
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.embed_tokens = ScaledEmbedding(config.vocab_size, config.hidden_size)
 
         # `HomogeneousSequential` is similar to `nn.Sequential` but can be compiled with
         # `scan` described in https://pytorch.org/xla/release/r2.6/features/scan.html.
-        self.layers = HomogeneousSequential(
-            *[
-                self.layer_type(config, layer_idx)
-                for layer_idx in range(config.num_hidden_layers)
-            ]
+        self.layers = LayerStack(
+            config=config,
+            layer_cls=self.layer_type,
+            num_layers=config.num_hidden_layers,
         )
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
@@ -374,13 +375,7 @@ class LlamaModel(nn.Module):
             head_dim=head_dim, rope_theta=config.rope_theta, scaling=rope_scaling
         )
 
-        self.gradient_checkpointing = False
-
-
-    def gradient_checkpointing_enable(self, enable: bool = True):
-        if constants.XLA_AVAILABLE:
-            raise NotImplementedError("Gradient checkpointing is not supported on XLA devices")
-        self.gradient_checkpointing = enable
+        self.apply(gaussian_init)
     
 
     # @xp.trace_me("LlamaModel")
@@ -441,24 +436,7 @@ class LlamaModel(nn.Module):
             decoder_kwargs["attention_mask"] = causal_mask
 
         # decoder layers
-        if (
-            self.gradient_checkpointing
-            and self.training
-            and torch.is_grad_enabled()
-        ):
-            hidden_states = inputs_embeds
-            for layer in self.layers:
-                hidden_states = checkpoint(
-                    layer,
-                    hidden_states,
-                    use_reentrant=False,
-                    **decoder_kwargs,
-                )
-        else:
-            hidden_states = self.layers(
-                inputs_embeds,
-                **decoder_kwargs,
-            )
+        hidden_states = self.layers(inputs_embeds, **decoder_kwargs)
 
         if self.do_norm:
             hidden_states = self.norm(hidden_states)
@@ -481,33 +459,7 @@ class LlamaForCausalLM(nn.Module):
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-        # Initialize weights and apply final processing
-        self.apply(self._init_weights)
-
-    
-    def _init_weights(self, module: nn.Module):
-        """Initialize weights for Linear and Embedding layers.
-
-        This method initializes the weights of Linear and Embedding layers
-        using a normal distribution with mean 0 and standard deviation specified
-        by `self.config.initializer_range`. Biases are initialized to zero.
-
-        Args:
-            module: The module whose weights need to be initialized.
-        """
-        std = self.config.initializer_range
-        
-        if isinstance(module, nn.Linear):
-            module.weight.data.normal_(mean=0.0, std=std)
-            if module.bias is not None:
-                module.bias.data.zero_()
-                
-        elif isinstance(module, nn.Embedding):
-            module.weight.data.normal_(mean=0.0, std=std)
-
-
-    def gradient_checkpointing_enable(self, enable: bool = True):
-        self.model.gradient_checkpointing_enable(enable)
+        self.apply(gaussian_init)
 
 
     # @xp.trace_me("LlamaForCausalLM")
@@ -521,6 +473,7 @@ class LlamaForCausalLM(nn.Module):
         logits_to_keep: slice | None = None,
         return_states: bool = False,
         cpu_logits: bool = False,
+        compute_logits: bool = True,
         **model_kwargs,
     ) -> tuple[torch.FloatTensor, torch.FloatTensor | None]:
         """
@@ -550,21 +503,16 @@ class LlamaForCausalLM(nn.Module):
         elif logits_to_keep is not None:
             lm_states = lm_states[:, logits_to_keep, :].contiguous()
 
-        if cpu_logits:
-            logits = F.linear(
-                lm_states.cpu(),
-                self.lm_head.weight.cpu(),
-                bias=None,
-            )
+        if compute_logits:
+            logits = self.apply_head(lm_states, cpu_logits=cpu_logits)
         else:
-            logits = self.lm_head(lm_states)
-        logits = logits.to(torch.float32)
+            logits = lm_states
 
         # logits = torch.nn.functional.log_softmax(logits, dim=-1)
         
         loss = None
         if labels is not None:
-        
+            assert compute_logits, "Cannot compute loss without computing logits"
             loss = lm_loss_fn(
                 logits,
                 labels=labels,
@@ -577,6 +525,21 @@ class LlamaForCausalLM(nn.Module):
         
         return logits, loss
     
+
+    def apply_head(
+        self, lm_states: torch.FloatTensor,
+        cpu_logits: bool = False
+    ) -> torch.FloatTensor:
+        if cpu_logits:
+            logits = F.linear(
+                lm_states.cpu(),
+                self.lm_head.weight.cpu(),
+                bias=None,
+            )
+        else:
+            logits = self.lm_head(lm_states)
+        return logits.to(torch.float32)
+
 
     def get_logits(
         self,

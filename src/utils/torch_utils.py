@@ -4,9 +4,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import math
+
 import utils.constants as constants
-if constants.XLA_AVAILABLE:
-    from torch_xla.experimental.scan import scan
 
 """
 A collection of PyTorch utility functions that might be useful.
@@ -418,6 +418,12 @@ def safe_repeat(
         [x] * n_repeats,
         dim=dim
     )
+
+
+def inv_softplus(x: torch.Tensor | float) -> torch.Tensor:
+    if isinstance(x, torch.Tensor):
+        return torch.log(x.exp() - 1.0)
+    return math.log(math.exp(x) - 1.0)
 
 
 def slerp(

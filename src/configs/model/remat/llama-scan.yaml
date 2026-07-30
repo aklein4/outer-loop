@@ -3,4 +3,4 @@ defaults:
  - _self_
 
 # Compile the sequence of decoder layers at `model.layers` using scan.
-scan_layers: 'model.layers'
+scan_layers: 'model.layers.layers'

@@ -13,11 +13,10 @@ from torchprime.torch_xla_models.attention import AttentionModule
 from utils import constants
 if constants.XLA_AVAILABLE:
     from torchprime.torch_xla_models import offloading
-else:
-    from torch.utils.checkpoint import checkpoint
 from utils.attention_utils import AtttentionProbe
-from utils.torch_utils import gaussian_init
+from utils.torch_utils import gaussian_init, select_newton_schulz, inv_softplus
 from utils.sharding_utils import maybe_shard_with_gradients
+from utils.torch_modules import LayerStack, ScaledEmbedding
 
 from models.llama import (
     LlamaRMSNorm,
@@ -222,6 +221,7 @@ class SlitherStateWriter(nn.Module):
         self,
         mem_states: torch.FloatTensor,
     ) -> torch.FloatTensor:
+        
         key_states = self.k_proj(mem_states)
         key_states = self.rms_norm(self.activation(key_states))
 
@@ -242,6 +242,8 @@ class SlitherStateMechanism(nn.Module):
 
         self.state_size = config.state_size
         self.num_heads = config.num_state_heads
+
+        self.ns_iterations = config.ns_iterations
 
         self.activation = OddActivation()
         self.rms_norm = LlamaRMSNorm(
@@ -269,15 +271,40 @@ class SlitherStateMechanism(nn.Module):
             bias=False,
         )
 
-        self.odot = torch.nn.Parameter(
-            torch.ones(self.state_size, self.state_size)
+        self.log_out_scale = nn.Parameter(
+            torch.tensor(inv_softplus(config.init_state_out_scale))
             / math.sqrt(self.state_size)
+        )
+
+        self.odot = torch.nn.Parameter(
+            torch.zeros(self.state_size, self.state_size)
         )
 
         self.writer = SlitherStateWriter(config)
 
         # ephemeral state
         self.state: nn.Buffer
+
+
+    def get_s(self) -> torch.FloatTensor:
+
+        dot = self.odot + math.sqrt(1.0 / self.state_size)
+        s = self.state * dot[None]
+
+        og_shape = s.shape
+        s = s.view(
+            -1, self.num_heads, self.state_size // self.num_heads, self.state_size
+        )
+        s = select_newton_schulz()(
+            s, steps=self.ns_iterations, polar=True
+        )        
+        s = s.view(*og_shape)
+
+        return s
+
+
+    def get_out_scale(self) -> torch.FloatTensor:
+        return F.softplus(self.log_out_scale * math.sqrt(self.state_size))
 
 
     def forward(
@@ -288,13 +315,13 @@ class SlitherStateMechanism(nn.Module):
         query_states = self.q_proj(hidden_states)
         query_states = self.rms_norm(self.activation(query_states))
 
-        scaled_state = self.state * self.odot[None]
-        output = torch.einsum("boi,bli->blo", scaled_state, query_states)
+        s = self.get_s()
+        output = torch.einsum("boi,bli->blo", s, query_states)
 
         gate = torch.sigmoid(self.read_gate(hidden_states))
         output = self.group_norm(output, scales=gate)
 
-        return self.o_proj(output)
+        return self.o_proj(output) * self.get_out_scale()
 
 
     @torch.no_grad()
@@ -386,12 +413,13 @@ class SlitherLayer(nn.Module):
         )
         hidden_states = hidden_states + attn_states
 
-        # State Mechanism
-        state_states = self.state_layernorm(hidden_states)
-        state_states = self.state_mechanism(
-            hidden_states=state_states,
-        )
-        hidden_states = hidden_states + state_states
+        # State Mechanism (mem_states is a proxy for not-first-chunk)
+        if mem_states is not None:
+            state_states = self.state_layernorm(hidden_states)
+            state_states = self.state_mechanism(
+                hidden_states=state_states,
+            )
+            hidden_states = hidden_states + state_states
 
         # Fully Connected
         mlp_states = self.post_attention_layernorm(hidden_states)
@@ -401,57 +429,18 @@ class SlitherLayer(nn.Module):
         return hidden_states
 
 
-class SlitherCausalLayer(SlitherLayer):
-    offload_name = "slither_causal_layer_input"
+class SlitherBackboneLayer(SlitherLayer):
+    offload_name = "slither_backbone_layer_input"
     is_causal = True
 
-class SlitherNonCausalLayer(SlitherLayer):
-    offload_name = "slither_noncausal_layer_input"
+
+class SlitherOutputLayer(SlitherLayer):
+    offload_name = "slither_output_layer_input"
+    is_causal = True
+
+class SlitherMemoryLayer(SlitherLayer):
+    offload_name = "slither_memory_layer_input"
     is_causal = False
-
-
-class LayerStack(nn.Module):
-
-    def __init__(
-        self,
-        config: DictConfig,
-        layer_cls: type[SlitherLayer],
-        num_layers: int,
-        layer_offset: int = 0,
-    ):
-        super().__init__()
-        self.layers = HomogeneousSequential(*[
-            layer_cls(config, layer_idx=layer_idx+layer_offset)
-            for layer_idx in range(num_layers)
-        ])
-
-        self.gradient_checkpointing = False
-
-
-    def _iter_layers(self):
-        for layer in self.layers:
-            yield layer
-
-
-    def forward(self, carry, **kwargs):
-
-        if (
-            self.gradient_checkpointing
-            and self.training
-            and torch.is_grad_enabled()
-        ):
-            for layer in self._iter_layers():
-                carry = checkpoint(
-                    layer,
-                    carry,
-                    use_reentrant=False,
-                    **kwargs,
-                )
-
-        else:
-            carry = self.layers(carry, **kwargs)
-
-        return carry
 
 
 class SlitherModel(nn.Module):
@@ -462,30 +451,40 @@ class SlitherModel(nn.Module):
         self.config = config
         self.state_size = config.state_size
         self.chunk_length = config.chunk_length
-        self.embed_scale = math.sqrt(config.hidden_size)
 
         self.vocab_size = config.vocab_size
         self.pad_token_id = config.pad_token_id
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.embed_tokens = ScaledEmbedding(config.vocab_size, config.hidden_size)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
         # `HomogeneousSequential` is similar to `nn.Sequential` but can be compiled with
         # `scan` described in https://pytorch.org/xla/release/r2.6/features/scan.html.
-        self.causal_layers = LayerStack(
+        self.backbone_layers = LayerStack(
             config,
-            SlitherCausalLayer,
+            SlitherBackboneLayer,
             config.num_hidden_layers,
-            0
         )
-        self.lm_norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
-        self.noncausal_layers = LayerStack(
+        self.output_layers = LayerStack(
             config,
-            SlitherNonCausalLayer,
-            config.num_noncausal_layers,
-            config.num_hidden_layers
+            SlitherOutputLayer,
+            config.num_output_layers,
+            layer_offset=config.num_hidden_layers
         )
-        self.mem_norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=False)
+        self.lm_norm = LlamaRMSNorm(
+            config.hidden_size, eps=config.rms_norm_eps
+        )
+
+        self.memory_layers = LayerStack(
+            config,
+            SlitherMemoryLayer,
+            config.num_memory_layers,
+            layer_offset=config.num_hidden_layers + config.num_output_layers
+        )
+        self.mem_norm = LlamaRMSNorm(
+            config.hidden_size, eps=config.rms_norm_eps,
+            elementwise_affine=False
+        )
 
         rope_scaling = config.get("rope_scaling", None)
         head_dim = config.hidden_size // config.num_attention_heads
@@ -497,16 +496,7 @@ class SlitherModel(nn.Module):
         )
 
         self.apply(gaussian_init)
-        self.embed_tokens.weight.data.normal_(mean=0.0, std=1/self.embed_scale)
 
-
-    def gradient_checkpointing_enable(self, enable: bool = True):
-        if constants.XLA_AVAILABLE:
-            raise NotImplementedError("Gradient checkpointing is not supported on XLA devices")
-        for module in self.modules():
-            if hasattr(module, "gradient_checkpointing"):
-                module.gradient_checkpointing = enable
-    
 
     def forward(
         self,
@@ -521,7 +511,7 @@ class SlitherModel(nn.Module):
 
         # convert input ids to embeddings
         if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
+            inputs_embeds = self.embed_tokens(input_ids)
         seq_length = inputs_embeds.shape[1]
 
         # handle mem
@@ -576,14 +566,16 @@ class SlitherModel(nn.Module):
         causal_layer_kwargs = _no_none({**layer_kwargs, "attention_mask": causal_mask})
         noncausal_layer_kwargs = _no_none({**layer_kwargs, "attention_mask": noncausal_mask})
         
-        hidden_states = self.causal_layers(
+        hidden_states = self.backbone_layers(
             inputs_embeds, **causal_layer_kwargs
         )
-        new_mem_states = self.noncausal_layers(
+        lm_states = self.output_layers(
+            hidden_states, **causal_layer_kwargs
+        )
+        new_mem_states = self.memory_layers(
             hidden_states, **noncausal_layer_kwargs
         )
 
-        lm_states = hidden_states
         if logits_to_keep is not None:
             lm_states = lm_states[:, logits_to_keep, :].contiguous()
         lm_states = self.lm_norm(lm_states)
@@ -605,9 +597,11 @@ class SlitherModel(nn.Module):
 
 
     def _mechanisms(self):
-        for layer in self.causal_layers._iter_layers():
+        for layer in self.backbone_layers._iter_layers():
             yield self._layer_module(layer, "state_mechanism")
-        for layer in self.noncausal_layers._iter_layers():
+        for layer in self.output_layers._iter_layers():
+            yield self._layer_module(layer, "state_mechanism")
+        for layer in self.memory_layers._iter_layers():
             yield self._layer_module(layer, "state_mechanism")
 
 

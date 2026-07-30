@@ -226,7 +226,7 @@ class SlitherTrainer(BaseTrainer):
         aux.update(post_aux)
         master_print("Optimization step completed.")
 
-        # metricsc
+        # metrics
         final_loss = torch.stack(portion_losses).sum()
         aux["atom_count"] = total_labels
 

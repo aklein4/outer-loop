@@ -1,23 +1,34 @@
 advanced:
 
-  - name: causal_layers
+  - name: backbone_layers
     settings:
       activation_checkpoint_layers:
-        - SlitherCausalLayer
+        - SlitherBackboneLayer
       optimization_barrier_layers:
-        - SlitherCausalLayer
+        - SlitherBackboneLayer
       scan_layers: layers
       is_layer_pure: true
       offload_tensors:
-        - slither_causal_layer_input
+        - slither_backbone_layer_input
 
-  - name: noncausal_layers
+  - name: output_layers
     settings:
       activation_checkpoint_layers:
-        - SlitherNonCausalLayer
+        - SlitherOutputLayer
       optimization_barrier_layers:
-        - SlitherNonCausalLayer
+        - SlitherOutputLayer
       scan_layers: layers
       is_layer_pure: true
       offload_tensors:
-        - slither_noncausal_layer_input
+        - slither_output_layer_input
+
+  - name: memory_layers
+    settings:
+      activation_checkpoint_layers:
+        - SlitherMemoryLayer
+      optimization_barrier_layers:
+        - SlitherMemoryLayer
+      scan_layers: layers
+      is_layer_pure: true
+      offload_tensors:
+        - slither_memory_layer_input

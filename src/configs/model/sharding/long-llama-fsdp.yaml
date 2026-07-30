@@ -1,7 +1,10 @@
 # See docs/sharding.md for more details about sharding configuration.
 
-# all weights implied
+# don't shard the lm head because of logit iteration
+lm_head.weight: [null, null]
+
 
 # Activations
 model.layers.layers.*: [[data, fsdp], null, null]
-lm_head: [[data, fsdp], null, null]
+
+# lm_head: [[data, fsdp], null, null]

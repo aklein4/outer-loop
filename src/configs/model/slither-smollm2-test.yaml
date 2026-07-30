@@ -55,9 +55,13 @@ pure_modules:
 # You can add any additional configuration options for your model here
 # They will appear as attributes of config.model
 
-num_noncausal_layers: 3
+num_output_layers: 2
+num_memory_layers: 3
 
 state_size: 48
 num_state_heads: 6
+
+init_state_out_scale: 0.1
+ns_iterations: 3
 
 chunk_length: 1024

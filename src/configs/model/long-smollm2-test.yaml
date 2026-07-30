@@ -1,0 +1,9 @@
+defaults:
+  - smollm2-test
+  - override sharding: long-llama-fsdp
+  - _self_
+
+
+# rope configuration
+max_position_embeddings: 4096
+rope_theta: 5000000

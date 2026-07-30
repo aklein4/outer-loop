@@ -1,12 +1,12 @@
 defaults:
   - _self_  # refers to this config file
-  - sharding: slither-fsdp  # refers to sharding/llama-fsdp.yaml
-  - remat: slither  # refers to remat/llama-scan.yaml
+  - sharding: llama-fsdp  # refers to sharding/llama-fsdp.yaml
+  - remat: llama-scan-offload  # refers to remat/llama-scan.yaml
 
 
 # Used to import the model from this class
 # should contain the path within the model folder and the class name
-type: slither.SlitherModel
+type: llama.LlamaForCausalLM
 
 # HuggingFace URL of the checkpoint to load, or null if initializing from scratch
 pretrained_url: null
@@ -28,14 +28,14 @@ pad_token_id: 49152
 
 # architecture size
 hidden_size: 2048
-num_hidden_layers: 16
+num_hidden_layers: 22
 
 # attention configuration
 num_attention_heads: 32
 num_key_value_heads: 4
 
 # MLP configuration
-intermediate_size: 3072
+intermediate_size: 5632
 hidden_act: silu
 
 # rope configuration
@@ -49,19 +49,7 @@ rms_norm_eps: 1.0e-05
 attention_kernel: flash_attention
 
 # List of names of classes in the module tree that are functionally pure.
-pure_modules:
-  - SlitherStateWriter
+pure_modules: []
 
 # You can add any additional configuration options for your model here
 # They will appear as attributes of config.model
-
-num_output_layers: 2
-num_memory_layers: 4
-
-state_size: 1536
-num_state_heads: 48
-
-init_state_out_scale: 0.1
-ns_iterations: 3
-
-chunk_length: 1024

@@ -27,15 +27,15 @@ eos_token_id: 0
 pad_token_id: 49152
 
 # architecture size
-hidden_size: 2048
-num_hidden_layers: 16
+hidden_size: 1024
+num_hidden_layers: 18
 
 # attention configuration
-num_attention_heads: 32
+num_attention_heads: 8
 num_key_value_heads: 4
 
 # MLP configuration
-intermediate_size: 3072
+intermediate_size: 1664
 hidden_act: silu
 
 # rope configuration
@@ -58,8 +58,8 @@ pure_modules:
 num_output_layers: 2
 num_memory_layers: 4
 
-state_size: 1536
-num_state_heads: 48
+state_size: 512
+num_state_heads: 16
 
 init_state_out_scale: 0.1
 ns_iterations: 3
