@@ -8,8 +8,8 @@ advanced:
         - SlitherBackboneLayer
       scan_layers: layers
       is_layer_pure: true
-      offload_tensors:
-        - slither_backbone_layer_input
+      # offload_tensors:
+      #   - slither_backbone_layer_input
 
   - name: output_layers
     settings:
@@ -19,8 +19,8 @@ advanced:
         - SlitherOutputLayer
       scan_layers: layers
       is_layer_pure: true
-      offload_tensors:
-        - slither_output_layer_input
+      # offload_tensors:
+      #   - slither_output_layer_input
 
   - name: memory_layers
     settings:
@@ -30,5 +30,5 @@ advanced:
         - SlitherMemoryLayer
       scan_layers: layers
       is_layer_pure: true
-      offload_tensors:
-        - slither_memory_layer_input
+      # offload_tensors:
+      #   - slither_memory_layer_input
