@@ -63,7 +63,8 @@ num_state_in_heads: 12
 num_state_out_heads: 48
 
 init_state_out_scale: 0.1
+
 init_mse_lambda: 0.1
-pcg_iterations: 10
+mse_solve: true
 
 chunk_length: 1024

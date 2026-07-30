@@ -184,118 +184,6 @@ class GroupRMSNorm(nn.Module):
         return x.view(*og_shape)
 
 
-def _pcg_solve_forward(
-    matrix: torch.Tensor,
-    rhs: torch.Tensor,
-    iterations: int,
-    eps: float,
-) -> torch.Tensor:
-    matrix = matrix.float()
-    rhs = rhs.float()
-
-    x = torch.zeros_like(rhs)
-    residual = rhs
-
-    # Block-Jacobi has already split the full key space into independent
-    # systems. Jacobi scaling inside each block cheaply handles coordinate
-    # anisotropy without a factorization.
-    preconditioner = matrix.diagonal(dim1=-2, dim2=-1)
-    preconditioner = preconditioner.clamp_min(eps).reciprocal().unsqueeze(-1)
-
-    z = preconditioner * residual
-    direction = z
-    residual_z = (residual * z).sum(dim=-2, keepdim=True)
-    convergence_threshold = residual_z * eps ** 2
-
-    for _ in range(iterations):
-
-        matrix_direction = matrix @ direction
-        denominator = (
-            direction * matrix_direction
-        ).sum(dim=-2, keepdim=True)
-
-        # Fixed iteration counts are compilation-friendly, but converged
-        # systems must not keep taking numerically meaningless CG steps.
-        # In particular, clamping a non-positive curvature to FP32 `tiny`
-        # creates enormous alpha values and correspondingly toxic gradients.
-        active = (
-            (residual_z > convergence_threshold)
-            & (denominator > 0)
-            & torch.isfinite(denominator)
-        )
-        safe_denominator = torch.where(
-            active, denominator, torch.ones_like(denominator)
-        )
-        alpha = torch.where(
-            active,
-            residual_z / safe_denominator,
-            torch.zeros_like(residual_z),
-        )
-
-        x = x + alpha * direction
-        residual = residual - alpha * matrix_direction
-        z = preconditioner * residual
-
-        next_residual_z = (residual * z).sum(dim=-2, keepdim=True)
-        safe_residual_z = torch.where(
-            active, residual_z, torch.ones_like(residual_z)
-        )
-        beta = torch.where(
-            active,
-            next_residual_z / safe_residual_z,
-            torch.zeros_like(residual_z),
-        )
-        direction = torch.where(
-            active,
-            z + beta * direction,
-            torch.zeros_like(direction),
-        )
-        residual_z = torch.where(active, next_residual_z, residual_z)
-
-    return x
-
-
-class _PCGSolve(torch.autograd.Function):
-    """PCG with an implicit, rather than unrolled, linear-solve gradient."""
-
-    @staticmethod
-    def forward(ctx, matrix, rhs, iterations, eps):
-        with torch.no_grad():
-            solution = _pcg_solve_forward(matrix, rhs, iterations, eps)
-        ctx.save_for_backward(matrix, solution)
-        ctx.iterations = iterations
-        ctx.eps = eps
-        return solution
-
-    @staticmethod
-    def backward(ctx, solution_grad):
-        matrix, solution = ctx.saved_tensors
-        with torch.no_grad():
-            rhs_grad = _pcg_solve_forward(
-                matrix.mT,
-                solution_grad,
-                ctx.iterations,
-                ctx.eps,
-            )
-            matrix_grad = -(rhs_grad @ solution.mT)
-        return matrix_grad, rhs_grad, None, None
-
-
-def pcg_solve(
-    matrix: torch.Tensor,
-    rhs: torch.Tensor,
-    iterations: int,
-    eps: float,
-) -> torch.Tensor:
-    with torch.autocast(str(matrix.device.type), enabled=False):
-        return _PCGSolve.apply(
-            matrix.float(),
-            rhs.float(),
-            iterations,
-            eps,
-        )
-
-
 class SlitherStateWriter(nn.Module):
 
     def __init__(self, config: DictConfig):
@@ -387,7 +275,7 @@ class SlitherStateMechanism(nn.Module):
 
         self.in_head_dim = self.state_size // self.num_state_in_heads
 
-        self.pcg_iterations = config.pcg_iterations
+        self.mse_solve = config.mse_solve
 
         self.activation = OddActivation()
         self.in_norm = GroupRMSNorm(
@@ -448,26 +336,22 @@ class SlitherStateMechanism(nn.Module):
 
 
     def _solve(self, q: torch.FloatTensor) -> torch.FloatTensor:
-        if self.pcg_iterations is None:
+        if not self.mse_solve:
             return q
 
         output_dtype = q.dtype
 
         count = self.k_count.clamp_min(1).to(self.k_corr.dtype)
-        corr = (
-            self.k_corr /
-            count[:, None, None, None]
-        )
+        corr = self.k_corr / count[:, None, None, None]
 
-        identity = torch.eye(
+        lam = self.get_lambda()
+        diag = torch.eye(
             self.in_head_dim,
             device=corr.device,
             dtype=corr.dtype,
-        )
-        matrix = (
-            corr +
-            self.get_lambda()[None, :, :, None] * identity[None, None]
-        )
+        )[None, None] * lam[None, :, :, None]
+
+        matrix = corr + diag
 
         batch_size, seq_len, _ = q.shape
         rhs = q.view(
@@ -475,14 +359,11 @@ class SlitherStateMechanism(nn.Module):
             seq_len,
             self.num_state_in_heads,
             self.in_head_dim,
-        ).permute(0, 2, 3, 1)
+        ).permute(0, 2, 3, 1) # [B, H, D, L]
 
-        solution = pcg_solve(
-            matrix,
-            rhs,
-            iterations=self.pcg_iterations,
-            eps=self.eps,
-        )
+        with torch.autocast(str(matrix.device.type), enabled=False):
+            factor = torch.linalg.cholesky(matrix.float())
+            solution = torch.cholesky_solve(rhs.float(), factor)
 
         return solution.permute(0, 3, 1, 2).reshape(
             batch_size,
