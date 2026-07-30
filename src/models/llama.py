@@ -233,8 +233,16 @@ class LlamaAttention(nn.Module):
             self.num_key_value_heads * self.head_dim,
             bias=attn_bias
         )
+
+        self.gate_proj = nn.Linear(
+            self.hidden_size,
+            self.num_heads,
+            bias=False,
+        )
         self.o_proj = nn.Linear(
-            self.hidden_size, self.hidden_size, bias=attn_bias
+            self.hidden_size,
+            self.hidden_size,
+            bias=attn_bias
         )
 
         self.probe = AtttentionProbe(layer_idx)
@@ -273,9 +281,15 @@ class LlamaAttention(nn.Module):
             attention_mask,
             attention_probe=self.probe,
         )
+
         attn_output = attn_output.transpose(1, 2).contiguous()
+
+        g = 2 * torch.sigmoid(self.gate_proj(hidden_states))
+        attn_output = attn_output * g[..., None]
+
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
         attn_output = self.o_proj(attn_output)
+
         return attn_output
 
 

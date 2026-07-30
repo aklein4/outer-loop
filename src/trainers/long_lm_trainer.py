@@ -27,6 +27,12 @@ class LongLMTrainer(BaseTrainer):
         except AttributeError:
             self.model.lm_head._orig_mod.weight.no_muon = True
 
+        for layer in self.model.model.layers._iter_layers():
+            if hasattr(layer, "_orig_mod"):
+                layer = layer._orig_mod
+
+            layer.self_attn.gate_proj.weight.no_muon = True
+            
 
     def _autocast(self):
         return torch.autocast(
