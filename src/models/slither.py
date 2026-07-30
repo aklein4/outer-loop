@@ -328,7 +328,7 @@ class SlitherStateMechanism(nn.Module):
         self.k_count: nn.Buffer
 
 
-    def get_lambda(self) -> torch.FloatTensor:
+    def get_lambda(self):
         return F.softplus(
             self.log_lambda * math.sqrt(self.state_size)
             + inv_softplus(self.config.init_mse_lambda)
@@ -339,37 +339,30 @@ class SlitherStateMechanism(nn.Module):
         if not self.mse_solve:
             return q
 
-        output_dtype = q.dtype
-
         count = self.k_count.clamp_min(1).to(self.k_corr.dtype)
         corr = self.k_corr / count[:, None, None, None]
 
-        lam = self.get_lambda()
-        diag = torch.eye(
-            self.in_head_dim,
-            device=corr.device,
-            dtype=corr.dtype,
-        )[None, None] * lam[None, :, :, None]
+        matrix = corr + torch.diag_embed(self.get_lambda())[None]
 
-        matrix = corr + diag
-
-        batch_size, seq_len, _ = q.shape
         rhs = q.view(
-            batch_size,
-            seq_len,
+            *q.shape[:-1],
             self.num_state_in_heads,
-            self.in_head_dim,
-        ).permute(0, 2, 3, 1) # [B, H, D, L]
+            self.in_head_dim
+        )
 
         with torch.autocast(str(matrix.device.type), enabled=False):
-            factor = torch.linalg.cholesky(matrix.float())
-            solution = torch.cholesky_solve(rhs.float(), factor)
+            inverse, _ = torch.linalg.inv_ex(
+                matrix.float(),
+                check_errors=False,
+            )
 
-        return solution.permute(0, 3, 1, 2).reshape(
-            batch_size,
-            seq_len,
-            self.state_size,
-        ).to(output_dtype)
+            solution = torch.einsum(
+                "bhoi,blhi->blho",
+                inverse,
+                rhs.float()
+            )
+
+        return solution.reshape(*q.shape).to(q.dtype)
 
 
     def get_s(self) -> torch.FloatTensor:
