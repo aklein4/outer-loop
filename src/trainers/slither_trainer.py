@@ -52,7 +52,7 @@ class SlitherTrainer(BaseTrainer):
         )
     
     
-    @torch_xla.compile(full_graph=False)
+    @torch_xla.compile(full_graph=True)
     def go_forward(
         self,
         input_ids: torch.LongTensor,
@@ -74,7 +74,7 @@ class SlitherTrainer(BaseTrainer):
         
 
 
-    @torch_xla.compile(full_graph=False)
+    @torch_xla.compile(full_graph=True)
     def go_backward(
         self,
         input_ids: torch.LongTensor,
@@ -190,7 +190,6 @@ class SlitherTrainer(BaseTrainer):
                 input_ids=input_ids,
                 mem_states=(mem_stack[-1] if len(mem_stack) > 0 else None),
             )
-            torch_xla.sync()
 
             mem_stack.append(mem_states)
 
@@ -216,7 +215,6 @@ class SlitherTrainer(BaseTrainer):
                 prev_mem_states=prev_mem_states,
                 total_labels=total_labels,
             )
-            torch_xla.sync()
         
             aux[f"lm_loss/chunk_{index:02d}"] = chunk_loss
             portion_losses.append(portion_loss)
