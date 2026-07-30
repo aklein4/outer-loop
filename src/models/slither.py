@@ -152,7 +152,7 @@ class SlitherAttention(nn.Module):
 
         attn_output = attn_output.transpose(1, 2).contiguous()
 
-        g = 2 * torch.sigmoid(self.gate_proj(hidden_states))
+        g = 2.0 * torch.sigmoid(self.gate_proj(hidden_states).float())
         attn_output = attn_output * g[..., None]
 
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
@@ -242,11 +242,11 @@ class SlitherStateWriter(nn.Module):
     ) -> tuple[torch.FloatTensor, torch.FloatTensor, torch.IntTensor]:
         
         key_states = self.activation(self.k_proj(mem_states))
-        in_gate = torch.softmax(self.in_gate(mem_states), dim=-1) * self.num_state_in_heads
+        in_gate = torch.softmax(self.in_gate(mem_states).float(), dim=-1) * self.num_state_in_heads
         key_states = self.in_norm(key_states, scales=in_gate)
 
         value_states = self.v_proj(mem_states)
-        gate = 2 * torch.sigmoid(self.out_gate(mem_states))
+        gate = 2.0 * torch.sigmoid(self.out_gate(mem_states).float())
         value_states = self.out_norm(value_states, scales=gate)
 
         update = value_states.mT @ key_states
@@ -394,7 +394,7 @@ class SlitherStateMechanism(nn.Module):
     ):
 
         query_states = self.activation(self.q_proj(hidden_states))
-        in_gate = torch.softmax(self.in_gate(hidden_states), dim=-1) * self.num_state_in_heads
+        in_gate = torch.softmax(self.in_gate(hidden_states).float(), dim=-1) * self.num_state_in_heads
         query_states = self.in_norm(query_states, scales=in_gate)
 
         query_states = self._solve(query_states)
@@ -402,7 +402,7 @@ class SlitherStateMechanism(nn.Module):
         s = self.get_s()
         output = torch.einsum("boi,bli->blo", s, query_states)
 
-        out_gate = 2 * torch.sigmoid(self.out_gate(hidden_states))
+        out_gate = 2.0 * torch.sigmoid(self.out_gate(hidden_states).float())
         output = self.out_norm(output, scales=out_gate)
 
         return self.o_proj(output) * self.get_out_scale()

@@ -284,7 +284,7 @@ class LlamaAttention(nn.Module):
 
         attn_output = attn_output.transpose(1, 2).contiguous()
 
-        g = 2 * torch.sigmoid(self.gate_proj(hidden_states))
+        g = 2.0 * torch.sigmoid(self.gate_proj(hidden_states).float())
         attn_output = attn_output * g[..., None]
 
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
