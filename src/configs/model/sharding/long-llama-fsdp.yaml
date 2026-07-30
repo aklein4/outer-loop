@@ -1,7 +1,7 @@
 # See docs/sharding.md for more details about sharding configuration.
 
-# don't shard the lm head because of logit iteration
-lm_head.weight: [null, null]
+# replicate small model
+replicate_default: true
 
 
 # Activations

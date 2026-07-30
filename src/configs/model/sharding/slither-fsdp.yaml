@@ -1,5 +1,8 @@
 # See docs/sharding.md for more details about sharding configuration.
 
+# replicate small model
+replicate_default: true
+
 # Activations
 backbone_layers.layers.*: [[data, fsdp], null, null]
 output_layers.layers.*: [[data, fsdp], null, null]

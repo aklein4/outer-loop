@@ -272,7 +272,7 @@ class SlitherStateMechanism(nn.Module):
         )
 
         self.log_out_scale = nn.Parameter(
-            torch.tensor(inv_softplus(config.init_state_out_scale))
+            torch.tensor([inv_softplus(config.init_state_out_scale)])
             / math.sqrt(self.state_size)
         )
 

@@ -137,6 +137,7 @@ def shard_model_from_config(
     shard_param = shard_output
 
   config, shard_output_fns = _process_tail_index_syntax(config, shard_output)
+  replicate_default = config.get("replicate_default", False)
   seen_params = set()
   implied_params = set()
   unsharded_params = set()
@@ -152,7 +153,7 @@ def shard_model_from_config(
       implied_params.add(name)
 
       imp_spec = [None] * len(shape)
-      if param.numel() > 1:
+      if param.numel() > 1 and not replicate_default:
         imp_spec[shape.index(max(shape))] = "fsdp"
 
       return shard_param(param, _to_tuple(imp_spec))
@@ -177,7 +178,7 @@ def shard_model_from_config(
   model = shard_model(model, shard_weight, shard_activation)
 
   return model, {
-    "want_names": set(config.keys()),
+    "want_names": set(config.keys())-set(["replicate_default"]),
     "seen_params": seen_params,
     "implied_params": implied_params,
     "unsharded_params": unsharded_params,
