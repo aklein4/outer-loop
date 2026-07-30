@@ -291,6 +291,9 @@ class SlitherStateMechanism(nn.Module):
         dot = self.odot + math.sqrt(1.0 / self.state_size)
         s = self.state * dot[None]
 
+        if self.ns_iterations is None:
+            return s
+
         og_shape = s.shape
         s = s.view(
             -1, self.num_heads, self.state_size // self.num_heads, self.state_size
