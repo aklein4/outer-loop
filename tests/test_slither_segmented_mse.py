@@ -87,6 +87,55 @@ class SegmentedMSETest(unittest.TestCase):
         self.assertGreater(matrix_grad.abs().sum(), 0)
         self.assertGreater(rhs_grad.abs().sum(), 0)
 
+    def test_pcg_backward_matches_solve_on_low_rank_system(self):
+        # Low-rank key correlations are common early in an episode. Unrolling
+        # the finite-precision CG recurrence through these systems produces
+        # gradients thousands of times larger than the linear-solve gradient,
+        # even when the forward approximation is already accurate.
+        torch.manual_seed(32101)
+
+        dimension = 16
+        keys = torch.randn(1, 2, 128, 1)
+        mixing = torch.randn(1, 2, 1, dimension)
+        features = keys @ mixing
+        matrix = features.mT @ features / features.shape[-2]
+        matrix = matrix + 0.1 * torch.eye(dimension)
+        rhs = torch.randn(1, 2, dimension, 8)
+        output_gradient = torch.randn(1, 8, 2 * dimension)
+
+        def normalized_loss(solution):
+            solution = solution.permute(0, 3, 1, 2).reshape(
+                1, 8, 2 * dimension
+            )
+            solution = torch.nn.functional.rms_norm(
+                solution, [2 * dimension], eps=1e-5
+            )
+            return (solution * output_gradient).mean()
+
+        pcg_matrix = matrix.detach().requires_grad_()
+        pcg_rhs = rhs.detach().requires_grad_()
+        pcg_solution = pcg_solve(
+            pcg_matrix, pcg_rhs, iterations=10, eps=1e-5
+        )
+        pcg_grads = torch.autograd.grad(
+            normalized_loss(pcg_solution),
+            (pcg_matrix, pcg_rhs),
+        )
+
+        exact_matrix = matrix.detach().requires_grad_()
+        exact_rhs = rhs.detach().requires_grad_()
+        exact_solution = torch.linalg.solve(exact_matrix, exact_rhs)
+        exact_grads = torch.autograd.grad(
+            normalized_loss(exact_solution),
+            (exact_matrix, exact_rhs),
+        )
+
+        for pcg_grad, exact_grad in zip(pcg_grads, exact_grads):
+            relative_error = (
+                (pcg_grad - exact_grad).norm() / exact_grad.norm()
+            )
+            self.assertLess(relative_error, 5e-2)
+
     def test_pcg_zero_rhs_remains_finite(self):
         matrix = torch.eye(4).expand(2, 3, 4, 4)
         rhs = torch.zeros(2, 3, 4, 5)
