@@ -81,7 +81,7 @@ def main():
         ax.set_title(title)
         ax.set_xlabel("step")
         ax.set_ylabel("loss difference")
-        ax.set_ylim(-0.2, None)
+        ax.set_ylim(-0.5, None)
         ax.grid()
         ax.legend()
 

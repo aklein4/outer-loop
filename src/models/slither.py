@@ -317,10 +317,10 @@ class SlitherStateMechanism(nn.Module):
             bias=False,
         )
 
-        self.log_out_scale = nn.Parameter(
-            torch.tensor([inv_softplus(config.init_state_out_scale)])
-            / math.sqrt(self.state_size)
-        )
+        # self.log_out_scale = nn.Parameter(
+        #     torch.tensor([inv_softplus(config.init_state_out_scale)])
+        #     / math.sqrt(self.state_size)
+        # )
         self.log_lambda = nn.Parameter(
             torch.zeros(self.num_state_in_heads, self.in_head_dim)
         )
@@ -402,10 +402,10 @@ class SlitherStateMechanism(nn.Module):
         s = self.get_s()
         output = torch.einsum("boi,bli->blo", s, query_states)
 
-        out_gate = 2.0 * torch.sigmoid(self.out_gate(hidden_states).float())
+        out_gate = torch.softmax(self.out_gate(hidden_states).float(), dim=-1) * self.num_state_out_heads
         output = self.out_norm(output, scales=out_gate)
 
-        return self.o_proj(output) * self.get_out_scale()
+        return self.o_proj(output) # * self.get_out_scale()
 
 
     @torch.no_grad()
