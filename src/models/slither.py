@@ -14,7 +14,7 @@ from utils import constants
 if constants.XLA_AVAILABLE:
     from torchprime.torch_xla_models import offloading
 from utils.attention_utils import AtttentionProbe
-from utils.torch_utils import gaussian_init, inv_softplus, unsqueeze_to_batch
+from utils.torch_utils import gaussian_init, inv_softplus, unsqueeze_to_batch, select_newton_schulz
 from utils.sharding_utils import maybe_shard_with_gradients
 from utils.torch_modules import LayerStack, ScaledEmbedding
 
@@ -635,6 +635,24 @@ class SlitherModel(nn.Module):
         for attention in self._attentions():
             attention.k_proj_mem.weight.data.copy_(attention.k_proj.weight.data)
             attention.v_proj_mem.weight.data.copy_(attention.v_proj.weight.data)
+
+        for mechanism in self._mechanisms():
+            mechanism: SlitherStateMechanism
+
+            w = mechanism.q_proj.weight.data
+            w_h = w.view(
+                mechanism.num_state_in_heads,
+                mechanism.in_head_dim,
+                mechanism.hidden_size
+            )
+
+            w_h = select_newton_schulz()(
+                w_h, steps=6, polar=True
+            )
+
+            w = w_h.view_as(w)
+            mechanism.q_proj.weight.data.copy_(w)
+            mechanism.writer.k_proj.weight.data.copy_(mechanism.q_proj.weight.data)
 
 
     def forward(
