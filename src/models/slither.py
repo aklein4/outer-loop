@@ -625,7 +625,16 @@ class SlitherModel(nn.Module):
             head_dim=head_dim, rope_theta=config.rope_theta, scaling=rope_scaling
         )
 
+        self.init_weights()
+
+
+    @torch.no_grad()
+    def init_weights(self) -> None:
         self.apply(gaussian_init)
+
+        for attention in self._attentions():
+            attention.k_proj_mem.weight.data.copy_(attention.k_proj.weight.data)
+            attention.v_proj_mem.weight.data.copy_(attention.v_proj.weight.data)
 
 
     def forward(
