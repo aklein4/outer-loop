@@ -5,22 +5,22 @@ import matplotlib.pyplot as plt
 import wandb
 api = wandb.Api()
 
-run = api.run("/aklein4/Horizon-TPU/runs/t3rmgftq")
-run_2 = api.run("/aklein4/Horizon-TPU/runs/66lant46")
+run = api.run("/aklein4/slither/runs/77ft6mmi")
+run_2 = api.run("/aklein4/slither/runs/mwlvjho6")
 
-RUN_NAME = "oloop"
-RUN_2_NAME = "baseline"
+RUN_NAME = "mesa-v2"
+RUN_2_NAME = "alpha"
 
 RUNS = [run, run_2]
 DIFF_LABEL = f"{RUN_NAME} - {RUN_2_NAME}"
 DIFF_COLOR = "purple"
 
-EPISODE_PREFIX = "lm_loss/episode_"
+EPISODE_PREFIX = "lm_loss/chunk_"
 OVERALL_LOSS_KEY = "overall_lm_loss"
 DECADE_PREFIX = "grouped_lm_loss/decade_"
 
-ROLLING_WINDOW = 25
-ROLLING_MIN = 25
+ROLLING_WINDOW = 10
+ROLLING_MIN = 10
 
 OUTPUT_PATH = "diff_losses.png"
 
@@ -59,12 +59,12 @@ def main():
     lines.append((OVERALL_LOSS_KEY, "loss"))
     for d in decades:
         min_episode = max(1, 10 * d)
-        max_episode = min(64 - 1, 10 * (d + 1))
+        max_episode = min(32 - 1, 10 * (d + 1))
         lines.append(
             (f"{DECADE_PREFIX}{d:02d}", f"episodes {min_episode:02d}-{max_episode:02d}")
         )
 
-    ncols = 4
+    ncols = 5
     nrows = (len(lines) + ncols - 1) // ncols
     fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3 * nrows), squeeze=False)
     axes = axes.flatten()
@@ -81,6 +81,7 @@ def main():
         ax.set_title(title)
         ax.set_xlabel("step")
         ax.set_ylabel("loss difference")
+        ax.set_ylim(-0.2, None)
         ax.grid()
         ax.legend()
 
