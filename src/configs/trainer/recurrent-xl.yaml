@@ -37,7 +37,7 @@ multiple_optimizers:
     lr_scheduler:
       type: warmup_stable_decay
 
-      num_warmup_steps: 50
+      num_warmup_steps: 100
       kwargs:
         num_stable_steps: 1000000 # Currently never decays
         num_decay_steps: 2500
@@ -54,13 +54,13 @@ multiple_optimizers:
       kwargs:
         lr: 5.0e-5
         betas: [0.9, 0.95]
-        eps: 1e-10
+        eps: 1e-6
         weight_decay: 0.01
 
     lr_scheduler:
       type: warmup_stable_decay
 
-      num_warmup_steps: 50
+      num_warmup_steps: 100
       kwargs:
         num_stable_steps: 1000000 # Currently never decays
         num_decay_steps: 2500
@@ -84,6 +84,6 @@ max_grad_value: null
 
 input_sharding_spec: [[data, fsdp], null, null]
 
-num_logit_iterations: 4
+num_logit_iterations: 8
 
 propagate_embedding_grads: true

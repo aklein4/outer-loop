@@ -33,12 +33,15 @@ class RecurrentTrainer(BaseTrainer):
         )
 
         for module in self.model.fast_modules():
-            try:
-                module.dynamic_lr.fast_log_lr.no_muon = True
-                module.dynamic_lr.fast_m.no_muon = True
-            except AttributeError:
-                module.dynamic_lr._module.fast_log_lr.no_muon = True
-                module.dynamic_lr._module.fast_m.no_muon = True
+            if hasattr(module, "_module"):
+                module = module._module
+            dlr = module.fast_dynamic_lr
+
+            dlr.log_lr.no_muon = True
+            dlr.odot.no_muon = True
+
+            dlr.p_l.weight.no_muon = True
+            dlr.p_r.weight.no_muon = True
 
 
     def _autocast(self):
@@ -58,7 +61,7 @@ class RecurrentTrainer(BaseTrainer):
 
             if any(
                 key in name for key in (
-                    "embed_tokens", "lm_head"
+                    "embed_tokens", "lm_head", "lm_norm"
                 )
             ):
                 embeddings.append(parameter)
@@ -99,6 +102,7 @@ class RecurrentTrainer(BaseTrainer):
 
         labels = input_ids[:, 1:]
         output_mask = assistant_mask[:, 1:].float()
+
         token_weights = (
             output_mask
             / output_mask.sum(dim=-1, keepdim=True).clamp_min(1.0)
@@ -153,7 +157,7 @@ class RecurrentTrainer(BaseTrainer):
         assistant_mask,
         pad_mask,
         no_slow_grads=True,
-        second_state_update=False,
+        update_second_mode=False,
     ):
         
         with self._autocast():
@@ -162,7 +166,12 @@ class RecurrentTrainer(BaseTrainer):
                 input_ids,
                 mode=RecurrentMode.TRAIN_FIRST,
             )
-            lm_states = self.model.model.norm(hidden_states[:, :-1])
+
+            lm_states = self.model.forward_lm_states(
+                hidden_states,
+                mode=RecurrentMode.TRAIN_FIRST,
+                logits_to_keep=slice(0, -1)
+            )
             loss, lm_grad = self.loss_and_lm_grad(
                 lm_states,
                 input_ids,
@@ -175,7 +184,7 @@ class RecurrentTrainer(BaseTrainer):
                     pad_mask,
                 )
 
-        if no_slow_grads and not self.model.disable_fast_weights:
+        if no_slow_grads:
             torch.autograd.backward(
                 lm_states,
                 lm_grad,
@@ -192,7 +201,7 @@ class RecurrentTrainer(BaseTrainer):
                 pad_mask,
                 mode=(
                     RecurrentMode.TRAIN_SECOND
-                    if second_state_update
+                    if update_second_mode
                     else RecurrentMode.TRAIN_FIRST
                 ),
             )
@@ -210,25 +219,28 @@ class RecurrentTrainer(BaseTrainer):
 
         with self._autocast():
 
-            with torch.set_grad_enabled(self.config.trainer.propagate_embedding_grads):
-                hidden_states = self.model.forward_backbone(
-                    input_ids, mode=RecurrentMode.INFERENCE
-                )
+            infer_hidden_states = self.model.forward_backbone(
+                input_ids, mode=RecurrentMode.INFERENCE
+            )
             embeddings = self.model.forward_embeddings(
-                hidden_states,
+                infer_hidden_states,
                 pad_mask,
             )
-
-            embeddings_leaf = embeddings.detach().requires_grad_(True)
 
             hidden_states = self.model.forward_backbone(
                 input_ids,
-                embeddings_leaf,
+                embeddings,
                 pad_mask,
                 mode=RecurrentMode.TRAIN_SECOND,
             )
-            lm_states = self.model.model.norm(hidden_states[:, :-1])
 
+            lm_states = self.model.forward_lm_states(
+                hidden_states,
+                embeddings,
+                pad_mask,
+                mode=RecurrentMode.TRAIN_SECOND,
+                logits_to_keep=slice(0, -1)
+            )
             loss, lm_grad = self.loss_and_lm_grad(
                 lm_states,
                 input_ids,
@@ -238,11 +250,6 @@ class RecurrentTrainer(BaseTrainer):
         torch.autograd.backward(
             lm_states, lm_grad
         )
-
-        if not self.model.disable_fast_weights:
-            torch.autograd.backward(
-                embeddings, embeddings_leaf.grad
-            )
 
         with self._autocast():
             self.model.update_state(
@@ -314,11 +321,11 @@ class RecurrentTrainer(BaseTrainer):
                 f"Second pass {index:02d} completed."
             )
 
-        # lm loss only for last slow gradds
+        # only do lm loss the last chunk last
         self.first_pass(
             *episodes[-1],
             no_slow_grads=False,
-            second_state_update=True
+            update_second_mode=True # so that final error check it correct
         )
         torch_xla.sync(wait=True)
 

@@ -1,15 +1,26 @@
 advanced:
 
-  - name: self
+  - name: backbone_layers
     settings:
       activation_checkpoint_layers:
-        - LlamaDecoderLayer
+        - RecurrentBackboneLayer
       optimization_barrier_layers:
-        - LlamaDecoderLayer
-      scan_layers: model.layers.layers
+        - RecurrentBackboneLayer
+      scan_layers: layers
       is_layer_pure: true
       offload_tensors:
-        - decoder_input
+        - backbone_decoder_input
+
+  - name: output_layers
+    settings:
+      activation_checkpoint_layers:
+        - RecurrentOutputLayer
+      optimization_barrier_layers:
+        - RecurrentOutputLayer
+      scan_layers: layers
+      is_layer_pure: true
+      offload_tensors:
+        - output_decoder_input
 
   - name: bidirectional_head
     settings:

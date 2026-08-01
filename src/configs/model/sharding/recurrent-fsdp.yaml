@@ -7,6 +7,6 @@ lm_head.weight: [null, null]
 
 
 # Activations
-model.layers.layers.*: [[data, fsdp], null, null]
-
+backbone_layers.layers.*: [[data, fsdp], null, null]
+output_layers.layers.*: [[data, fsdp], null, null]
 bidirectional_head.layers.layers.*: [[data, fsdp], null, null]

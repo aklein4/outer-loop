@@ -10,11 +10,15 @@ from transformers.activations import ACT2FN
 
 from models.layers import BidirectionalHead
 from models.llama import (
-    LlamaForCausalLM,
+    LlamaDecoderLayer,
     LlamaRMSNorm,
+    LlamaRotaryEmbedding,
 )
 from utils.sharding_utils import maybe_shard_with_gradients
+from utils.torch_modules import LayerStack
 from utils.torch_utils import fixed_linear, gaussian_init, unsqueeze_to_channel
+
+from torchprime.rope.rope import RopeScaling
 
 
 def _get_G(
@@ -39,6 +43,9 @@ class RecurrentMode(Enum):
     TRAIN_SECOND = "train_second"
 
 
+# can't pass non-tensor objects to torch-xla scanned layers
+# but can't branch based on tensor value
+# so we encode the mode as a tensor with a different number of elements for each mode 
 _MODE_NUM_ELEMENTS = {
     RecurrentMode.INFERENCE: 1,
     RecurrentMode.TRAIN_FIRST: 2,
@@ -55,7 +62,6 @@ def _mode_to_tensor(
     except KeyError:
         raise ValueError(f"unknown recurrent mode: {mode}") from None
     return reference.new_zeros(num_elements)
-
 
 def _tensor_to_mode(mode_tensor: torch.Tensor) -> RecurrentMode:
     num_elements = mode_tensor.numel()
@@ -114,14 +120,14 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
                 down_weight,
             )
 
-            return (
-                None,
-                output_grad,
-                None,
-                G,
-                None,
-                None,
-                None
+            return ( 
+                None, # activations
+                output_grad, # output
+                None, # down_weight
+                G, # grad_buffer
+                None, # lr
+                None, # grad_eps
+                None # mode
             )
 
         elif mode != RecurrentMode.TRAIN_SECOND:
@@ -130,7 +136,7 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
         (
             activations,
             down_weight,
-            remaining_grad, # grad_buffer
+            grad_buffer,
             lr,
         ) = ctx.saved_tensors
 
@@ -146,7 +152,7 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
             )
 
             future_grad = (
-                remaining_grad - G
+                grad_buffer - G
             ).detach()
 
             with torch.autocast(
@@ -174,15 +180,11 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
             activation_grad.to(activations.dtype),
             output_grad,
             down_weight_grad.to(down_weight.dtype),
-            G,
+            G, # grad_buffer
             lr_grad.to(lr.dtype),
-            None,
-            None,
+            None, # grad_eps
+            None, # mode
         )
-
-
-def unit_glu(x: torch.FloatTensor, gate: torch.FloatTensor) -> torch.FloatTensor:
-    return x * F.silu(gate) / 0.6
 
 
 class DynamicLR(nn.Module):
@@ -205,43 +207,76 @@ class DynamicLR(nn.Module):
         )
 
         # learning-rate parameters
-        self.fast_log_lr = nn.Parameter(
+        num_lr_std_params = 3
+        lr_std = config.lr_init_std / math.sqrt(num_lr_std_params)
+        self.log_lr = nn.Parameter(
             torch.randn(self.fast_weight_size, self.fast_weight_size)
-            * 0.35 / self.scalar_scaler
+            * lr_std / self.scalar_scaler
         )
-        self.fast_m = nn.Parameter(
+        self.odot = nn.Parameter(
             torch.ones(self.fast_weight_size, self.fast_weight_size)
-            * 0.35 / self.scalar_scaler
+            * lr_std / self.scalar_scaler
         )
 
-        self.fast_p_r = nn.Linear(
+        self.p_r = nn.Linear(
             config.hidden_size,
             self.fast_weight_size,
             bias=False,
         )
-        self.fast_p_l = nn.Linear(
+        self.p_l = nn.Linear(
             config.hidden_size,
             self.fast_weight_size,
             bias=False,
         )
 
-        self.fast_attn_r = nn.Linear(
+        self.glob_proj = nn.Linear(
             config.hidden_size, 1, bias=False
         )
-        self.fast_attn_l = nn.Linear(
+        self.glob_proj.weight.data.normal_(
+            std=lr_std
+        )
+        self.glob_proj.inited = True
+
+        self.attn_r = nn.Linear(
+            config.hidden_size, 1, bias=False
+        )
+        self.attn_l = nn.Linear(
+            config.hidden_size, 1, bias=False
+        )
+        self.attn_glob = nn.Linear(
             config.hidden_size, 1, bias=False
         )
 
-        self.fast_glob_proj = nn.Linear(
-            config.hidden_size, 1, bias=False
-        )
-        self.fast_glob_proj.weight.data.zero_()
-        self.fast_glob_proj.inited = True
-
-        self.fast_cap = nn.Parameter(
+        self.cap = nn.Parameter(
             torch.ones(1)
             * 2 / self.scalar_scaler
         )
+
+
+    def soft_pool(
+        self,
+        x: torch.FloatTensor, 
+        proj: nn.Linear,
+        mask: torch.BoolTensor,
+        v_proj: nn.Linear | None = None,
+        norm: nn.Module | None = None,
+    ) -> torch.FloatTensor:
+        
+        mask = mask.to(x.dtype)[..., None]
+        masked_x = x * mask
+
+        a = proj(masked_x)
+        a = torch.masked_fill(a, mask < 0.5, -100.0)
+        attn = F.softmax(a, dim=-2)
+
+        pooled = (attn * masked_x).sum(dim=-2)
+        if norm is not None:
+            pooled = norm(pooled)
+
+        if v_proj is not None:
+            pooled = v_proj(pooled)
+
+        return pooled
 
 
     def forward(
@@ -253,40 +288,53 @@ class DynamicLR(nn.Module):
         embedding_mask = embedding_mask.to(embeddings.dtype)
         masked_embeddings = embeddings * embedding_mask[..., None]
 
-        a_r = self.fast_attn_r(masked_embeddings)
-        a_r = torch.masked_fill(a_r, embedding_mask[..., None] < 0.5, -100.0)
-        attn_r = F.softmax(a_r, dim=-2)
-
-        a_l = self.fast_attn_l(masked_embeddings)
-        a_l = torch.masked_fill(a_l, embedding_mask[..., None] < 0.5, -100.0)
-        attn_l = F.softmax(a_l, dim=-2)
-
-        l = (self.fast_p_l(masked_embeddings) * attn_l).sum(dim=-2)
-        l = self.fw_norm(l)
-
-        r = (self.fast_p_r(masked_embeddings) * attn_r).sum(dim=-2)
-        r = self.fw_norm(r)
-
+        l = self.fw_norm(
+            self.soft_pool(
+                masked_embeddings,
+                self.attn_l,
+                embedding_mask,
+                v_proj=self.p_r, 
+            )  
+        )
+        r = self.fw_norm(
+            self.soft_pool(
+                masked_embeddings,
+                self.attn_r,
+                embedding_mask,
+                v_proj=self.p_l,
+            )
+        )
         offset = l[:, :, None] + r[:, None, :]
-        cap = (self.fast_cap * self.scalar_scaler) - 1.0
-        offset = cap - F.elu(cap - offset)
-        offset = offset * (self.fast_m[None] * self.scalar_scaler)
 
-        mean_embed = masked_embeddings.mean(dim=-2)
-        mean_embed = self.hs_norm(mean_embed)
-        glob = self.fast_glob_proj(mean_embed) # [B, 1]
+        cap = (self.cap * self.scalar_scaler) - 1.0
+        offset = cap - F.elu(cap - offset)
+
+        offset = offset * (self.odot[None] * self.scalar_scaler)
+
+        glob = self.soft_pool(
+            masked_embeddings,
+            self.glob_proj,
+            embedding_mask,
+            v_proj=self.attn_glob,
+            norm=self.hs_norm,
+        )
 
         log_lr = (
-            self.fast_log_lr[None] * self.scalar_scaler
+            self.log_lr[None] * self.scalar_scaler
             + offset
             + unsqueeze_to_channel(glob, offset)
         )
-
-        return (
-            torch.exp(log_lr)
-            * self.base_lr
-            / math.sqrt(self.fast_weight_size)
+ 
+        return torch.exp(
+            log_lr
+            + math.log(self.base_lr)
+            - math.log(self.fast_weight_size)
         )
+
+
+class UnitGLU(nn.Module):
+    def forward(self, x, gate):
+        return x * F.silu(gate) / 0.6
 
 
 class RecurrentFastWeightMLP(nn.Module):
@@ -301,6 +349,7 @@ class RecurrentFastWeightMLP(nn.Module):
         self.grad_eps = config.grad_rms_eps
 
         self.act_fn = ACT2FN[config.hidden_act]
+        self.fast_act_fn = UnitGLU()
 
         # base projections
         self.gate_proj = nn.Linear(
@@ -336,7 +385,7 @@ class RecurrentFastWeightMLP(nn.Module):
             bias=False,
         )
 
-        self.dynamic_lr = DynamicLR(config)
+        self.fast_dynamic_lr = DynamicLR(config)
 
         # ephemeral state
         self.state: nn.Buffer
@@ -344,20 +393,12 @@ class RecurrentFastWeightMLP(nn.Module):
         self.final_grad_norm: nn.Buffer
 
 
-    @torch.no_grad()
-    def pretrained_init(self) -> None:
-        if self.fast_weight_size > self.intermediate_size:
-            raise ValueError(
-                "fast_weight_size must not exceed intermediate_size"
-            )
-        s = self.fast_weight_size
+    def standard_forward(self, x: torch.FloatTensor) -> torch.FloatTensor:
+        return self.down_proj(
+            self.act_fn(self.gate_proj(x)) * self.up_proj(x)
+        )
 
-        self.up_fast.weight.copy_(self.up_proj.weight[:s])
-        self.gate_fast.weight.copy_(self.gate_proj.weight[:s])
 
-        self.down_fast.weight.copy_(self.down_proj.weight[:, :s])
-
-    
     def forward(
         self,
         x: torch.FloatTensor,
@@ -370,29 +411,21 @@ class RecurrentFastWeightMLP(nn.Module):
         if fast_weight_mode is not None:
             mode = _tensor_to_mode(fast_weight_mode)
 
-        # base mlp
-        h_base = self.act_fn(self.gate_proj(x)) * self.up_proj(x)
-        y_base = self.down_proj(h_base)
-
         # fast mlp
-        h_fast = unit_glu(
-            self.up_fast(x),
-            self.gate_fast(x),
-        )
-        value = torch.einsum("boi,bli->blo", self.state, h_fast)
+        h = self.fast_act_fn(self.up_fast(x), self.gate_fast(x))
+        value = torch.einsum("boi,bli->blo", self.state, h)
         output = self.down_fast(value)
 
-        activations = h_fast.detach()
+        activations = h.detach()
         lr = None
         if mode == RecurrentMode.TRAIN_SECOND:
 
             x_d = x.detach()
-            activations = unit_glu(
-                self.up_fast(x_d),
-                self.gate_fast(x_d),
+            activations = self.fast_act_fn(
+                self.up_fast(x_d), self.gate_fast(x_d)
             )
 
-            lr = self.dynamic_lr(lr_embeddings, lr_embedding_mask)
+            lr = self.fast_dynamic_lr(lr_embeddings, lr_embedding_mask)
 
         if mode != RecurrentMode.INFERENCE:
             output = RecurrentFastWeightFunction.apply(
@@ -405,7 +438,7 @@ class RecurrentFastWeightMLP(nn.Module):
                 mode,
             )
 
-        return y_base + output
+        return self.standard_forward(x) + output
 
 
     @torch.no_grad()
@@ -453,8 +486,7 @@ class RecurrentFastWeightMLP(nn.Module):
             G.float(), G.shape[-2:], eps=self.grad_eps,
         )
 
-        lr = self.dynamic_lr(embeddings, embedding_mask)
-
+        lr = self.fast_dynamic_lr(embeddings, embedding_mask)
         state_update = -lr * G_norm
 
         self.state.add_(state_update)
@@ -500,62 +532,178 @@ class RecurrentFastWeightMLP(nn.Module):
         )
 
 
+class RecurrentBackboneLayer(LlamaDecoderLayer):
+    offload_name = "backbone_decoder_input"
 
-class RecurrentModel(LlamaForCausalLM):
+class RecurrentOutputLayer(LlamaDecoderLayer):
+    offload_name = "output_decoder_input"
+
+
+class RecurrentModel(nn.Module):
     def __init__(self, config: DictConfig):
-        super().__init__(config)
+        super().__init__()
+        self.config = config
+
+        # lm stuff
+        self.vocab_size = config.vocab_size
+        self.embed_tokens = nn.Embedding(
+            config.vocab_size, config.hidden_size
+        )
+        self.lm_head = nn.Linear(
+            config.hidden_size, config.vocab_size, bias=False
+        )
+
+        # transformer layers
+        self.num_backbone_layers = (
+            config.num_hidden_layers - config.num_output_layers
+        )
+        self.backbone_layers = LayerStack(
+            config,
+            RecurrentBackboneLayer,
+            self.num_backbone_layers,
+        )
+        self.output_layers = LayerStack(
+            config,
+            RecurrentOutputLayer,
+            config.num_output_layers,
+            layer_offset=self.num_backbone_layers,
+        )
+        self.lm_norm = LlamaRMSNorm(
+            config.hidden_size, eps=config.rms_norm_eps,
+        )
 
         # bidirectional head for lr embeddings
         self.embedding_norm = LlamaRMSNorm(
-            config.hidden_size, eps=config.rms_norm_eps,
+            config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=False
+        )
+        
+        self.register_buffer(
+            "embedding_state_shift",
+            torch.zeros(config.hidden_size),
+            persistent=True,
+        )
+        self.register_buffer(
+            "embedding_state_scale",
+            torch.ones(config.hidden_size),
+            persistent=True,
         )
         self.bidirectional_head = BidirectionalHead(config)
 
-        self.disable_fast_weights = config.get(
-            "disable_fast_weights",
-            False,
+        # fast-weight MLPs
+        for layer in self._causal_layers():
+            layer.mlp = RecurrentFastWeightMLP(config)
+
+        # llama stuff
+        rope_scaling = config.get("rope_scaling", None)
+        if rope_scaling is not None:
+            rope_scaling = RopeScaling(**rope_scaling)
+        self.rotary_emb = LlamaRotaryEmbedding(
+            head_dim=config.hidden_size // config.num_attention_heads,
+            rope_theta=config.rope_theta,
+            scaling=rope_scaling,
         )
-        if not self.disable_fast_weights:
-            for layer in self.model.layers._iter_layers():
-                layer.mlp = RecurrentFastWeightMLP(config)
 
         self.apply(gaussian_init)
 
 
-    def _old_load_state_dict(
+    def load_state_dict(
         self,
         state_dict: dict[str, torch.Tensor],
-        strict: bool = True,
-        assign: bool = False,
+        **kwargs
     ):
-        fast_weight_suffixes = (
-            ".up_fast.weight",
-            ".gate_fast.weight",
-            ".down_fast.weight",
-        )
-        has_fast_weights = any(
-            key.endswith(fast_weight_suffixes)
-            for key in state_dict
+        if any("fast" in k for k in state_dict.keys()):
+            return super().load_state_dict(state_dict, **kwargs)
+
+        sd = {}
+        for k, v in state_dict.items():
+
+            # model.stuff -> stuff
+            if k.startswith("model."):
+                k = k.removeprefix("model.")
+
+            # modify layers
+            if k.startswith("layers."):
+                parts = k.split(".")
+
+                # layers.layers.stuff -> layers.stuff
+                if parts[1] == "layers":
+                    parts.pop(1)
+
+                # layers.i.stuff -> <type>_layers.layers.i.stuff
+                layer_idx = int(parts[1])
+                if layer_idx < self.num_backbone_layers:
+                    parts = [
+                        "backbone_layers",
+                        "layers",
+                        str(layer_idx)
+                    ] + parts[2:]
+                else:
+                    parts = [
+                        "output_layers",
+                        "layers",
+                        str(layer_idx - self.num_backbone_layers),
+                    ] + parts[2:]
+
+                k = ".".join(parts)
+
+            # (model.)norm -> lm_norm
+            elif k.startswith("norm."):
+                k = "lm_norm." + k.removeprefix("norm.")
+
+            sd[k] = v
+
+        kwargs["strict"] = False
+        return super().load_state_dict(
+            sd,
+            **kwargs
         )
 
-        if self.disable_fast_weights or has_fast_weights:
-            return super().load_state_dict(
-                state_dict,
-                strict=strict,
-                assign=assign,
+
+    def _layer_kwargs(
+        self,
+        hidden_states: torch.FloatTensor,
+        embeddings: torch.FloatTensor | None = None,
+        embedding_mask: torch.BoolTensor | None = None,
+        mode: torch.Tensor | None = None,
+        **kwargs,
+    ) -> dict:
+        seq_length = hidden_states.shape[1]
+
+        position_ids = torch.arange(
+            seq_length, device=hidden_states.device
+        ).unsqueeze(0).float()
+
+        kwargs["position_ids"] = position_ids
+        kwargs["position_embeddings"] = self.rotary_emb(
+            hidden_states, position_ids
+        )
+
+        if not (
+            self.config.attention_kernel is not None
+            and "lash" in self.config.attention_kernel
+        ):
+            causal_mask = torch.triu(
+                torch.full(
+                    (seq_length, seq_length),
+                    float("-inf"),
+                    device=hidden_states.device,
+                ),
+                diagonal=1,
+            )
+            kwargs["attention_mask"] = causal_mask[None, None]
+
+        if embeddings is not None:
+            kwargs["lr_embeddings"] = embeddings
+        if embedding_mask is not None:
+            kwargs["lr_embedding_mask"] = embedding_mask.float()
+        if mode is not None:
+            kwargs["fast_weight_mode"] = _mode_to_tensor(
+                mode,
+                self.embed_tokens.weight,
             )
 
-        incompatible_keys = super().load_state_dict(
-            state_dict,
-            strict=False,
-            assign=assign,
-        )
+        return kwargs
 
-        for mlp in self.fast_modules():
-            mlp.pretrained_init()
-
-        return incompatible_keys
-    
 
     def forward_backbone(
         self,
@@ -564,34 +712,70 @@ class RecurrentModel(LlamaForCausalLM):
         embedding_mask: torch.BoolTensor | None = None,
         mode: RecurrentMode | None = None,
     ) -> torch.FloatTensor:
-        if self.disable_fast_weights:
-            return self.model(input_ids=input_ids)
 
-        model_kwargs = {}
-        if mode is not None:
-            model_kwargs["fast_weight_mode"] = _mode_to_tensor(
-                mode,
-                self.model.embed_tokens.weight,
-            )
+        hidden_states = self.embed_tokens(input_ids)
+        kwargs = self._layer_kwargs(
+            hidden_states,
+            embeddings=embeddings,
+            embedding_mask=embedding_mask,
+            mode=mode,
+        )
 
-        if embeddings is not None:
-            model_kwargs["lr_embeddings"] = embeddings
-        if embedding_mask is not None:
-            model_kwargs["lr_embedding_mask"] = embedding_mask.float()
-
-        return self.model(
-            input_ids=input_ids,
-            **model_kwargs,
+        return self.backbone_layers(
+            hidden_states,
+            **kwargs,
         )
 
 
-    def forward_lm(
+    def forward_lm_states(
         self,
         hidden_states: torch.FloatTensor,
+        embeddings: torch.FloatTensor | None = None,
+        embedding_mask: torch.BoolTensor | None = None,
+        mode: RecurrentMode | None = None,
+        logits_to_keep: slice | None = None,
     ) -> torch.FloatTensor:
-        return self.lm_head(
-            self.model.norm(hidden_states)
+
+        kwargs = self._layer_kwargs(
+            hidden_states,
+            embeddings=embeddings,
+            embedding_mask=embedding_mask,
+            mode=mode,
         )
+
+        hidden_states = self.output_layers(
+            hidden_states,
+            **kwargs,
+        )
+
+        if logits_to_keep is not None:
+            hidden_states = hidden_states[:, logits_to_keep]
+
+        return self.lm_norm(hidden_states)
+
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor,
+        embeddings: torch.FloatTensor | None = None,
+        embedding_mask: torch.BoolTensor | None = None,
+        mode: RecurrentMode | None = None,
+        logits_to_keep: slice | None = None,
+    ) -> torch.FloatTensor:
+        hidden_states = self.forward_backbone(
+            input_ids,
+            embeddings=embeddings,
+            embedding_mask=embedding_mask,
+            mode=mode,
+        )
+        hidden_states = self.forward_lm_states(
+            hidden_states,
+            embeddings=embeddings,
+            embedding_mask=embedding_mask,
+            mode=mode,
+            logits_to_keep=logits_to_keep,
+        )
+        return self.lm_head(hidden_states)
 
 
     def forward_embeddings(
@@ -600,12 +784,21 @@ class RecurrentModel(LlamaForCausalLM):
         embedding_mask: torch.BoolTensor,
     ) -> torch.FloatTensor:
         hidden_states = self.embedding_norm(hidden_states)
+        hidden_states = (
+            hidden_states * self.embedding_state_scale
+            + self.embedding_state_shift
+        )
         return self.bidirectional_head(hidden_states, embedding_mask)
 
 
-    def _layer_module(self, layer, name: str) -> nn.Module:
+    def _causal_layers(self):
+        yield from self.backbone_layers._iter_layers()
+        yield from self.output_layers._iter_layers()
+
+
+    def _layer_module(self, layer: LlamaDecoderLayer|int, name: str) -> nn.Module:
         if isinstance(layer, int):
-            layer = self.model.layers.layers[layer]
+            layer = list(self._causal_layers())[layer]
         try:
             return layer.get_submodule(name)
         except AttributeError:
@@ -613,11 +806,9 @@ class RecurrentModel(LlamaForCausalLM):
 
 
     def fast_modules(self) -> list[RecurrentFastWeightMLP]:
-        if self.disable_fast_weights:
-            return []
         return [
             self._layer_module(layer, "mlp")
-            for layer in self.model.layers._iter_layers()
+            for layer in self._causal_layers()
         ]
 
 
@@ -658,9 +849,6 @@ class RecurrentModel(LlamaForCausalLM):
 
     @torch.no_grad()
     def relative_grad_error(self) -> torch.FloatTensor:
-        if self.disable_fast_weights:
-            return 0.0
-        
         errors = [
             mlp.relative_grad_error() for mlp in self.fast_modules()
         ]
