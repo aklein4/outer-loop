@@ -42,7 +42,7 @@ def _get_G(
     a_gated = 2 * torch.sigmoid(activation_gate_logits.float()) * a_norm
     g_gated = 2 * torch.sigmoid(gradient_gate_logits.float()) * g_norm
 
-    return a.mT @ g, g_gated.mT @ a_gated
+    return g.mT @ a, g_gated.mT @ a_gated
 
 
 def _get_leaf(x: torch.FloatTensor) -> torch.FloatTensor:
@@ -228,7 +228,7 @@ class ForteFastWeightFunction(torch.autograd.Function):
             activation_gate_logits_grad.to(activation_gate_logits.dtype),
             gradient_gate_logits_grad.to(gradient_gate_logits.dtype),
             G, # grad_buffer
-            state_update.detach(), # state
+            update.detach(), # state
             lr_grad.to(lr.dtype),
             None, # future_loss_scale
             None, # grad_eps
@@ -379,7 +379,7 @@ class ForteFastWeightMLP(nn.Module):
 
         # fast mlp
         h = self.fast_act_fn(self.up_fast(x), self.gate_fast(x))
-        value = torch.einsum("boi,bli->blo", self.state, h)
+        value = torch.einsum("boi,bli->blo", self.state.detach(), h)
         output = self.down_fast(value)
 
         activation_gate_logits = None
