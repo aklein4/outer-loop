@@ -36,13 +36,13 @@ def _get_G(
     )
 
     # RMS-normalize each hidden channel over the sequence dimension.
-    a = a * torch.rsqrt(a.square().mean(dim=(-2,-1), keepdim=True) + eps)
-    g = g * torch.rsqrt(g.square().sum(dim=(-2,-1), keepdim=True) + eps)
+    a_norm = a * torch.rsqrt(a.square().mean(dim=-2, keepdim=True) + eps)
+    g_norm = g * torch.rsqrt(g.square().sum(dim=-2, keepdim=True) + eps)
 
-    a_gated = 2 * torch.sigmoid(activation_gate_logits.float()) * a
-    g_gated = 2 * torch.sigmoid(gradient_gate_logits.float()) * g
+    a_gated = 2 * torch.sigmoid(activation_gate_logits.float()) * a_norm
+    g_gated = 2 * torch.sigmoid(gradient_gate_logits.float()) * g_norm
 
-    return g_gated.mT @ a_gated
+    return a.mT @ g, g_gated.mT @ a_gated
 
 
 def _get_leaf(x: torch.FloatTensor) -> torch.FloatTensor:
@@ -98,6 +98,7 @@ class ForteFastWeightFunction(torch.autograd.Function):
         activation_gate_logits: torch.FloatTensor,
         gradient_gate_logits: torch.FloatTensor,
         grad_buffer: torch.FloatTensor,
+        state: torch.FloatTensor,
         lr: torch.FloatTensor | None,
         future_loss_scale: torch.FloatTensor,
         grad_eps: float,
@@ -136,7 +137,7 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 gradient_gate_logits,
             ) = ctx.saved_tensors
 
-            G = _get_G(
+            G, update = _get_G(
                 activations,
                 output_grad,
                 down_weight,
@@ -152,6 +153,7 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 None, # activation_gate_logits
                 None, # gradient_gate_logits
                 G, # grad_buffer
+                update, # state
                 None, # lr
                 None, # future_loss_scale
                 None, # grad_eps
@@ -178,7 +180,7 @@ class ForteFastWeightFunction(torch.autograd.Function):
             gradient_gate_logits_leaf = _get_leaf(gradient_gate_logits)
             lr_leaf = _get_leaf(lr)
 
-            G = _get_G(
+            G, update = _get_G(
                 activations_leaf,
                 output_grad,
                 down_weight_leaf,
@@ -196,7 +198,7 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 dtype=torch.bfloat16,
             ):
 
-                state_update = -lr_leaf * G
+                state_update = -lr_leaf * update
 
                 local_loss = (
                     future_grad * state_update
@@ -226,6 +228,7 @@ class ForteFastWeightFunction(torch.autograd.Function):
             activation_gate_logits_grad.to(activation_gate_logits.dtype),
             gradient_gate_logits_grad.to(gradient_gate_logits.dtype),
             G, # grad_buffer
+            state_update.detach(), # state
             lr_grad.to(lr.dtype),
             None, # future_loss_scale
             None, # grad_eps
@@ -379,7 +382,6 @@ class ForteFastWeightMLP(nn.Module):
         value = torch.einsum("boi,bli->blo", self.state, h)
         output = self.down_fast(value)
 
-
         activation_gate_logits = None
         gradient_gate_logits = None
         if mode != ForteMode.INFERENCE:
@@ -413,6 +415,7 @@ class ForteFastWeightMLP(nn.Module):
                 activation_gate_logits,
                 gradient_gate_logits,
                 self.grad_buffer,
+                self.state,
                 lr,
                 future_loss_scale,
                 self.grad_eps,
@@ -442,7 +445,11 @@ class ForteFastWeightMLP(nn.Module):
         self.register_buffer("grad_buffer", grad_buffer, persistent=False)
         self.register_buffer("final_grad_norm", final_grad_norm, persistent=False)
 
-        self.state.requires_grad_(False)
+        # stores the update
+        self.state.requires_grad_(True)
+        self.state.grad = maybe_shard_with_gradients(
+            torch.zeros_like(self.state)
+        )
 
         # backward stores G in grad_buffer.grad
         self.grad_buffer.requires_grad_(True)
@@ -462,9 +469,10 @@ class ForteFastWeightMLP(nn.Module):
     ) -> None:
 
         G = self.grad_buffer.grad
+        update = self.state.grad
         
         lr = self.fast_dynamic_lr(embeddings, embedding_mask)
-        state_update = -lr * G
+        state_update = -lr * update
 
         self.state.add_(state_update)
 
@@ -476,6 +484,7 @@ class ForteFastWeightMLP(nn.Module):
             raise ValueError(f"invalid state update mode: {mode}")
 
         self.grad_buffer.grad.zero_()
+        self.state.grad.zero_()
 
 
     @torch.no_grad()
