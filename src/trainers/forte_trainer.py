@@ -148,18 +148,31 @@ class ForteTrainer(BaseTrainer):
         no_slow_grads=True,
         update_second_mode=False,
     ):
+
+        with torch.no_grad():
+            infer_hidden_states = self.model.forward_backbone(
+                input_ids, mode=ForteMode.INFERENCE
+            )
+            embeddings = self.model.forward_embeddings(
+                infer_hidden_states,
+                pad_mask,
+            )
         
         with self._autocast():
 
             hidden_states = self.model.forward_backbone(
                 input_ids,
                 mode=ForteMode.TRAIN_FIRST,
+                embeddings=embeddings,
+                embedding_mask=pad_mask,
             )
 
             lm_states = self.model.forward_lm_states(
                 hidden_states,
                 mode=ForteMode.TRAIN_FIRST,
-                logits_to_keep=slice(0, -1)
+                logits_to_keep=slice(0, -1),
+                embeddings=embeddings,
+                embedding_mask=pad_mask,
             )
             loss, lm_grad = self.loss_and_lm_grad(
                 lm_states,
@@ -167,11 +180,6 @@ class ForteTrainer(BaseTrainer):
                 assistant_mask,
             )
 
-            with torch.no_grad():
-                embeddings = self.model.forward_embeddings(
-                    hidden_states.detach(),
-                    pad_mask,
-                )
 
         if no_slow_grads:
             torch.autograd.backward(
