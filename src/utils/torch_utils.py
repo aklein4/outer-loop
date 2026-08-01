@@ -1,11 +1,12 @@
+from types import MethodType
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import math
+
 import utils.constants as constants
-if constants.XLA_AVAILABLE:
-    from torch_xla.experimental.scan import scan
-    from torch_xla.distributed.spmd.xla_sharding import XLAPatchedLinear
 
 """
 A collection of PyTorch utility functions that might be useful.
@@ -292,7 +293,7 @@ def safe_finite(x: torch.Tensor, safe=False) -> torch.Tensor:
         return torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
 
 
-def newton_schulz(G, steps=5, eps=1e-7):
+def newton_schulz(G, steps=5, eps=1e-7, polar=False, safety=None):
     """
     Perform spectral whitening on G using Newton-Schulz iteration.
 
@@ -305,40 +306,47 @@ def newton_schulz(G, steps=5, eps=1e-7):
     Returns:
         torch.Tensor: Spectrally whitened tensor of shape [n, m].
     """
-    assert G.ndim >= 2 
+    assert G.ndim >= 2
+
+    polar_coeffs = [
+        (8.28721201814563, -23.595886519098837, 17.300387312530933),
+        (4.107059111542203, -2.9478499167379106, 0.5448431082926601),
+        (3.9486908534822946, -2.908902115962949, 0.5518191394370137),
+        (3.3184196573706015, -2.488488024314874, 0.51004894012372),
+        (2.300652019954817, -1.6689039845747493, 0.4188073119525673),
+        (1.891301407787398, -1.2679958271945868, 0.37680408948524835),
+        (1.8750014808534479, -1.2500016453999487, 0.3750001645474248),
+        (1.875, -1.25, 0.375),
+    ]
+    standard_coeffs = [
+        (3.4445, -4.7750,  2.0315)
+    ] * 8
     
+    if safety is None:
+        safety = 0.5 if polar else 1.0
+    coeffs = polar_coeffs if polar else standard_coeffs
+
     X = G
     if G.size(-2) > G.size(-1):
-        X = X.transpose(-2, -1)
+        X = X.mT
 
     # Ensure spectral norm is at most 1
-    X = X / (X.norm(dim=(-2, -1), keepdim=True) + eps)
+    X_f = X.float()
+    X = (X_f / (X_f.norm(dim=(-2, -1), keepdim=True) + eps)).to(X.dtype)
+    X = X * safety
 
     # Perform the NS iterations
-    if constants.XLA_AVAILABLE and False:
-        ts = torch.arange(steps, device=X.device)
-        X, _ = scan(
-            _newton_schulz_inner, X, ts,
-            # is_fn_pure=True
-        )
-    else:
-        for t in range(steps):
-            X, _ = _newton_schulz_inner(X, t)
+    for t in range(steps):
+        a, b, c = coeffs[t]
+
+        A = X @ X.mT
+        B = b * A + c * A @ A
+        X = a * X + B @ X
         
     if G.size(-2) > G.size(-1):
-        X = X.transpose(-2, -1)
+        X = X.mT
 
     return X
-
-
-def _newton_schulz_inner(X, t):
-    a, b, c = (3.4445, -4.7750,  2.0315)
-
-    A = X @ X.transpose(-2, -1)
-    B = b * A + c * A @ A
-    X = a * X + B @ X
-
-    return X, X
 
 
 _cuda_newton_schulz = None
@@ -391,6 +399,8 @@ def shift(
 
 
 def gaussian_init(module: nn.Module):
+    if getattr(module, "inited", False):
+        return
 
     if isinstance(module, nn.Linear):
         module.weight.data.normal_(mean=0.0, std=1/module.in_features**0.5)
@@ -408,6 +418,12 @@ def safe_repeat(
         [x] * n_repeats,
         dim=dim
     )
+
+
+def inv_softplus(x: torch.Tensor | float) -> torch.Tensor:
+    if isinstance(x, torch.Tensor):
+        return torch.log(x.exp() - 1.0)
+    return math.log(math.exp(x) - 1.0)
 
 
 def slerp(
@@ -461,7 +477,65 @@ def slerp(
     return result.to(return_dtype)
 
 
+def einsum_linear(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor | None = None,
+) -> torch.Tensor:
+    
+    device_type = x.device.type
+    if torch.is_autocast_enabled(device_type):
+        autocast_dtype = torch.get_autocast_dtype(device_type)
+
+        def do_cast(t):
+            return (
+                t.is_floating_point() and
+                t.device.type == device_type and
+                t.dtype is not torch.float64
+            )
+
+        if do_cast(x):
+            x = x.to(autocast_dtype)
+        if do_cast(weight):
+            weight = weight.to(autocast_dtype)
+        if bias is not None and do_cast(bias):
+            bias = bias.to(autocast_dtype)
+
+        # Match `custom_fwd(cast_inputs=...)`: after casting its floating-point
+        # inputs, the decorated function executes with autocast locally disabled.
+        with torch.autocast(device_type, enabled=False):
+            output = torch.einsum("...i,oi->...o", x, weight)
+            if bias is not None:
+                output = output + bias
+            return output
+
+    output = torch.einsum("...i,oi->...o", x, weight)
+    if bias is not None:
+        output = output + bias
+    return output
+
+
+def _pure_einsum_linear_forward(
+    module: nn.Linear,
+    x: torch.Tensor,
+) -> torch.Tensor:
+    return einsum_linear(x, module.weight, module.bias)
+
+
+def apply_pure_einsum_to_nn_linear(module: nn.Module) -> nn.Module:
+    """Use a pure, rank-preserving einsum forward for every ``nn.Linear``.
+
+    This preserves the modules, parameters, hooks, and state-dict keys. Unlike
+    PyTorch/XLA's patched linear, the resulting forward contains only upstream
+    PyTorch operations and can therefore be used inside ``PureModule``.
+    """
+    for child in module.modules():
+        if isinstance(child, nn.Linear):
+            child.forward = MethodType(_pure_einsum_linear_forward, child)
+    return module
+
+
 def fixed_linear(x, weight, bias=None):
     if constants.XLA_AVAILABLE:
-        return XLAPatchedLinear.apply(x, weight, bias)
+        return einsum_linear(x, weight, bias)
     return F.linear(x, weight, bias)

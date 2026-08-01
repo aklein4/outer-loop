@@ -25,7 +25,6 @@ import torch_xla.runtime as xr
 from omegaconf import DictConfig, OmegaConf
 
 from torch.utils.data import DataLoader, Dataset, IterableDataset
-from torch_xla.distributed.spmd.xla_sharding import apply_xla_patch_to_nn_linear
 from transformers import (
     get_scheduler,
 )
@@ -46,6 +45,7 @@ from utils.import_utils import import_optimizer, import_collator
 from utils import constants
 from utils.remat_utils import advanced_remat
 from utils.git_utils import get_current_commit_hash
+from utils.torch_utils import apply_pure_einsum_to_nn_linear
 
 
 logger = logging.getLogger(__name__)
@@ -121,10 +121,10 @@ class BaseTrainer:
     ):
         """ Prepares the model for training by setting up sharding and rematerialization. """
         
-        # Recursively replace `nn.Linear` layers with einsum operations in the model.
-        # Without this patch, an `nn.Linear` module will flatten non-contracting dimensions
-        # (e.g. batch and sequence), thus destroying the sharding constraints on those dimensions.
-        model = apply_xla_patch_to_nn_linear(model)
+        # Replace every `nn.Linear.forward` with a pure, rank-preserving einsum.
+        # The default linear implementation may flatten non-contracting dimensions
+        # (e.g. batch and sequence), compromising sharding propagation.
+        model = apply_pure_einsum_to_nn_linear(model)
 
         # Add `xp.Trace` to linear layers in the module tree (just for profiling?).
         # model = auto_trace(model)
@@ -558,7 +558,8 @@ class BaseTrainer:
             parameters = list(parameters)
 
         if max_grad_norm is None or max_grad_norm <= 0:
-            grad_norm = nn_utils.get_total_norm(parameters, norm_type=2)
+            g = [p.grad for p in parameters if p.grad is not None]
+            grad_norm = nn_utils.get_total_norm(g, norm_type=2)
         else:
             grad_norm = nn_utils.clip_grad_norm_(
                 parameters, max_norm=max_grad_norm, norm_type=2

@@ -18,7 +18,7 @@ def get_dataset(url: str, kwargs: dict) -> datasets.Dataset:
 
     ds = datasets.load_dataset(url, **kwargs)
 
-    if "streaming" in kwargs.keys() and kwargs["streaming"]:
+    if "streaming" in kwargs.keys() and kwargs["streaming"] and constants.XLA_AVAILABLE:
         ds = ds.shard(num_shards=constants.PROCESS_COUNT(), index=constants.PROCESS_INDEX())
 
     return ds
