@@ -232,6 +232,7 @@ class RecurrentTrainer(BaseTrainer):
                 embeddings,
                 pad_mask,
                 mode=RecurrentMode.TRAIN_SECOND,
+                future_loss_scale=self.config.trainer.future_loss_scale,
             )
 
             lm_states = self.model.forward_lm_states(
@@ -239,7 +240,8 @@ class RecurrentTrainer(BaseTrainer):
                 embeddings,
                 pad_mask,
                 mode=RecurrentMode.TRAIN_SECOND,
-                logits_to_keep=slice(0, -1)
+                logits_to_keep=slice(0, -1),
+                future_loss_scale=self.config.trainer.future_loss_scale,
             )
             loss, lm_grad = self.loss_and_lm_grad(
                 lm_states,

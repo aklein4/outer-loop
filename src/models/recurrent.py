@@ -85,6 +85,7 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
         down_weight: torch.FloatTensor,
         grad_buffer: torch.FloatTensor,
         lr: torch.FloatTensor | None,
+        future_loss_scale: torch.FloatTensor,
         grad_eps: float,
         mode: str,
     ) -> torch.FloatTensor:
@@ -94,7 +95,7 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
             down_weight,
         )
         if mode == RecurrentMode.TRAIN_SECOND:
-            to_save += (grad_buffer, lr)
+            to_save += (grad_buffer, lr, future_loss_scale)
 
         ctx.save_for_backward(*to_save)
         ctx.grad_eps = grad_eps
@@ -126,6 +127,7 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
                 None, # down_weight
                 G, # grad_buffer
                 None, # lr
+                None, # future_loss_scale
                 None, # grad_eps
                 None # mode
             )
@@ -138,6 +140,7 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
             down_weight,
             grad_buffer,
             lr,
+            future_loss_scale,
         ) = ctx.saved_tensors
 
         with torch.enable_grad():
@@ -165,7 +168,9 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
                 )
                 state_update = -lr_leaf * G_normed
 
-                local_loss = (future_grad * state_update).sum()
+                local_loss = (
+                    future_grad * state_update
+                ).sum() * future_loss_scale.detach()
 
             (
                 activation_grad,
@@ -182,6 +187,7 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
             down_weight_grad.to(down_weight.dtype),
             G, # grad_buffer
             lr_grad.to(lr.dtype),
+            None, # future_loss_scale
             None, # grad_eps
             None, # mode
         )
@@ -405,11 +411,14 @@ class RecurrentFastWeightMLP(nn.Module):
         fast_weight_mode: torch.Tensor | None = None,
         lr_embeddings: torch.FloatTensor | None = None,
         lr_embedding_mask: torch.BoolTensor | None = None,
+        future_loss_scale: torch.FloatTensor | float = 1,
     ) -> torch.FloatTensor:
 
         mode = RecurrentMode.INFERENCE
         if fast_weight_mode is not None:
             mode = _tensor_to_mode(fast_weight_mode)
+        if not isinstance(future_loss_scale, torch.Tensor):
+            future_loss_scale = x.new_tensor(future_loss_scale)
 
         # fast mlp
         h = self.fast_act_fn(self.up_fast(x), self.gate_fast(x))
@@ -434,6 +443,7 @@ class RecurrentFastWeightMLP(nn.Module):
                 self.down_fast.weight,
                 self.grad_buffer,
                 lr,
+                future_loss_scale,
                 self.grad_eps,
                 mode,
             )
@@ -665,6 +675,7 @@ class RecurrentModel(nn.Module):
         embeddings: torch.FloatTensor | None = None,
         embedding_mask: torch.BoolTensor | None = None,
         mode: torch.Tensor | None = None,
+        future_loss_scale: torch.FloatTensor | float | None = None,
         **kwargs,
     ) -> dict:
         seq_length = hidden_states.shape[1]
@@ -701,6 +712,8 @@ class RecurrentModel(nn.Module):
                 mode,
                 self.embed_tokens.weight,
             )
+        if future_loss_scale is not None:
+            kwargs["future_loss_scale"] = future_loss_scale
 
         return kwargs
 
@@ -711,6 +724,7 @@ class RecurrentModel(nn.Module):
         embeddings: torch.FloatTensor | None = None,
         embedding_mask: torch.BoolTensor | None = None,
         mode: RecurrentMode | None = None,
+        future_loss_scale: torch.FloatTensor | float | None = None,
     ) -> torch.FloatTensor:
 
         hidden_states = self.embed_tokens(input_ids)
@@ -719,6 +733,7 @@ class RecurrentModel(nn.Module):
             embeddings=embeddings,
             embedding_mask=embedding_mask,
             mode=mode,
+            future_loss_scale=future_loss_scale,
         )
 
         return self.backbone_layers(
@@ -734,6 +749,7 @@ class RecurrentModel(nn.Module):
         embedding_mask: torch.BoolTensor | None = None,
         mode: RecurrentMode | None = None,
         logits_to_keep: slice | None = None,
+        future_loss_scale: torch.FloatTensor | float | None = None,
     ) -> torch.FloatTensor:
 
         kwargs = self._layer_kwargs(
@@ -741,6 +757,7 @@ class RecurrentModel(nn.Module):
             embeddings=embeddings,
             embedding_mask=embedding_mask,
             mode=mode,
+            future_loss_scale=future_loss_scale,
         )
 
         hidden_states = self.output_layers(
@@ -761,12 +778,14 @@ class RecurrentModel(nn.Module):
         embedding_mask: torch.BoolTensor | None = None,
         mode: RecurrentMode | None = None,
         logits_to_keep: slice | None = None,
+        future_loss_scale: torch.FloatTensor | float | None = None,
     ) -> torch.FloatTensor:
         hidden_states = self.forward_backbone(
             input_ids,
             embeddings=embeddings,
             embedding_mask=embedding_mask,
             mode=mode,
+            future_loss_scale=future_loss_scale,
         )
         hidden_states = self.forward_lm_states(
             hidden_states,
@@ -774,6 +793,7 @@ class RecurrentModel(nn.Module):
             embedding_mask=embedding_mask,
             mode=mode,
             logits_to_keep=logits_to_keep,
+            future_loss_scale=future_loss_scale,
         )
         return self.lm_head(hidden_states)
 

@@ -140,6 +140,8 @@ def main() -> None:
     parser.add_argument("--repo", default="aklein4/recurrent-init")
     parser.add_argument("--step", type=int, default=0)
     parser.add_argument("--inv-quantile", type=float, default=0.25)
+    parser.add_argument("--checkpoint")
+    parser.add_argument("--checkpoint-step", type=int, default=0)
     args, overrides = parser.parse_known_args()
 
     with initialize_config_dir(version_base=None, config_dir=str(SRC / "configs")):
@@ -151,12 +153,22 @@ def main() -> None:
     attention_kernel = config.model.attention_kernel
     config.model.attention_kernel = None
     model = import_model(config.model.type)(config.model)
-    if config.model.pretrained_url is not None:
+    checkpoint = args.checkpoint or config.model.pretrained_url
+    checkpoint_step = (
+        args.checkpoint_step
+        if args.checkpoint is not None
+        else config.model.pretrained_step
+    )
+    if checkpoint is not None:
         load_checkpoint_state(
             model,
-            config.model.pretrained_url,
-            config.model.pretrained_step,
-            strict=config.model.pretrained_strict,
+            checkpoint,
+            checkpoint_step,
+            strict=(
+                False
+                if args.checkpoint is not None
+                else config.model.pretrained_strict
+            ),
         )
     model = model.float().to(DEVICE).eval()
 
@@ -173,7 +185,9 @@ def main() -> None:
     input_ids = batch["input_ids"][:, 0].to(DEVICE)
     init_mask = batch["attention_mask"][:, 0].to(DEVICE)
 
-    model.init_state(input_ids.shape[0], DEVICE)
+    # The state is zero during calibration, so a singleton batch broadcasts to
+    # every episode without allocating three large state tensors per example.
+    model.init_state(1, DEVICE)
     handles = []
     for module in model.fast_modules():
         handles.append(
