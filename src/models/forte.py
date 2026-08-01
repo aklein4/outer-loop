@@ -809,9 +809,11 @@ class ForteModel(nn.Module):
         ]
 
 
-    def grad_buffers(self) -> list[torch.FloatTensor]:
+    def grad_containers(self) -> list[torch.FloatTensor]:
         return [
             mlp.grad_buffer for mlp in self.fast_modules()
+        ] + [
+            mlp.state for mlp in self.fast_modules()
         ]
 
 

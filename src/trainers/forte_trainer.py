@@ -185,7 +185,7 @@ class ForteTrainer(BaseTrainer):
             torch.autograd.backward(
                 lm_states,
                 lm_grad,
-                inputs=(self.model.grad_buffers())
+                inputs=(self.model.grad_containers())
             )
         else:
             torch.autograd.backward(
