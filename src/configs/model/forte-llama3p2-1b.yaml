@@ -8,7 +8,7 @@ defaults:
 type: forte.ForteModel
 
 
-fast_weight_size: 1536
+fast_weight_size: 1024
 
 base_lr: 0.010
 lr_init_std: 0.5
