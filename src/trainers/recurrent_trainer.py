@@ -61,14 +61,14 @@ class RecurrentTrainer(BaseTrainer):
 
             if any(
                 key in name for key in (
-                    "embed_tokens", "lm_head",
+                    "embed_tokens", "lm_head"
                 )
             ):
                 embeddings.append(parameter)
 
             elif any(
                 key in name for key in (
-                    "fast", "embedding_norm", "bidirectional_head",
+                    "fast", "embedding_norm", "bidirectional_head", "embedding_state"
                 )
             ):
                 fast.append(parameter)

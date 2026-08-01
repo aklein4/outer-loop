@@ -16,7 +16,7 @@ from models.llama import (
 )
 from utils.sharding_utils import maybe_shard_with_gradients
 from utils.torch_modules import LayerStack
-from utils.torch_utils import fixed_linear, gaussian_init, unsqueeze_to_channel
+from utils.torch_utils import fixed_linear, gaussian_init
 
 from torchprime.rope.rope import RopeScaling
 
@@ -213,15 +213,15 @@ class DynamicLR(nn.Module):
         )
 
         # learning-rate parameters
-        num_lr_std_params = 3
+        num_lr_std_params = 2
         lr_std = config.lr_init_std / math.sqrt(num_lr_std_params)
         self.log_lr = nn.Parameter(
             torch.randn(self.fast_weight_size, self.fast_weight_size)
             * lr_std / self.scalar_scaler
         )
         self.odot = nn.Parameter(
-            torch.ones(self.fast_weight_size, self.fast_weight_size)
-            * lr_std / self.scalar_scaler
+            torch.zeros(self.fast_weight_size, self.fast_weight_size)
+            + (lr_std - 1) / self.scalar_scaler
         )
 
         self.p_r = nn.Linear(
@@ -235,22 +235,11 @@ class DynamicLR(nn.Module):
             bias=False,
         )
 
-        self.glob_proj = nn.Linear(
-            config.hidden_size, 1, bias=False
+        self.attn_w_proj = nn.Linear(
+            config.hidden_size, config.hidden_size, bias=False
         )
-        self.glob_proj.weight.data.normal_(
-            std=lr_std
-        )
-        self.glob_proj.inited = True
-
-        self.attn_r = nn.Linear(
-            config.hidden_size, 1, bias=False
-        )
-        self.attn_l = nn.Linear(
-            config.hidden_size, 1, bias=False
-        )
-        self.attn_glob = nn.Linear(
-            config.hidden_size, 1, bias=False
+        self.attn_v_proj = nn.Linear(
+            config.hidden_size, config.hidden_size, bias=False
         )
 
         self.cap = nn.Parameter(
@@ -262,25 +251,20 @@ class DynamicLR(nn.Module):
     def soft_pool(
         self,
         x: torch.FloatTensor, 
-        proj: nn.Linear,
         mask: torch.BoolTensor,
-        v_proj: nn.Linear | None = None,
-        norm: nn.Module | None = None,
     ) -> torch.FloatTensor:
         
         mask = mask.to(x.dtype)[..., None]
         masked_x = x * mask
 
-        a = proj(masked_x)
-        a = torch.masked_fill(a, mask < 0.5, -100.0)
-        attn = F.softmax(a, dim=-2)
+        w = self.attn_w_proj(masked_x)
+        w = torch.masked_fill(w, mask < 0.5, -100.0)
+        w = F.softmax(w, dim=-2)
 
-        pooled = (attn * masked_x).sum(dim=-2)
-        if norm is not None:
-            pooled = norm(pooled)
+        v = self.attn_v_proj(masked_x)
 
-        if v_proj is not None:
-            pooled = v_proj(pooled)
+        pooled = (w * v).sum(dim=-2)
+        pooled = self.hs_norm(pooled)
 
         return pooled
 
@@ -291,44 +275,25 @@ class DynamicLR(nn.Module):
         embedding_mask: torch.BoolTensor,
     ) -> torch.FloatTensor:
 
-        embedding_mask = embedding_mask.to(embeddings.dtype)
-        masked_embeddings = embeddings * embedding_mask[..., None]
+        pooled = self.soft_pool(
+            embeddings,
+            embedding_mask,
+        )
 
-        l = self.fw_norm(
-            self.soft_pool(
-                masked_embeddings,
-                self.attn_l,
-                embedding_mask,
-                v_proj=self.p_r, 
-            )  
-        )
-        r = self.fw_norm(
-            self.soft_pool(
-                masked_embeddings,
-                self.attn_r,
-                embedding_mask,
-                v_proj=self.p_l,
-            )
-        )
+        l = self.p_l(pooled)
+        r = self.p_r(pooled)
         offset = l[:, :, None] + r[:, None, :]
 
         cap = (self.cap * self.scalar_scaler) - 1.0
         offset = cap - F.elu(cap - offset)
 
-        offset = offset * (self.odot[None] * self.scalar_scaler)
+        odot = (self.odot[None] * self.scalar_scaler) + 1.0
 
-        glob = self.soft_pool(
-            masked_embeddings,
-            self.glob_proj,
-            embedding_mask,
-            v_proj=self.attn_glob,
-            norm=self.hs_norm,
-        )
+        offset = offset * odot
 
         log_lr = (
             self.log_lr[None] * self.scalar_scaler
             + offset
-            + unsqueeze_to_channel(glob, offset)
         )
  
         return torch.exp(
@@ -587,15 +552,11 @@ class RecurrentModel(nn.Module):
             config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=False
         )
         
-        self.register_buffer(
-            "embedding_state_shift",
-            torch.zeros(config.hidden_size),
-            persistent=True,
+        self.embedding_state_shift = nn.Parameter(
+            torch.zeros(config.hidden_size)
         )
-        self.register_buffer(
-            "embedding_state_scale",
-            torch.ones(config.hidden_size),
-            persistent=True,
+        self.embedding_state_scale = nn.Parameter(
+            torch.zeros(config.hidden_size)
         )
         self.bidirectional_head = BidirectionalHead(config)
 
@@ -805,8 +766,8 @@ class RecurrentModel(nn.Module):
     ) -> torch.FloatTensor:
         hidden_states = self.embedding_norm(hidden_states)
         hidden_states = (
-            hidden_states * self.embedding_state_scale
-            + self.embedding_state_shift
+            (hidden_states + self.embedding_state_shift)
+            * (1.0 + self.embedding_state_scale)
         )
         return self.bidirectional_head(hidden_states, embedding_mask)
 

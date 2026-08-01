@@ -4,13 +4,11 @@ import matplotlib.pyplot as plt
 
 import wandb
 api = wandb.Api()
-run = api.run("/aklein4/iTTT-Cluster/runs/0lkhuhp9") # recurrent-rank
-run_2 = api.run("/aklein4/iTTT-Cluster/runs/fqigzd96") # recurrent-v2
-# run_2 = api.run("/aklein4/iTTT-Cluster/runs/ymwimx1n") # alpha
-# run_2 = api.run("/aklein4/iTTT-Cluster/runs/6sdfq3j4") # aux
+run = api.run("/aklein4/Horizon-TPU/runs/r8tpf78h")
+run_2 = api.run("/aklein4/Horizon-TPU/runs/t3rmgftq")
 
-RUN_NAME = "recurrent-rank"
-RUN_2_NAME = "recurrent-v2"
+RUN_NAME = "new"
+RUN_2_NAME = "old"
 
 RUNS = [run, run_2]
 RUN_LABELS = [RUN_NAME, RUN_2_NAME]
@@ -20,8 +18,8 @@ EPISODE_PREFIX = "lm_loss/episode_"
 OVERALL_LOSS_KEY = "overall_lm_loss"
 DECADE_PREFIX = "grouped_lm_loss/decade_"
 
-ROLLING_WINDOW = 200
-ROLLING_MIN = 100
+ROLLING_WINDOW = 10
+ROLLING_MIN = 5
 
 OUTPUT_PATH = "compare_losses.png"
 
@@ -47,7 +45,7 @@ def main():
         int(c[len(DECADE_PREFIX):]) for c in sample_cols if c.startswith(DECADE_PREFIX)
     )
     episode_keys = [f"{EPISODE_PREFIX}{e:02d}" for e in episodes]
-    decade_keys = [f"{DECADE_PREFIX}{d}" for d in decades]
+    decade_keys = [f"{DECADE_PREFIX}{d:02d}" for d in decades]
     keys = episode_keys + decade_keys
 
     # pull full history for both runs
@@ -62,7 +60,7 @@ def main():
         min_episode = max(1, 10 * d)
         max_episode = min(64 - 1, 10 * (d + 1))
         lines.append(
-            (f"{DECADE_PREFIX}{d}", f"episodes {min_episode:02d}-{max_episode:02d}")
+            (f"{DECADE_PREFIX}{d:02d}", f"episodes {min_episode:02d}-{max_episode:02d}")
         )
 
     ncols = 4

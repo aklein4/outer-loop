@@ -5,11 +5,11 @@ import matplotlib.pyplot as plt
 import wandb
 api = wandb.Api()
 
-run = api.run("/aklein4/Horizon-TPU/runs/t3rmgftq")
-run_2 = api.run("/aklein4/Horizon-TPU/runs/66lant46")
+run = api.run("/aklein4/Horizon-TPU/runs/r8tpf78h")
+run_2 = api.run("/aklein4/Horizon-TPU/runs/t3rmgftq")
 
-RUN_NAME = "oloop"
-RUN_2_NAME = "baseline"
+RUN_NAME = "new"
+RUN_2_NAME = "old"
 
 RUNS = [run, run_2]
 DIFF_LABEL = f"{RUN_NAME} - {RUN_2_NAME}"

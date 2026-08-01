@@ -127,10 +127,10 @@ def initialize_embedding_state(
     mean, std, _, _ = masked_statistics(output, mask)
     scale = torch.reciprocal(std.clamp_min(torch.finfo(std.dtype).eps))
     model.embedding_state_scale.copy_(
-        scale.to(model.embedding_state_scale.dtype)
+        scale.to(model.embedding_state_scale.dtype) - 1.0
     )
     model.embedding_state_shift.copy_(
-        (-mean * scale).to(model.embedding_state_shift.dtype)
+        -mean.to(model.embedding_state_shift.dtype)
     )
 
 
