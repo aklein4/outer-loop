@@ -32,17 +32,6 @@ class ForteTrainer(BaseTrainer):
             self.device,
         )
 
-        for module in self.model.fast_modules():
-            if hasattr(module, "_module"):
-                module = module._module
-            dlr = module.fast_dynamic_lr
-
-            dlr.log_lr.no_muon = True
-            dlr.odot.no_muon = True
-
-            dlr.p_l.weight.no_muon = True
-            dlr.p_r.weight.no_muon = True
-
 
     def _autocast(self):
         return torch.autocast(

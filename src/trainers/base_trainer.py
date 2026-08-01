@@ -45,7 +45,7 @@ from utils.import_utils import import_optimizer, import_collator
 from utils import constants
 from utils.remat_utils import advanced_remat
 from utils.git_utils import get_current_commit_hash
-from utils.torch_utils import apply_pure_einsum_to_nn_linear
+from utils.torch_utils import apply_pure_einsum_to_nn_linear, set_no_muon
 
 
 logger = logging.getLogger(__name__)
@@ -157,6 +157,8 @@ class BaseTrainer:
         model = mark_pure_modules(model, config)
 
         model = advanced_remat(model, config)
+
+        model = set_no_muon(model)
 
         return model
 

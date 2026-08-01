@@ -195,6 +195,13 @@ class ForteFastWeightFunction(torch.autograd.Function):
 
 class DynamicLR(nn.Module):
 
+    no_muon_patterns = (
+        "log_lr",
+        "odot",
+        "p_l",
+        "p_r",
+    )
+
     def __init__(self, config: DictConfig):
         super().__init__()
 
@@ -224,6 +231,16 @@ class DynamicLR(nn.Module):
             * lr_std / self.scalar_scaler
         )
 
+        self.attn_w = nn.Linear(
+            config.hidden_size, config.hidden_size, bias=False
+        )
+        self.attn_v = nn.Linear(
+            config.hidden_size, config.hidden_size, bias=False
+        )
+        self.post_attn_norm = LlamaRMSNorm(
+            config.hidden_size, eps=self.rms_norm_eps, elementwise_affine=False
+        )
+
         self.p_r = nn.Linear(
             config.hidden_size,
             self.fast_weight_size,
@@ -243,16 +260,6 @@ class DynamicLR(nn.Module):
         )
         self.glob_proj.inited = True
 
-        self.attn_r = nn.Linear(
-            config.hidden_size, 1, bias=False
-        )
-        self.attn_l = nn.Linear(
-            config.hidden_size, 1, bias=False
-        )
-        self.attn_glob = nn.Linear(
-            config.hidden_size, 1, bias=False
-        )
-
         self.cap = nn.Parameter(
             torch.ones(1)
             * 2 / self.scalar_scaler
@@ -262,27 +269,20 @@ class DynamicLR(nn.Module):
     def soft_pool(
         self,
         x: torch.FloatTensor, 
-        proj: nn.Linear,
         mask: torch.BoolTensor,
-        v_proj: nn.Linear | None = None,
-        norm: nn.Module | None = None,
     ) -> torch.FloatTensor:
         
         mask = mask.to(x.dtype)[..., None]
         masked_x = x * mask
 
-        a = proj(masked_x)
-        a = torch.masked_fill(a, mask < 0.5, -100.0)
-        attn = F.softmax(a, dim=-2)
+        w = self.attn_w(masked_x)
+        w = torch.masked_fill(w, mask < 0.5, -100.0)
+        w = F.softmax(w, dim=-2)
 
-        pooled = (attn * masked_x).sum(dim=-2)
-        if norm is not None:
-            pooled = norm(pooled)
+        v = self.attn_v(masked_x)
+        output = (w * v).sum(dim=-2)
 
-        if v_proj is not None:
-            pooled = v_proj(pooled)
-
-        return pooled
+        return output
 
 
     def forward(
@@ -294,22 +294,15 @@ class DynamicLR(nn.Module):
         embedding_mask = embedding_mask.to(embeddings.dtype)
         masked_embeddings = embeddings * embedding_mask[..., None]
 
-        l = self.fw_norm(
+        pooled = self.post_attn_norm(
             self.soft_pool(
                 masked_embeddings,
-                self.attn_l,
                 embedding_mask,
-                v_proj=self.p_r, 
-            )  
-        )
-        r = self.fw_norm(
-            self.soft_pool(
-                masked_embeddings,
-                self.attn_r,
-                embedding_mask,
-                v_proj=self.p_l,
             )
         )
+
+        l = self.p_l(pooled)
+        r = self.p_r(pooled)
         offset = l[:, :, None] + r[:, None, :]
 
         cap = (self.cap * self.scalar_scaler) - 1.0
@@ -317,13 +310,7 @@ class DynamicLR(nn.Module):
 
         offset = offset * (self.odot[None] * self.scalar_scaler)
 
-        glob = self.soft_pool(
-            masked_embeddings,
-            self.glob_proj,
-            embedding_mask,
-            v_proj=self.attn_glob,
-            norm=self.hs_norm,
-        )
+        glob = self.glob_proj(pooled)
 
         log_lr = (
             self.log_lr[None] * self.scalar_scaler
@@ -550,6 +537,7 @@ class ForteOutputLayer(LlamaDecoderLayer):
 
 
 class ForteModel(nn.Module):
+
     def __init__(self, config: DictConfig):
         super().__init__()
         self.config = config
