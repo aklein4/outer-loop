@@ -564,15 +564,11 @@ class ForteModel(nn.Module):
             config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=False
         )
         
-        self.register_buffer(
-            "embedding_state_shift",
-            torch.zeros(config.hidden_size),
-            persistent=True,
+        self.embedding_state_shift = nn.Parameter(
+            torch.zeros(config.hidden_size)
         )
-        self.register_buffer(
-            "embedding_state_scale",
-            torch.ones(config.hidden_size),
-            persistent=True,
+        self.embedding_state_scale = nn.Parameter(
+            torch.zeros(config.hidden_size)
         )
         self.bidirectional_head = BidirectionalHead(config)
 
@@ -782,8 +778,8 @@ class ForteModel(nn.Module):
     ) -> torch.FloatTensor:
         hidden_states = self.embedding_norm(hidden_states)
         hidden_states = (
-            hidden_states * self.embedding_state_scale
-            + self.embedding_state_shift
+            (hidden_states + self.embedding_state_shift)
+            * (1.0 + self.embedding_state_scale)
         )
         return self.bidirectional_head(hidden_states, embedding_mask)
 

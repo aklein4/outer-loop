@@ -57,7 +57,7 @@ class ForteTrainer(BaseTrainer):
 
             elif any(
                 key in name for key in (
-                    "fast", "embedding_norm", "bidirectional_head",
+                    "fast", "embedding_norm", "bidirectional_head", "embedding_state",
                 )
             ):
                 fast.append(parameter)
