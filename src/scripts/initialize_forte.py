@@ -1,4 +1,4 @@
-"""Activation-initialize a recurrent model and upload it as a checkpoint."""
+"""Activation-initialize a Forte model and upload it as a checkpoint."""
 
 import argparse
 import json
@@ -137,7 +137,7 @@ def initialize_embedding_state(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--episodes", type=int, required=True)
-    parser.add_argument("--repo", default="aklein4/recurrent-init")
+    parser.add_argument("--repo", default="aklein4/forte-init")
     parser.add_argument("--step", type=int, default=0)
     parser.add_argument("--inv-quantile", type=float, default=0.25)
     parser.add_argument("--checkpoint")
