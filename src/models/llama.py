@@ -376,6 +376,17 @@ class LlamaModel(nn.Module):
         )
 
         self.apply(gaussian_init)
+
+
+    def load_state_dict(self, state_dict, **kwargs):
+
+        sd = {}
+        for k, v in state_dict.items():
+            if "layers." in k and "layers.layers." not in k:
+                k = k.replace("layers.", "layers.layers.")
+            sd[k] = v
+
+        return super().load_state_dict(sd, **kwargs)
     
 
     # @xp.trace_me("LlamaModel")
@@ -463,6 +474,17 @@ class LlamaForCausalLM(nn.Module):
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
         self.apply(gaussian_init)
+
+
+    def load_state_dict(self, state_dict, **kwargs):
+
+        sd = {}
+        for k, v in state_dict.items():
+            if "layers." in k and "layers.layers." not in k:
+                k = k.replace("layers.", "layers.layers.")
+            sd[k] = v
+
+        return super().load_state_dict(sd, **kwargs)
 
 
     # @xp.trace_me("LlamaForCausalLM")

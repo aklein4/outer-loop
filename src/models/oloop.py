@@ -444,7 +444,7 @@ class OLoopModel(LlamaForCausalLM):
         if self.disable_fast_weights:
             return
 
-        for layer in self.model.layers:
+        for layer in self.model.layers._iter_layers():
             layer: LlamaDecoderLayer
 
             mlp = FastWeightMLP(config)
@@ -483,7 +483,7 @@ class OLoopModel(LlamaForCausalLM):
         # stacked FastWeight modules are updated in parallel for efficiency
 
         to_update = []
-        for name, module in self.model.layers[0].named_modules():
+        for name, module in self.model.layers.layers[0].named_modules():
             if isinstance(module, FastWeight):
                 to_update.append(name)
 
@@ -503,13 +503,13 @@ class OLoopModel(LlamaForCausalLM):
          # updates named module across all layers in parallel
         
         ref: FastWeight = self._layer_submodule(
-            self.model.layers[0], name
+            self.model.layers.layers[0], name
         )
 
         updates = []
         momentums = []
         prev_whiteneds = []
-        for layer in self.model.layers:
+        for layer in self.model.layers._iter_layers():
 
             module: FastWeight = self._layer_submodule(layer, name)
 

@@ -1,7 +1,9 @@
 # See docs/sharding.md for more details about sharding configuration.
 
-# Weights
-# all implied
+# Parameters use the repository's default implied FSDP placement.
+# The loss is evaluated in separate token-group graphs. Replicating the head
+# prevents every group from all-gathering the vocabulary projection.
+lm_head.weight: [null, null]
 
 
 # Activations

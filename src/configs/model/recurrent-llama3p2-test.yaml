@@ -13,7 +13,5 @@ base_lr: 3.0e-4
 
 grad_rms_eps: 1.0e-12
 
-disable_fast_weights: false
-
 num_bidirectional_layers: 4
 pad_attention_bias_value: -1000.0

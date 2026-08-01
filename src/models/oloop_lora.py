@@ -255,6 +255,13 @@ class OLoopLoRAModel(LlamaForCausalLM):
 
     def load_state_dict(self, state_dict, strict = True, assign = False):
 
+        sd = {}
+        for k, v in state_dict.items():
+            if "layers." in k and "layers.layers." not in k:
+                k = k.replace("layers.", "layers.layers.")
+            sd[k] = v
+        state_dict = sd
+
         # svd init if no fast weights in state dict (loading from pretrained LLM)
         if not any(k.count("base_down") for k in state_dict.keys()) and not self.disable_fast_weights:
             nn.Module.load_state_dict(self, state_dict, False, assign)
@@ -302,7 +309,7 @@ class OLoopLoRAModel(LlamaForCausalLM):
     def update_state(self):
 
         to_update = []
-        for name, mod in self.model.layers[0].named_modules():
+        for name, mod in self.model.layers.layers[0].named_modules():
             if isinstance(mod, FastWeight):
                 to_update.append(name)
 
@@ -315,14 +322,14 @@ class OLoopLoRAModel(LlamaForCausalLM):
         # updates named module across all layers in parallel
         
         try:
-            ref: FastWeight = self.model.layers[0].get_submodule(name)
+            ref: FastWeight = self.model.layers.layers[0].get_submodule(name)
         except:
-            ref: FastWeight = self.model.layers[0]._orig_mod.get_submodule(name)
+            ref: FastWeight = self.model.layers.layers[0]._orig_mod.get_submodule(name)
 
         updates = []
         momentums = []
         prev_whiteneds = []
-        for layer in self.model.layers:
+        for layer in self.model.layers._iter_layers():
             layer: LlamaDecoderLayer
 
             try:
@@ -366,7 +373,7 @@ class OLoopLoRAModel(LlamaForCausalLM):
 
         state_deltas = -deltas.to(ref.state_dtype)
 
-        for i, layer in enumerate(self.model.layers):
+        for i, layer in enumerate(self.model.layers._iter_layers()):
             layer: LlamaDecoderLayer
 
             try:

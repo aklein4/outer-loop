@@ -15,6 +15,7 @@ from collators.horizon import ASSISTANT_MASK_CHAT_TEMPLATE
 from models import load_checkpoint, load_checkpoint_state
 from utils.import_utils import import_model
 import utils.constants as constants
+from utils.torch_modules import enable_gradient_checkpointing
 
 
 DEFAULT_CHECKPOINT = "aklein4/Horizon-TPU_alpha"
@@ -59,7 +60,7 @@ def load_model(checkpoint: str, step: int, device: torch.device):
 
     model.to(device=device, dtype=torch.float32)
     model.train()
-    model.gradient_checkpointing_enable()
+    enable_gradient_checkpointing(model)
     for param in model.parameters():
         param.requires_grad_(False)
     model.model.embed_tokens.requires_grad_(True)
