@@ -50,7 +50,7 @@ class ForteTrainer(BaseTrainer):
 
             if any(
                 key in name for key in (
-                    "embed_tokens", "lm_head", "lm_norm"
+                    "embed_tokens", "lm_head",
                 )
             ):
                 embeddings.append(parameter)

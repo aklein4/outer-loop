@@ -36,8 +36,8 @@ def _get_G(
     )
 
     # RMS-normalize each hidden channel over the sequence dimension.
-    a = a * torch.rsqrt(a.square().mean(dim=-2, keepdim=True) + eps)
-    g = g * torch.rsqrt(g.square().sum(dim=-2, keepdim=True) + eps)
+    a = a * torch.rsqrt(a.square().mean(dim=(-2,-1), keepdim=True) + eps)
+    g = g * torch.rsqrt(g.square().sum(dim=(-2,-1), keepdim=True) + eps)
 
     a_gated = 2 * torch.sigmoid(activation_gate_logits.float()) * a
     g_gated = 2 * torch.sigmoid(gradient_gate_logits.float()) * g
