@@ -4,6 +4,6 @@ defaults:
 
 
 # This checkpoint was created using scripts/convert_hf_checkpoint.py
-pretrained_url: aklein4/forte-init
+pretrained_url: aklein4/recurrent-init # legacy
 pretrained_step: 0
 pretrained_strict: true
