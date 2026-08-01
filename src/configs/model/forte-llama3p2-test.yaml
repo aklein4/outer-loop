@@ -1,11 +1,11 @@
 defaults:
   - llama3p2-test
-  - override sharding: recurrent-fsdp
-  - override remat: recurrent
+  - override sharding: forte-fsdp
+  - override remat: forte
   - _self_
 
 
-type: recurrent.RecurrentModel
+type: forte.ForteModel
 
 
 fast_weight_size: 64

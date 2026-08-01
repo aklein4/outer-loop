@@ -1,6 +1,6 @@
 
 # vvvvvvvvvv Don't forget to change this for new experiments vvvvvvvvvv
-type: recurrent_trainer.RecurrentTrainer  # Used to import the trainer from this class
+type: forte_trainer.ForteTrainer  # Used to import the trainer from this class
 
 # This config is similar to the hyperparameters of GPT-3 XL which had 1.3B parameters.
 

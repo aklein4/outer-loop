@@ -37,7 +37,7 @@ def _get_leaf(x: torch.FloatTensor) -> torch.FloatTensor:
     return x.detach().requires_grad_(True)
 
 
-class RecurrentMode(Enum):
+class ForteMode(Enum):
     INFERENCE = "inference"
     TRAIN_FIRST = "train_first"
     TRAIN_SECOND = "train_second"
@@ -47,23 +47,23 @@ class RecurrentMode(Enum):
 # but can't branch based on tensor value
 # so we encode the mode as a tensor with a different number of elements for each mode 
 _MODE_NUM_ELEMENTS = {
-    RecurrentMode.INFERENCE: 1,
-    RecurrentMode.TRAIN_FIRST: 2,
-    RecurrentMode.TRAIN_SECOND: 3,
+    ForteMode.INFERENCE: 1,
+    ForteMode.TRAIN_FIRST: 2,
+    ForteMode.TRAIN_SECOND: 3,
 }
 
 
 def _mode_to_tensor(
-    mode: RecurrentMode,
+    mode: ForteMode,
     reference: torch.Tensor,
 ) -> torch.Tensor:
     try:
         num_elements = _MODE_NUM_ELEMENTS[mode]
     except KeyError:
-        raise ValueError(f"unknown recurrent mode: {mode}") from None
+        raise ValueError(f"unknown forte mode: {mode}") from None
     return reference.new_zeros(num_elements)
 
-def _tensor_to_mode(mode_tensor: torch.Tensor) -> RecurrentMode:
+def _tensor_to_mode(mode_tensor: torch.Tensor) -> ForteMode:
     num_elements = mode_tensor.numel()
     for mode, expected_num_elements in _MODE_NUM_ELEMENTS.items():
         if num_elements == expected_num_elements:
@@ -74,7 +74,7 @@ def _tensor_to_mode(mode_tensor: torch.Tensor) -> RecurrentMode:
     )
 
 
-class RecurrentFastWeightFunction(torch.autograd.Function):
+class ForteFastWeightFunction(torch.autograd.Function):
     """Collect raw fast-weight gradients and inject the local FO gradient."""
 
     @staticmethod
@@ -94,7 +94,7 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
             activations,
             down_weight,
         )
-        if mode == RecurrentMode.TRAIN_SECOND:
+        if mode == ForteMode.TRAIN_SECOND:
             to_save += (grad_buffer, lr, future_loss_scale)
 
         ctx.save_for_backward(*to_save)
@@ -112,7 +112,7 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
         grad_eps = ctx.grad_eps
         mode = ctx.mode
 
-        if mode == RecurrentMode.TRAIN_FIRST:
+        if mode == ForteMode.TRAIN_FIRST:
             activations, down_weight = ctx.saved_tensors
 
             G = _get_G(
@@ -132,7 +132,7 @@ class RecurrentFastWeightFunction(torch.autograd.Function):
                 None # mode
             )
 
-        elif mode != RecurrentMode.TRAIN_SECOND:
+        elif mode != ForteMode.TRAIN_SECOND:
             raise RuntimeError(f"invalid fast-weight mode in backward: {mode}")
 
         (
@@ -343,7 +343,7 @@ class UnitGLU(nn.Module):
         return x * F.silu(gate) / 0.6
 
 
-class RecurrentFastWeightMLP(nn.Module):
+class ForteFastWeightMLP(nn.Module):
 
     def __init__(self, config: DictConfig):
         super().__init__()
@@ -414,7 +414,7 @@ class RecurrentFastWeightMLP(nn.Module):
         future_loss_scale: torch.FloatTensor | float = 1,
     ) -> torch.FloatTensor:
 
-        mode = RecurrentMode.INFERENCE
+        mode = ForteMode.INFERENCE
         if fast_weight_mode is not None:
             mode = _tensor_to_mode(fast_weight_mode)
         if not isinstance(future_loss_scale, torch.Tensor):
@@ -427,7 +427,7 @@ class RecurrentFastWeightMLP(nn.Module):
 
         activations = h.detach()
         lr = None
-        if mode == RecurrentMode.TRAIN_SECOND:
+        if mode == ForteMode.TRAIN_SECOND:
 
             x_d = x.detach()
             activations = self.fast_act_fn(
@@ -436,8 +436,8 @@ class RecurrentFastWeightMLP(nn.Module):
 
             lr = self.fast_dynamic_lr(lr_embeddings, lr_embedding_mask)
 
-        if mode != RecurrentMode.INFERENCE:
-            output = RecurrentFastWeightFunction.apply(
+        if mode != ForteMode.INFERENCE:
+            output = ForteFastWeightFunction.apply(
                 activations,
                 output,
                 self.down_fast.weight,
@@ -487,7 +487,7 @@ class RecurrentFastWeightMLP(nn.Module):
         self,
         embeddings: torch.FloatTensor,
         embedding_mask: torch.BoolTensor,
-        mode: RecurrentMode,
+        mode: ForteMode,
     ) -> None:
 
         G = self.grad_buffer.grad
@@ -501,9 +501,9 @@ class RecurrentFastWeightMLP(nn.Module):
 
         self.state.add_(state_update)
 
-        if mode == RecurrentMode.TRAIN_FIRST:
+        if mode == ForteMode.TRAIN_FIRST:
             self.grad_buffer.add_(G)
-        elif mode == RecurrentMode.TRAIN_SECOND:
+        elif mode == ForteMode.TRAIN_SECOND:
             self.grad_buffer.sub_(G)
         else:
             raise ValueError(f"invalid state update mode: {mode}")
@@ -542,14 +542,14 @@ class RecurrentFastWeightMLP(nn.Module):
         )
 
 
-class RecurrentBackboneLayer(LlamaDecoderLayer):
+class ForteBackboneLayer(LlamaDecoderLayer):
     offload_name = "backbone_decoder_input"
 
-class RecurrentOutputLayer(LlamaDecoderLayer):
+class ForteOutputLayer(LlamaDecoderLayer):
     offload_name = "output_decoder_input"
 
 
-class RecurrentModel(nn.Module):
+class ForteModel(nn.Module):
     def __init__(self, config: DictConfig):
         super().__init__()
         self.config = config
@@ -569,12 +569,12 @@ class RecurrentModel(nn.Module):
         )
         self.backbone_layers = LayerStack(
             config,
-            RecurrentBackboneLayer,
+            ForteBackboneLayer,
             self.num_backbone_layers,
         )
         self.output_layers = LayerStack(
             config,
-            RecurrentOutputLayer,
+            ForteOutputLayer,
             config.num_output_layers,
             layer_offset=self.num_backbone_layers,
         )
@@ -601,7 +601,7 @@ class RecurrentModel(nn.Module):
 
         # fast-weight MLPs
         for layer in self._causal_layers():
-            layer.mlp = RecurrentFastWeightMLP(config)
+            layer.mlp = ForteFastWeightMLP(config)
 
         # llama stuff
         rope_scaling = config.get("rope_scaling", None)
@@ -723,7 +723,7 @@ class RecurrentModel(nn.Module):
         input_ids: torch.LongTensor,
         embeddings: torch.FloatTensor | None = None,
         embedding_mask: torch.BoolTensor | None = None,
-        mode: RecurrentMode | None = None,
+        mode: ForteMode | None = None,
         future_loss_scale: torch.FloatTensor | float | None = None,
     ) -> torch.FloatTensor:
 
@@ -747,7 +747,7 @@ class RecurrentModel(nn.Module):
         hidden_states: torch.FloatTensor,
         embeddings: torch.FloatTensor | None = None,
         embedding_mask: torch.BoolTensor | None = None,
-        mode: RecurrentMode | None = None,
+        mode: ForteMode | None = None,
         logits_to_keep: slice | None = None,
         future_loss_scale: torch.FloatTensor | float | None = None,
     ) -> torch.FloatTensor:
@@ -776,7 +776,7 @@ class RecurrentModel(nn.Module):
         input_ids: torch.LongTensor,
         embeddings: torch.FloatTensor | None = None,
         embedding_mask: torch.BoolTensor | None = None,
-        mode: RecurrentMode | None = None,
+        mode: ForteMode | None = None,
         logits_to_keep: slice | None = None,
         future_loss_scale: torch.FloatTensor | float | None = None,
     ) -> torch.FloatTensor:
@@ -825,7 +825,7 @@ class RecurrentModel(nn.Module):
             return layer._orig_mod.get_submodule(name)
 
 
-    def fast_modules(self) -> list[RecurrentFastWeightMLP]:
+    def fast_modules(self) -> list[ForteFastWeightMLP]:
         return [
             self._layer_module(layer, "mlp")
             for layer in self._causal_layers()
@@ -849,7 +849,7 @@ class RecurrentModel(nn.Module):
         self,
         embeddings: torch.FloatTensor,
         embedding_mask: torch.BoolTensor,
-        mode: RecurrentMode,
+        mode: ForteMode,
     ) -> None:
         for mlp in self.fast_modules():
             mlp.update_state(embeddings, embedding_mask, mode)

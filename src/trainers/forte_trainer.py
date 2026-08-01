@@ -5,15 +5,15 @@ import torch_xla.core.xla_model as xm
 
 from collections import defaultdict
 
-from models.recurrent import RecurrentModel, RecurrentMode
+from models.forte import ForteModel, ForteMode
 from trainers.base_trainer import BaseTrainer
 from utils.logging_utils import master_print
 from utils.sharding_utils import maybe_shard_with_gradients
 
 
-class RecurrentTrainer(BaseTrainer):
+class ForteTrainer(BaseTrainer):
 
-    model: RecurrentModel
+    model: ForteModel
 
 
     def post_init(self):
@@ -164,12 +164,12 @@ class RecurrentTrainer(BaseTrainer):
 
             hidden_states = self.model.forward_backbone(
                 input_ids,
-                mode=RecurrentMode.TRAIN_FIRST,
+                mode=ForteMode.TRAIN_FIRST,
             )
 
             lm_states = self.model.forward_lm_states(
                 hidden_states,
-                mode=RecurrentMode.TRAIN_FIRST,
+                mode=ForteMode.TRAIN_FIRST,
                 logits_to_keep=slice(0, -1)
             )
             loss, lm_grad = self.loss_and_lm_grad(
@@ -200,9 +200,9 @@ class RecurrentTrainer(BaseTrainer):
                 embeddings,
                 pad_mask,
                 mode=(
-                    RecurrentMode.TRAIN_SECOND
+                    ForteMode.TRAIN_SECOND
                     if update_second_mode
-                    else RecurrentMode.TRAIN_FIRST
+                    else ForteMode.TRAIN_FIRST
                 ),
             )
         
@@ -220,7 +220,7 @@ class RecurrentTrainer(BaseTrainer):
         with self._autocast():
 
             infer_hidden_states = self.model.forward_backbone(
-                input_ids, mode=RecurrentMode.INFERENCE
+                input_ids, mode=ForteMode.INFERENCE
             )
             embeddings = self.model.forward_embeddings(
                 infer_hidden_states,
@@ -231,7 +231,7 @@ class RecurrentTrainer(BaseTrainer):
                 input_ids,
                 embeddings,
                 pad_mask,
-                mode=RecurrentMode.TRAIN_SECOND,
+                mode=ForteMode.TRAIN_SECOND,
                 future_loss_scale=self.config.trainer.future_loss_scale,
             )
 
@@ -239,7 +239,7 @@ class RecurrentTrainer(BaseTrainer):
                 hidden_states,
                 embeddings,
                 pad_mask,
-                mode=RecurrentMode.TRAIN_SECOND,
+                mode=ForteMode.TRAIN_SECOND,
                 logits_to_keep=slice(0, -1),
                 future_loss_scale=self.config.trainer.future_loss_scale,
             )
@@ -257,7 +257,7 @@ class RecurrentTrainer(BaseTrainer):
             self.model.update_state(
                 embeddings,
                 pad_mask,
-                mode=RecurrentMode.TRAIN_SECOND,
+                mode=ForteMode.TRAIN_SECOND,
             )
         
         return loss

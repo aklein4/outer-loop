@@ -3,9 +3,9 @@ advanced:
   - name: backbone_layers
     settings:
       activation_checkpoint_layers:
-        - RecurrentBackboneLayer
+        - ForteBackboneLayer
       optimization_barrier_layers:
-        - RecurrentBackboneLayer
+        - ForteBackboneLayer
       scan_layers: layers
       is_layer_pure: true
       offload_tensors:
@@ -14,9 +14,9 @@ advanced:
   - name: output_layers
     settings:
       activation_checkpoint_layers:
-        - RecurrentOutputLayer
+        - ForteOutputLayer
       optimization_barrier_layers:
-        - RecurrentOutputLayer
+        - ForteOutputLayer
       scan_layers: layers
       is_layer_pure: true
       offload_tensors:
