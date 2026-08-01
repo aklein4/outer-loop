@@ -22,7 +22,7 @@ class HorizonTrainer(BaseTrainer):
         self.do_init = self.config.trainer.do_init
 
         if not self.model.disable_fast_weights:
-            for layer in self.model.model.layers:
+            for layer in self.model.model.layers._iter_layers():
                 module: torch.nn.Module = self.model._layer_submodule(layer, "mlp.fast")
                 for name in ["log_lr", "p_r", "p_l"]:
                     param = module.get_parameter(name)

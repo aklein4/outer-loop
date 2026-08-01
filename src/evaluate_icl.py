@@ -91,7 +91,7 @@ def load_fresh_model(config_path: str, base_lr: float | None, device: torch.devi
 
     model.to(device=device, dtype=torch.float32)
     model.train()
-    model.gradient_checkpointing_enable()
+    enable_gradient_checkpointing(model)
     for param in model.parameters():
         param.requires_grad_(False)
     model.model.embed_tokens.requires_grad_(True)

@@ -13,6 +13,7 @@ import torch.nn.functional as F
 
 from collators.horizon import HorizonCollator
 from models.oloop import FastWeight, FastWeightMLP, OLoopModel
+from utils.torch_modules import enable_gradient_checkpointing
 
 
 def clean_state(path: Path):
@@ -43,7 +44,7 @@ def load_model(
     model.to("cuda")
     model.lm_head.to(torch.bfloat16)
     model.train()
-    model.gradient_checkpointing_enable()
+    enable_gradient_checkpointing(model)
     for parameter in model.parameters():
         parameter.requires_grad_(True)
     model.model.embed_tokens.weight.requires_grad_(False)

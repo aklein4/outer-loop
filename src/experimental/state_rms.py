@@ -61,7 +61,7 @@ def main():
         model.update_state()
         rms.append([
             layer.mlp.fast.state.float().square().mean((-2, -1)).sqrt().mean().item()
-            for layer in model.model.layers
+            for layer in model.model.layers._iter_layers()
         ])
 
     rms = torch.tensor(rms)

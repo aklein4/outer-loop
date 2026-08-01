@@ -382,7 +382,7 @@ class LlamaModel(nn.Module):
 
         sd = {}
         for k, v in state_dict.items():
-            if "layers." in k and "layers.layers." not in k:
+            if "layers." in k and "layers.layers." not in k and "bidirectional" not in k:
                 k = k.replace("layers.", "layers.layers.")
             sd[k] = v
 
@@ -480,7 +480,7 @@ class LlamaForCausalLM(nn.Module):
 
         sd = {}
         for k, v in state_dict.items():
-            if "layers." in k and "layers.layers." not in k:
+            if "layers." in k and "layers.layers." not in k and "bidirectional" not in k:
                 k = k.replace("layers.", "layers.layers.")
             sd[k] = v
 

@@ -7,5 +7,5 @@ lm_head.weight: [null, null]
 
 
 # Activations
-model.layers.*: [[data, fsdp], null, null]
+model.layers.layers.*: [[data, fsdp], null, null]
 lm_head: [[data, fsdp], null, null]

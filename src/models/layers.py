@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from omegaconf import DictConfig
-from torchprime.layers.sequential import HomogeneousSequential
 from torchprime.rope.rope import RopeScaling
 from torchprime.torch_xla_models.attention import AttentionModule
 
@@ -12,10 +11,11 @@ from models.llama import (
     LlamaRotaryEmbedding,
     apply_rotary_pos_emb,
 )
+from utils.torch_modules import LayerStack
 from utils import constants
-
 if constants.XLA_AVAILABLE:
     from torchprime.torch_xla_models import offloading
+
 
 
 class BidirectionalAttention(nn.Module):
@@ -186,11 +186,10 @@ class BidirectionalHead(nn.Module):
         super().__init__()
 
         self.config = config
-        self.layers = HomogeneousSequential(
-            *[
-                BidirectionalDecoderLayer(config, layer_idx)
-                for layer_idx in range(config.num_bidirectional_layers)
-            ]
+        self.layers = LayerStack(
+            config,
+            BidirectionalDecoderLayer,
+            config.num_bidirectional_layers,
         )
         self.norm = LlamaRMSNorm(
             config.hidden_size,

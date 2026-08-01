@@ -516,7 +516,7 @@ class RecurrentModel(LlamaForCausalLM):
             False,
         )
         if not self.disable_fast_weights:
-            for layer in self.model.layers:
+            for layer in self.model.layers._iter_layers():
                 layer.mlp = RecurrentFastWeightMLP(config)
 
         self.apply(gaussian_init)
@@ -605,7 +605,7 @@ class RecurrentModel(LlamaForCausalLM):
 
     def _layer_module(self, layer, name: str) -> nn.Module:
         if isinstance(layer, int):
-            layer = self.model.layers[layer]
+            layer = self.model.layers.layers[layer]
         try:
             return layer.get_submodule(name)
         except AttributeError:
@@ -616,7 +616,8 @@ class RecurrentModel(LlamaForCausalLM):
         if self.disable_fast_weights:
             return []
         return [
-            self._layer_module(layer, "mlp") for layer in self.model.layers
+            self._layer_module(layer, "mlp")
+            for layer in self.model.layers._iter_layers()
         ]
 
 

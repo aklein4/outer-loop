@@ -557,7 +557,7 @@ class OLoopModel(LlamaForCausalLM):
         new_momentums = new_momentums.to(ref.momentum.dtype)
         new_whiteneds = new_whiteneds.to(ref.prev_whitened.dtype)
 
-        for i, layer in enumerate(self.model.layers):
+        for i, layer in enumerate(self.model.layers._iter_layers()):
 
             module: FastWeight = self._layer_submodule(layer, name)
 
