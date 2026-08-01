@@ -210,12 +210,14 @@ def main() -> None:
         )
     )
 
-    with torch.no_grad():
-        hidden_states = model.forward_backbone(input_ids)
-        model.forward_embeddings(hidden_states, init_mask)
-        model.forward_lm_states(hidden_states)
-    for handle in handles:
-        handle.remove()
+    try:
+        with torch.no_grad():
+            hidden_states = model.forward_backbone(input_ids)
+            model.forward_embeddings(hidden_states, init_mask)
+            model.forward_lm_states(hidden_states)
+    finally:
+        for handle in handles:
+            handle.remove()
 
     config.model.attention_kernel = attention_kernel
 
