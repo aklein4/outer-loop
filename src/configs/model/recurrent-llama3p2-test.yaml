@@ -1,19 +1,19 @@
 defaults:
   - llama3p2-test
-  - override sharding: fo-ittt-fsdp
-  - override remat: fo-ittt
+  - override sharding: recurrent-fsdp
+  - override remat: recurrent
   - _self_
 
 
-type: fo_ittt.FoItttModel
+type: recurrent.RecurrentModel
 
 
 fast_weight_size: 64
 base_lr: 3.0e-4
+
 grad_rms_eps: 1.0e-12
-state_dtype: float32
 
 disable_fast_weights: false
 
-num_bidirectional_layers: 2
+num_bidirectional_layers: 4
 pad_attention_bias_value: -1000.0

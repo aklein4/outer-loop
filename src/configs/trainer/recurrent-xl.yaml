@@ -1,11 +1,23 @@
-defaults:
-  - horizon-xl
-  - _self_
 
-global_batch_size: 256
-num_logit_iterations: 4
+# vvvvvvvvvv Don't forget to change this for new experiments vvvvvvvvvv
+type: recurrent_trainer.RecurrentTrainer  # Used to import the trainer from this class
 
-type: fo_ittt_trainer.FoItttTrainer
+# This config is similar to the hyperparameters of GPT-3 XL which had 1.3B parameters.
+
+# total batch size across all devices
+global_batch_size: 256 # ~16M tokens total
+
+# run for N steps
+max_steps: 1000000
+
+# Save a checkpoint every N steps
+checkpoint_interval: 50
+
+
+# whether to autocast the forward pass and loss computation.
+# currently only supports autocasting to bfloat16
+use_autocast: true
+
 
 # use multiple different optimizers for different parameters
 multiple_optimizers:
@@ -17,7 +29,7 @@ multiple_optimizers:
       type: muon.ScaledMuon
 
       kwargs:
-        lr: 1.0e-4
+        lr: 5.0e-4
         betas: [0.9, 0.95]
         eps: 1e-6
         weight_decay: 0.01
@@ -40,9 +52,9 @@ multiple_optimizers:
       type: muon.ScaledMuon
 
       kwargs:
-        lr: 1.0e-5
+        lr: 5.0e-5
         betas: [0.9, 0.95]
-        eps: 1e-6
+        eps: 1e-10
         weight_decay: 0.01
 
     lr_scheduler:
@@ -55,3 +67,23 @@ multiple_optimizers:
         min_lr_ratio: 0.0
         warmup_type: linear
         decay_type: linear
+  
+  # No embeddings optimizer defined -> embeddings frozen
+
+
+# Defaults to clip the L2 norm of gradients to 1.0.
+# Set to null to disable gradient clipping by norm.
+max_grad_norm: 1.0
+# Defaults to not clip gradients by their absolute value.
+# Set to a number to clip gradients by the specified max absolute value.
+max_grad_value: null
+
+
+# You can add any additional configuration options for your trainer here
+# They will appear as attributes of config.trainer
+
+input_sharding_spec: [[data, fsdp], null, null]
+
+num_logit_iterations: 4
+
+propagate_embedding_grads: true

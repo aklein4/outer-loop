@@ -109,8 +109,11 @@ def _masked_statistics(x, mask):
     covariance = torch.einsum(
         "bsi,bsj->ij", centered * mask, centered
     ) / count
+    global_std = torch.sqrt(
+        (centered.square() * mask).sum() / (count * x.shape[-1])
+    )
 
-    return mean, std, covariance
+    return mean, std, covariance, global_std
 
 
 def _random_orthogonal(size, device):
@@ -315,9 +318,12 @@ class FastWeight(nn.Module):
 
 
 class UnitGLU(nn.Module):
-
     def forward(self, x, gate):
         return x * F.silu(gate) / 0.6
+
+class StandardGLU(nn.Module):
+    def forward(self, x, gate):
+        return x * F.silu(gate)
 
 
 class FastWeightMLP(nn.Module):
@@ -361,25 +367,15 @@ class FastWeightMLP(nn.Module):
             self.fast_weight_size, self.hidden_size, bias=False
         )
 
-        self.register_buffer(
-            "in_scale", torch.ones(self.hidden_size), persistent=True
-        )
-        self.register_buffer(
-            "out_scale", torch.ones(self.hidden_size), persistent=True
-        )
-
         self.do_init = False
         self.init_mask = None
 
 
     @torch.no_grad()
     def init_input(self, x):
-        _, std, _ = _masked_statistics(x, self.init_mask)
-
-        self.in_scale.copy_(1 / (std + self.eps))
-        x = x.float() * self.in_scale[None]
-
-        scaled_mean, _, covariance = _masked_statistics(x, self.init_mask)
+        x = x.float()
+        
+        scaled_mean, _, covariance, _ = _masked_statistics(x, self.init_mask)
         whitening = cut_inv_sqrt(covariance, self.inv_quantile)
 
         up_weight = (
@@ -410,26 +406,13 @@ class FastWeightMLP(nn.Module):
 
     @torch.no_grad()
     def init_output(self, y):
-        _, std, _ = _masked_statistics(y, self.init_mask)
+        y = y.float()
 
-        self.out_scale.copy_(std)
-        y = y.float() / (self.out_scale[None] + self.eps)
+        _, _, _, global_std = _masked_statistics(y, self.init_mask)
 
-        _, _, covariance = _masked_statistics(y, self.init_mask)
-
-        u, singular_values, vh = torch.linalg.svd(covariance)
-        coloring = (
-            u @ (torch.sqrt(singular_values + self.eps)[..., None] * vh)
-        )
-
-        down_weight = (
-            coloring @ _random_orthogonal(self.hidden_size, y.device)
-        )[:, :self.fast_weight_size]
-        down_weight = down_weight * math.sqrt(
-            self.hidden_size / self.fast_weight_size
-        )
         self.down_fast.weight.copy_(
-            down_weight.to(self.down_fast.weight.dtype)
+            torch.randn_like(self.down_fast.weight)
+            * (global_std / math.sqrt(self.fast_weight_size))
         )
 
 
@@ -443,13 +426,11 @@ class FastWeightMLP(nn.Module):
             self.init_output(y_base)
             return y_base
 
-        x_fast = x * self.in_scale[None]
         h_fast = self.fast_act_fn(
-            self.up_fast(x_fast), self.gate_fast(x_fast)
+            self.up_fast(x), self.gate_fast(x)
         )
         h_fast = self.fast(h_fast)
         y_fast = self.down_fast(h_fast)
-        y_fast = y_fast * self.out_scale[None]
 
         return y_base + y_fast
 
