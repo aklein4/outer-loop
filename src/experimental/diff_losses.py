@@ -5,11 +5,11 @@ import matplotlib.pyplot as plt
 import wandb
 api = wandb.Api()
 
-run = api.run("/aklein4/Horizon-TPU/runs/t3rmgftq")
-run_2 = api.run("/aklein4/Horizon-TPU/runs/66lant46")
+run = api.run("/aklein4/Horizon-TPU/runs/kkx84g8u")
+run_2 = api.run("/aklein4/Horizon-TPU/runs/t3rmgftq")
 
-RUN_NAME = "oloop"
-RUN_2_NAME = "baseline"
+RUN_NAME = "recurrent"
+RUN_2_NAME = "alpha"
 
 RUNS = [run, run_2]
 DIFF_LABEL = f"{RUN_NAME} - {RUN_2_NAME}"
@@ -19,8 +19,8 @@ EPISODE_PREFIX = "lm_loss/episode_"
 OVERALL_LOSS_KEY = "overall_lm_loss"
 DECADE_PREFIX = "grouped_lm_loss/decade_"
 
-ROLLING_WINDOW = 25
-ROLLING_MIN = 25
+ROLLING_WINDOW = 20
+ROLLING_MIN = 10
 
 OUTPUT_PATH = "diff_losses.png"
 
@@ -81,6 +81,7 @@ def main():
         ax.set_title(title)
         ax.set_xlabel("step")
         ax.set_ylabel("loss difference")
+        ax.set_ylim(-0.05, None)
         ax.grid()
         ax.legend()
 

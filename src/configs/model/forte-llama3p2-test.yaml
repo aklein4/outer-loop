@@ -10,7 +10,7 @@ type: forte.ForteModel
 
 fast_weight_size: 64
 
-base_lr: 0.015
+base_lr: 1e-3
 lr_init_std: 0.5
 
 grad_rms_eps: 1.0e-12

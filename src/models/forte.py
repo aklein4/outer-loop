@@ -27,6 +27,7 @@ def _get_G(
     down_weight: torch.FloatTensor,
     activation_gate_logits: torch.FloatTensor,
     gradient_gate_logits: torch.FloatTensor,
+    valid_mask: torch.BoolTensor,
     eps: float,
 ) -> torch.FloatTensor:
     # all float to avoid gradient accumulation drift
@@ -35,9 +36,20 @@ def _get_G(
         output_grad.float(), down_weight.T.float()
     )
 
-    # RMS-normalize each hidden channel over the sequence dimension.
-    a_norm = a * torch.rsqrt(a.square().mean(dim=-2, keepdim=True) + eps)
-    g_norm = g * torch.rsqrt(g.square().sum(dim=-2, keepdim=True) + eps)
+    # RMS-normalize each hidden channel over valid sequence positions only.
+    # Masking g explicitly also prevents gradients at padded query positions from
+    # contributing to either the normalization statistics or the update.
+    mask = valid_mask[..., None]
+    a = a * mask
+    g = g * mask
+    valid_count = mask.sum(dim=-2, keepdim=True).clamp_min(1).float()
+
+    a_norm = a * torch.rsqrt(
+        a.square().sum(dim=-2, keepdim=True) / valid_count + eps
+    )
+    g_norm = g * torch.rsqrt(
+        g.square().sum(dim=-2, keepdim=True) / valid_count + eps
+    )
 
     a_gated = 2 * torch.sigmoid(activation_gate_logits.float()) * a_norm
     g_gated = 2 * torch.sigmoid(gradient_gate_logits.float()) * g_norm
@@ -97,6 +109,7 @@ class ForteFastWeightFunction(torch.autograd.Function):
         down_weight: torch.FloatTensor,
         activation_gate_logits: torch.FloatTensor,
         gradient_gate_logits: torch.FloatTensor,
+        valid_mask: torch.BoolTensor,
         grad_buffer: torch.FloatTensor,
         state: torch.FloatTensor,
         lr: torch.FloatTensor | None,
@@ -110,6 +123,7 @@ class ForteFastWeightFunction(torch.autograd.Function):
             down_weight,
             activation_gate_logits,
             gradient_gate_logits,
+            valid_mask,
         )
         if mode == ForteMode.TRAIN_SECOND:
             to_save += (grad_buffer, lr, future_loss_scale)
@@ -135,6 +149,7 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 down_weight,
                 activation_gate_logits,
                 gradient_gate_logits,
+                valid_mask,
             ) = ctx.saved_tensors
 
             G, update = _get_G(
@@ -143,6 +158,7 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 down_weight,
                 activation_gate_logits,
                 gradient_gate_logits,
+                valid_mask,
                 grad_eps,
             )
 
@@ -152,6 +168,7 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 None, # down_weight
                 None, # activation_gate_logits
                 None, # gradient_gate_logits
+                None, # valid_mask
                 G, # grad_buffer
                 update, # state
                 None, # lr
@@ -168,6 +185,7 @@ class ForteFastWeightFunction(torch.autograd.Function):
             down_weight,
             activation_gate_logits,
             gradient_gate_logits,
+            valid_mask,
             grad_buffer,
             lr,
             future_loss_scale,
@@ -186,6 +204,7 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 down_weight_leaf,
                 activation_gate_logits_leaf,
                 gradient_gate_logits_leaf,
+                valid_mask,
                 grad_eps,
             )
 
@@ -227,6 +246,7 @@ class ForteFastWeightFunction(torch.autograd.Function):
             down_weight_grad.to(down_weight.dtype),
             activation_gate_logits_grad.to(activation_gate_logits.dtype),
             gradient_gate_logits_grad.to(gradient_gate_logits.dtype),
+            None, # valid_mask
             G, # grad_buffer
             update.detach(), # state
             lr_grad.to(lr.dtype),
@@ -414,6 +434,7 @@ class ForteFastWeightMLP(nn.Module):
                 self.down_fast.weight,
                 activation_gate_logits,
                 gradient_gate_logits,
+                lr_embedding_mask,
                 self.grad_buffer,
                 self.state,
                 lr,
