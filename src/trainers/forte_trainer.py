@@ -74,6 +74,8 @@ class ForteTrainer(BaseTrainer):
             "embeddings" not in self.config.trainer.multiple_optimizers
         ):
             parameters.pop("embeddings")
+        if "slow" not in self.config.trainer.multiple_optimizers:
+            parameters.pop("slow")
 
         return parameters
 

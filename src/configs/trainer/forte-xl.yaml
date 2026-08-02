@@ -46,27 +46,27 @@ multiple_optimizers:
         decay_type: linear
 
   # original transformer weights
-  slow:
+  # slow:
 
-    optimizer:
-      type: muon.ScaledMuon
+  #   optimizer:
+  #     type: muon.ScaledMuon
 
-      kwargs:
-        lr: 5.0e-5
-        betas: [0.9, 0.95]
-        eps: 1e-6
-        weight_decay: 0.01
+  #     kwargs:
+  #       lr: 5.0e-5
+  #       betas: [0.9, 0.95]
+  #       eps: 1e-6
+  #       weight_decay: 0.01
 
-    lr_scheduler:
-      type: warmup_stable_decay
+  #   lr_scheduler:
+  #     type: warmup_stable_decay
 
-      num_warmup_steps: 100
-      kwargs:
-        num_stable_steps: 1000000 # Currently never decays
-        num_decay_steps: 2500
-        min_lr_ratio: 0.0
-        warmup_type: linear
-        decay_type: linear
+  #     num_warmup_steps: 100
+  #     kwargs:
+  #       num_stable_steps: 1000000 # Currently never decays
+  #       num_decay_steps: 2500
+  #       min_lr_ratio: 0.0
+  #       warmup_type: linear
+  #       decay_type: linear
   
   # No embeddings optimizer defined -> embeddings frozen
 
