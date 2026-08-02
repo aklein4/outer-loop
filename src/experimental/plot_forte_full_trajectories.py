@@ -71,6 +71,10 @@ class TrajectoryCollector:
         normalized_g = g_norm.mT @ a_norm
         activation_only = g_norm.mT @ (ag * a_norm)
         gradient_only = (gg * g_norm).mT @ a_norm
+        # Replay the update rule used to train the checkpoint.  The production
+        # model may contain a counterfactual normalization under evaluation;
+        # using it here would move later trajectory states out of distribution.
+        trained_update = (gg * g_norm).mT @ (ag * a_norm)
 
         mask = self.masks[:, self.position].to(ag.device)
         mask_f = mask[..., None].float()
@@ -128,7 +132,7 @@ class TrajectoryCollector:
                 ("normalized_G", normalized_g),
                 ("activation_only", activation_only),
                 ("gradient_only", gradient_only),
-                ("update", update),
+                ("update", trained_update),
             ):
                 row[f"cos_{name}_vs_raw_G"] = cosine_per_batch(matrix, raw_g)[trajectory].item()
                 row[f"norm_{name}_over_raw_G"] = (
@@ -155,7 +159,7 @@ class TrajectoryCollector:
             )[trajectory].item()
             row["norm_valid_mean_update_over_current_update"] = (
                 norm_per_batch(valid_mean_update)[trajectory]
-                / norm_per_batch(update)[trajectory].clamp_min(1e-30)
+                / norm_per_batch(trained_update)[trajectory].clamp_min(1e-30)
             ).item()
             for name, matrix in (
                 ("mask_mean_a_only", mask_mean_a_only),
@@ -167,7 +171,7 @@ class TrajectoryCollector:
                     / norm_per_batch(raw_g)[trajectory].clamp_min(1e-30)
                 ).item()
             self.rows.append(row)
-        return raw_g, update
+        return raw_g, trained_update
 
 
 def first_pass(model, ids, assistant, mask, collector):

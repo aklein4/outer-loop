@@ -8,7 +8,7 @@ api = wandb.Api()
 run = api.run("/aklein4/Horizon-TPU/runs/kkx84g8u")
 run_2 = api.run("/aklein4/Horizon-TPU/runs/t3rmgftq")
 
-RUN_NAME = "recurrent"
+RUN_NAME = "forte"
 RUN_2_NAME = "alpha"
 
 RUNS = [run, run_2]
@@ -19,8 +19,8 @@ EPISODE_PREFIX = "lm_loss/episode_"
 OVERALL_LOSS_KEY = "overall_lm_loss"
 DECADE_PREFIX = "grouped_lm_loss/decade_"
 
-ROLLING_WINDOW = 20
-ROLLING_MIN = 10
+ROLLING_WINDOW = 10
+ROLLING_MIN = 5
 
 OUTPUT_PATH = "diff_losses.png"
 
