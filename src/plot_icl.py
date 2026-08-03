@@ -10,14 +10,36 @@ from utils import constants
 
 BASE_PATH = os.path.join(constants.LOCAL_DATA_PATH, "icl_results")
 
+# RUNS = {
+#     "LoRA (1e-4)": "fresh/oloop-lora-llama3p2-1b-pre/base_lr_1e-04.json",
+#     "Forte 100": "aklein4--Horizon-TPU_forte-v2-1b/000000000100.json",
+#     "Forte 200": "aklein4--Horizon-TPU_forte-v2-1b/000000000200.json",
+#     # "OLoop 500": "aklein4--Horizon-TPU_alpha/000000000500.json",
+#     # "OLoop 500": "aklein4--Horizon-TPU_alpha/000000000500.json",
+#     # "LoRA (1e-5)": "fresh/oloop-lora-llama3p2-1b-pre/base_lr_1e-05.json",
+#     # "LoRA (3e-5)": "fresh/oloop-lora-llama3p2-1b-pre/base_lr_3e-05.json",
+#     # "LoRA (3e-4)": "fresh/oloop-lora-llama3p2-1b-pre/base_lr_3e-04.json",
+#     # "LoRA (1e-3)": "fresh/oloop-lora-llama3p2-1b-pre/base_lr_1e-03.json",
+# }
+
+COLOR_MAP = plt.get_cmap("viridis_r")
+
 RUNS = {
-    # "OLoop 250": "aklein4--Horizon-TPU_alpha/000000000250.json",
-    "OLoop": "aklein4--Horizon-TPU_alpha/000000000500.json",
-    "LoRA (1e-5)": "fresh/oloop-lora-llama3p2-1b-pre/base_lr_1e-05.json",
-    "LoRA (3e-5)": "fresh/oloop-lora-llama3p2-1b-pre/base_lr_3e-05.json",
-    "LoRA (1e-4)": "fresh/oloop-lora-llama3p2-1b-pre/base_lr_1e-04.json",
-    "LoRA (3e-4)": "fresh/oloop-lora-llama3p2-1b-pre/base_lr_3e-04.json",
-    # "LoRA (1e-3)": "fresh/oloop-lora-llama3p2-1b-pre/base_lr_1e-03.json",
+    "fresh/oloop-lora-llama3p2-1b-pre/base_lr_1e-04.json": {
+        "label": "LoRA lr=1e-4", "color": "black"
+    },
+    # "aklein4--Horizon-TPU_alpha/000000000500.json": {
+    #     "label": "Learned (old) step=500", "color": "red"
+    # },
+    "aklein4--Horizon-TPU_forte-v2-1b/000000000050.json": {
+        "label": "Learned (new) step=050", "color": COLOR_MAP(0.25)
+    },
+    "aklein4--Horizon-TPU_forte-v2-1b/000000000100.json": {
+        "label": "Learned (new) step=100", "color": COLOR_MAP(0.50)
+    },
+    "aklein4--Horizon-TPU_forte-v2-1b/000000000200.json": {
+        "label": "Learned (new) step=200", "color": COLOR_MAP(0.75)
+    },
 }
 
 
@@ -63,30 +85,20 @@ def main(args):
     axes[0].axvline(65, color="black", linestyle="--")
     axes[1].axvline(64, color="black", linestyle="--")
 
-    for i, pair in enumerate(RUNS.items()):
-        name, path = pair
-
+    for path, plot_kwargs in RUNS.items():
         x, y = load_scores(path, args.metric)
 
         if args.max_steps is not None:
             x, y = zip(*[(x_i, y_i) for x_i, y_i in zip(x, y) if x_i <= args.max_steps])
         if len(x) == 0:
-            raise ValueError(f"No points found for {name} with max_steps={args.max_steps}")
+            raise ValueError(f"No points found for {path} with max_steps={args.max_steps}")
 
-        if i == 0:
-            axes[0].plot(
-                [x+1 for x in x], y, marker=".", markersize=10, label=name, color="black"
-            )
-            axes[1].plot(
-                x, y, marker=".", markersize=10, label=name, color="black"
-            )
-        else:
-            axes[0].plot(
-                [x+1 for x in x], y, marker=".", markersize=10, label=name
-            )
-            axes[1].plot(
-                x, y, marker=".", markersize=10, label=name
-            )
+        axes[0].plot(
+            [x+1 for x in x], y, marker=".", markersize=10, **plot_kwargs
+        )
+        axes[1].plot(
+            x, y, marker=".", markersize=10, **plot_kwargs
+        )
 
     axes[0].set_xscale("log")
     axes[0].set_title("Log scale")
@@ -95,18 +107,18 @@ def main(args):
     axes[1].legend()
     
     for ax in axes:
-        ax.set_xlabel("Number of examples")
+        ax.set_xlabel("Task Examples Seen")
         ax.grid(True, which="both", alpha=0.3)
 
     if args.y_axis is not None:
         axes[0].set_ylabel(args.y_axis)
     else:
-        axes[0].set_ylabel(args.metric)
+        axes[0].set_ylabel("Loss (cross-entropy)")
 
     if args.title is not None:
         fig.suptitle(args.title)
     else:
-        fig.suptitle("Few-shot Learning Performance")
+        fig.suptitle("Supervised Learning Performance on Bitext Finetuning Datasets")
 
     plt.savefig("icl_plot.png", dpi=args.dpi)
 

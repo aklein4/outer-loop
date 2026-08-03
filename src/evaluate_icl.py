@@ -13,12 +13,13 @@ from transformers import AutoTokenizer
 
 from collators.horizon import ASSISTANT_MASK_CHAT_TEMPLATE
 from models import load_checkpoint, load_checkpoint_state
+from models.forte import ForteMode, ForteModel
 from utils.import_utils import import_model
 import utils.constants as constants
 from utils.torch_modules import enable_gradient_checkpointing
 
 
-DEFAULT_CHECKPOINT = "aklein4/Horizon-TPU_alpha"
+DEFAULT_CHECKPOINT = "aklein4/Horizon-TPU_forte-v2-1b"
 DEFAULT_TOKENIZER = "meta-llama/Llama-3.2-1B-Instruct"
 DEFAULT_DATASET = "aklein4/Bitext-SmolLM2-1024-natural-instructions-format"
 
@@ -63,7 +64,7 @@ def load_model(checkpoint: str, step: int, device: torch.device):
     enable_gradient_checkpointing(model)
     for param in model.parameters():
         param.requires_grad_(False)
-    model.model.embed_tokens.requires_grad_(True)
+    getattr(model, "model", model).embed_tokens.requires_grad_(True)
     return model
 
 
@@ -94,7 +95,7 @@ def load_fresh_model(config_path: str, base_lr: float | None, device: torch.devi
     enable_gradient_checkpointing(model)
     for param in model.parameters():
         param.requires_grad_(False)
-    model.model.embed_tokens.requires_grad_(True)
+    getattr(model, "model", model).embed_tokens.requires_grad_(True)
     return model
 
 
@@ -169,16 +170,36 @@ def autocast(device: torch.device, dtype: str):
 
 
 def make_fns(model, args, device):
+    is_forte = isinstance(model, ForteModel)
+
     def train_fn(input_ids, assistant_mask, attention_mask, lr_scale):
         with autocast(device, args.dtype):
-            logits = model(input_ids, logits_to_keep=slice(0, -1))[0]
+            if is_forte:
+                with torch.no_grad():
+                    hidden_states = model.forward_backbone(
+                        input_ids, mode=ForteMode.INFERENCE
+                    )
+                    embeddings = model.forward_embeddings(hidden_states, attention_mask)
+                logits = model(
+                    input_ids,
+                    embeddings=embeddings,
+                    embedding_mask=attention_mask,
+                    mode=ForteMode.TRAIN_FIRST,
+                    logits_to_keep=slice(0, -1),
+                )
+            else:
+                logits = model(input_ids, logits_to_keep=slice(0, -1))[0]
             loss = adaptation_loss(input_ids, assistant_mask, attention_mask, logits, args.aux_weight)
         loss.backward()
-        model.update_state()
+        if is_forte:
+            model.update_state(embeddings, attention_mask, mode=ForteMode.TRAIN_FIRST)
+        else:
+            model.update_state()
 
     def logits_fn(input_ids):
         with autocast(device, args.dtype):
-            return model(input_ids, logits_to_keep=slice(0, -1))[0]
+            logits = model(input_ids, logits_to_keep=slice(0, -1))
+            return logits if is_forte else logits[0]
 
     if args.compile:
         train_fn = torch.compile(train_fn, fullgraph=False)

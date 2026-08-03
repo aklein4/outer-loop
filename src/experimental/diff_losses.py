@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import wandb
 api = wandb.Api()
 
-run = api.run("/aklein4/Horizon-TPU/runs/kkx84g8u")
+run = api.run("/aklein4/Horizon-TPU/runs/zxtxketz")
 run_2 = api.run("/aklein4/Horizon-TPU/runs/t3rmgftq")
 
 RUN_NAME = "forte"
