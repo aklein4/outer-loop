@@ -5,7 +5,7 @@ type: forte_trainer.ForteTrainer  # Used to import the trainer from this class
 # This config is similar to the hyperparameters of GPT-3 XL which had 1.3B parameters.
 
 # total batch size across all devices
-global_batch_size: 256 # ~16M tokens total
+global_batch_size: 64 # ~16M tokens total
 
 # run for N steps
 max_steps: 1000000
@@ -29,7 +29,7 @@ multiple_optimizers:
       type: muon.ScaledMuon
 
       kwargs:
-        lr: 5.0e-4
+        lr: 2.0e-4
         betas: [0.9, 0.95]
         eps: 1e-6
         weight_decay: 0.01
@@ -37,7 +37,7 @@ multiple_optimizers:
     lr_scheduler:
       type: warmup_stable_decay
 
-      num_warmup_steps: 100
+      num_warmup_steps: 50
       kwargs:
         num_stable_steps: 1000000 # Currently never decays
         num_decay_steps: 2500
@@ -46,27 +46,27 @@ multiple_optimizers:
         decay_type: linear
 
   # original transformer weights
-  # slow:
+  slow:
 
-  #   optimizer:
-  #     type: muon.ScaledMuon
+    optimizer:
+      type: muon.ScaledMuon
 
-  #     kwargs:
-  #       lr: 5.0e-5
-  #       betas: [0.9, 0.95]
-  #       eps: 1e-6
-  #       weight_decay: 0.01
+      kwargs:
+        lr: 2.0e-5
+        betas: [0.9, 0.95]
+        eps: 1e-6
+        weight_decay: 0.01
 
-  #   lr_scheduler:
-  #     type: warmup_stable_decay
+    lr_scheduler:
+      type: warmup_stable_decay
 
-  #     num_warmup_steps: 100
-  #     kwargs:
-  #       num_stable_steps: 1000000 # Currently never decays
-  #       num_decay_steps: 2500
-  #       min_lr_ratio: 0.0
-  #       warmup_type: linear
-  #       decay_type: linear
+      num_warmup_steps: 50
+      kwargs:
+        num_stable_steps: 1000000 # Currently never decays
+        num_decay_steps: 2500
+        min_lr_ratio: 0.0
+        warmup_type: linear
+        decay_type: linear
   
   # No embeddings optimizer defined -> embeddings frozen
 
@@ -84,6 +84,7 @@ max_grad_value: null
 
 input_sharding_spec: [[data, fsdp], null, null]
 
-num_logit_iterations: 8
+num_episodes_per_call: 4
+num_logit_iterations: 2
 
 future_loss_scale: 1.0

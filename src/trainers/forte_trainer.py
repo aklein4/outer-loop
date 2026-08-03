@@ -4,11 +4,20 @@ import torch_xla
 import torch_xla.core.xla_model as xm
 
 from collections import defaultdict
+import numpy as np
 
 from models.forte import ForteModel, ForteMode
 from trainers.base_trainer import BaseTrainer
 from utils.logging_utils import master_print
 from utils.sharding_utils import maybe_shard_with_gradients
+
+
+def split_given_size(n, size):
+    arr = np.array_split(
+        np.arange(n),
+        np.arange(size,n,size)
+    )
+    return [a.tolist() for a in arr]
 
 
 class ForteTrainer(BaseTrainer):
@@ -141,7 +150,6 @@ class ForteTrainer(BaseTrainer):
         return loss, lm_grad
     
 
-    @torch_xla.compile(full_graph=True)
     def first_pass(
         self,
         input_ids,
@@ -206,9 +214,22 @@ class ForteTrainer(BaseTrainer):
             )
         
         return loss
-    
+
 
     @torch_xla.compile(full_graph=True)
+    def multi_first_pass(
+        self, *episodes, no_slow_grads=True, update_second_mode=False
+    ):
+        return [
+            self.first_pass(
+                *episode,
+                no_slow_grads=no_slow_grads,
+                update_second_mode=update_second_mode,
+            )
+            for episode in episodes
+        ]
+
+
     def second_pass(
         self,
         input_ids,
@@ -263,6 +284,16 @@ class ForteTrainer(BaseTrainer):
 
 
     @torch_xla.compile(full_graph=True)
+    def multi_second_pass(
+        self, *episodes
+    ):
+        return [
+            self.second_pass(*episode)
+            for episode in episodes
+        ]
+
+
+    @torch_xla.compile(full_graph=True)
     def post_forward(self):
 
         err = self.model.relative_grad_error()
@@ -291,21 +322,28 @@ class ForteTrainer(BaseTrainer):
             assistant_mask.unbind(dim=1),
             pad_mask.unbind(dim=1),
         ))
+        assert len(episodes) > 1
         terminal_index = len(episodes) - 1
         losses = []
         aux = {}
 
         # first loop
-        for index, episode in enumerate(episodes):
+        first_inds = split_given_size(
+            len(episodes), self.config.trainer.num_episodes_per_call
+        )
+        for inds in first_inds:
 
-            loss = self.first_pass(*episode)
+            curr_losses = self.multi_first_pass(
+                *[episodes[i] for i in inds]
+            )
             torch_xla.sync(wait=True)
 
-            aux[f"lm_loss/episode_{index:02d}"] = loss
-            losses.append(loss)
+            for i, loss in enumerate(curr_losses):
+                aux[f"lm_loss/episode_{inds[i]:02d}"] = loss
+                losses.append(loss)
 
             master_print(
-                f"First  pass {index:02d} completed."
+                f"First  pass {inds[-1]:02d} completed."
             )
 
         self.model.finalize_state()
@@ -313,18 +351,23 @@ class ForteTrainer(BaseTrainer):
         torch_xla.sync(wait=True)
 
         # second loop
-        for index, episode in enumerate(episodes[:-1]):
+        second_inds = split_given_size(
+            len(episodes)-1, self.config.trainer.num_episodes_per_call
+        )
+        for inds in second_inds:
 
-            self.second_pass(*episode)
+            self.multi_second_pass(
+                *[episodes[i] for i in inds]
+            )
             torch_xla.sync(wait=True)
         
             master_print(
-                f"Second pass {index:02d} completed."
+                f"Second pass {inds[-1]:02d} completed."
             )
 
         # only do lm loss the last chunk last
-        self.first_pass(
-            *episodes[-1],
+        self.multi_first_pass(
+            *[episodes[-1]],
             no_slow_grads=False,
             update_second_mode=True # so that final error check it correct
         )
