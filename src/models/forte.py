@@ -30,6 +30,7 @@ def _get_G(
     token_gate_logits: torch.FloatTensor,
     valid_mask: torch.BoolTensor,
     eps: float,
+    episodes_per_trajectory: int = 1,
 ) -> torch.FloatTensor:
     # all float to avoid gradient accumulation drift
     a = activations.float()
@@ -57,7 +58,21 @@ def _get_G(
 
     a_gated = 2 * torch.sigmoid(token_gate_logits.float()) * a_gated
 
-    return g.mT @ a, g_gated.mT @ a_gated
+    trajectory_batch_size = a.shape[0] // episodes_per_trajectory
+    episode_shape = (
+        trajectory_batch_size,
+        episodes_per_trajectory,
+        *a.shape[1:],
+    )
+    a = a.reshape(episode_shape)
+    g = g.reshape(episode_shape)
+    a_gated = a_gated.reshape(episode_shape)
+    g_gated = g_gated.reshape(episode_shape)
+
+    return (
+        torch.einsum("belo,beli->boi", g, a),
+        torch.einsum("belo,beli->boi", g_gated, a_gated),
+    )
 
 
 def _get_leaf(x: torch.FloatTensor) -> torch.FloatTensor:
@@ -120,6 +135,7 @@ class ForteFastWeightFunction(torch.autograd.Function):
         future_loss_scale: torch.FloatTensor,
         grad_eps: float,
         mode: str,
+        episodes_per_trajectory: int,
     ) -> torch.FloatTensor:
 
         to_save = (
@@ -136,6 +152,7 @@ class ForteFastWeightFunction(torch.autograd.Function):
         ctx.save_for_backward(*to_save)
         ctx.grad_eps = grad_eps
         ctx.mode = mode
+        ctx.episodes_per_trajectory = episodes_per_trajectory
 
         return output
 
@@ -147,6 +164,7 @@ class ForteFastWeightFunction(torch.autograd.Function):
     ):
         grad_eps = ctx.grad_eps
         mode = ctx.mode
+        episodes_per_trajectory = ctx.episodes_per_trajectory
 
         if mode == ForteMode.TRAIN_FIRST:
             (
@@ -167,6 +185,7 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 token_gate_logits,
                 valid_mask,
                 grad_eps,
+                episodes_per_trajectory=episodes_per_trajectory,
             )
 
             return ( 
@@ -182,7 +201,8 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 None, # lr
                 None, # future_loss_scale
                 None, # grad_eps
-                None # mode
+                None, # mode
+                None, # episodes_per_trajectory
             )
 
         elif mode != ForteMode.TRAIN_SECOND:
@@ -217,6 +237,7 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 token_gate_logits_leaf,
                 valid_mask,
                 grad_eps,
+                episodes_per_trajectory=episodes_per_trajectory,
             )
 
             future_grad = (
@@ -267,6 +288,7 @@ class ForteFastWeightFunction(torch.autograd.Function):
             None, # future_loss_scale
             None, # grad_eps
             None, # mode
+            None, # episodes_per_trajectory
         )
 
 
@@ -418,9 +440,32 @@ class ForteFastWeightMLP(nn.Module):
         if not isinstance(future_loss_scale, torch.Tensor):
             future_loss_scale = x.new_tensor(future_loss_scale)
 
+        if x.shape[0] % self.state.shape[0] != 0:
+            raise ValueError(
+                "fast-weight batch size must be a multiple of the trajectory "
+                f"batch size, got {x.shape[0]} and {self.state.shape[0]}"
+            )
+        trajectory_batch_size = self.state.shape[0]
+        episodes_per_trajectory = x.shape[0] // trajectory_batch_size
+
         # fast mlp
         h = self.fast_act_fn(self.up_fast(x), self.gate_fast(x))
-        value = torch.einsum("boi,bli->blo", self.state.detach(), h)
+        if episodes_per_trajectory == 1:
+            value = torch.einsum(
+                "boi,bli->blo", self.state.detach(), h
+            )
+        else:
+            # The leading batch is trajectory-major, so a trajectory's one
+            # persistent state can serve all of its parallel episodes locally.
+            value = torch.einsum(
+                "boi,beli->belo",
+                self.state.detach(),
+                h.reshape(
+                    trajectory_batch_size,
+                    episodes_per_trajectory,
+                    *h.shape[1:],
+                ),
+            ).reshape(x.shape[0], h.shape[1], self.fast_weight_size)
         output = self.down_fast(value)
 
         activation_gate_logits = None
@@ -467,6 +512,7 @@ class ForteFastWeightMLP(nn.Module):
                 future_loss_scale,
                 self.grad_eps,
                 mode,
+                episodes_per_trajectory,
             )
 
         return self.standard_forward(x) + output

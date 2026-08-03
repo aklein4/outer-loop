@@ -85,6 +85,6 @@ max_grad_value: null
 input_sharding_spec: [[data, fsdp], null, null]
 
 num_episodes_per_call: 4
-num_logit_iterations: 2
+num_logit_iterations: 8
 
 future_loss_scale: 1.0
