@@ -3,14 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import utils.constants as constants
-if constants.XLA_AVAILABLE:
-    pass
 
 import math
 from omegaconf import DictConfig
 from tqdm import tqdm
-
-from transformers.activations import ACT2FN
 
 from models.llama import LlamaForCausalLM, LlamaDecoderLayer
 from utils.sharding_utils import maybe_shard_with_gradients

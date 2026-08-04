@@ -69,7 +69,7 @@ def load_model(checkpoint: str, step: int, device: torch.device):
 
 
 def load_fresh_model(config_path: str, base_lr: float | None, device: torch.device):
-    config = OmegaConf.load(config_path)
+    config = OmegaConf.load(constants.CONFIG_PATH(config_path))
     if base_lr is not None:
         config.base_lr = base_lr
     config.attention_kernel = "gpu_flash_attention" if device.type == "cuda" else None
@@ -80,6 +80,12 @@ def load_fresh_model(config_path: str, base_lr: float | None, device: torch.devi
     if base_lr is not None:
         print(f"Using base_lr={base_lr:g}")
     model = model_class(config)
+    # Loading a base LLaMA checkpoint into an OLoop-LoRA model performs its
+    # low-rank initialization in ``load_state_dict``.  Put the model on the
+    # requested device first so that this expensive decomposition is not
+    # inadvertently run on the host (and so fresh-config evaluation works on
+    # non-XLA CUDA machines).
+    model.to(device=device, dtype=torch.float32)
 
     if config.pretrained_url is not None:
         print(f"Loading {config.pretrained_url} at step {config.pretrained_step} with strict={config.pretrained_strict}")
@@ -90,7 +96,6 @@ def load_fresh_model(config_path: str, base_lr: float | None, device: torch.devi
             strict=config.pretrained_strict,
         )
 
-    model.to(device=device, dtype=torch.float32)
     model.train()
     enable_gradient_checkpointing(model)
     for param in model.parameters():

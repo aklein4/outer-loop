@@ -9,8 +9,8 @@ defaults:
 type: oloop_lora.OLoopLoRAModel
 
 # HuggingFace URL of the checkpoint to load, or null if initializing from scratch
-pretrained_url: aklein4/Horizon-TPU_baseline
-pretrained_step: 250
+pretrained_url: aklein4/Llama-3.2-1B-TPU
+pretrained_step: 0
 pretrained_strict: false
 
 
@@ -71,5 +71,5 @@ base_lr: 1.0e-3
 momentum_beta: 0.95
 grad_rms_eps: 1.0e-12
 
-momentum_dtype: bfloat16
+momentum_dtype: float32
 state_dtype: float32
