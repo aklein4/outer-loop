@@ -26,7 +26,7 @@ BASE_PATH = os.path.join(constants.LOCAL_DATA_PATH, "icl_results")
 
 COLOR_MAP = plt.get_cmap("viridis_r")
 COLORBLIND_COLORS = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-NUM_GRADIENT_COLORS = 4
+NUM_GRADIENT_COLORS = 3
 _grad_index = 0
 def gradient():
     global _grad_index
@@ -80,24 +80,33 @@ def gradient():
 # }
 
 RUNS = {
-    "fresh_pretrained/oloop-lora-llama3p2-1b-pre/base_lr_1e-05.json": {
-        "label": "LoRA lr=1e-5", "color": gradient()
+    # "fresh_pretrained_adam/oloop-lora-llama3p2-1b-pre/base_lr_1e-05.json": {
+    #     "label": "LoRA lr=1e-5", "color": gradient()
+    # },
+    # "fresh_pretrained_adam/oloop-lora-llama3p2-1b-pre/base_lr_3e-05.json": {
+    #     "label": "LoRA lr=3e-5", "color": gradient()
+    # },
+    # "fresh_pretrained_adam/oloop-lora-llama3p2-1b-pre/base_lr_1e-04.json": {
+    #     "label": "LoRA lr=1e-4", "color": gradient()
+    # },
+    "fresh_pretrained_adam/oloop-lora-llama3p2-1b-pre/base_lr_3e-04.json": {
+        "label": "LoRA lr=3e-4", "color": "black"
     },
-    "fresh_pretrained/oloop-lora-llama3p2-1b-pre/base_lr_3e-05.json": {
-        "label": "LoRA lr=3e-5", "color": gradient()
-    },
-    "fresh_pretrained/oloop-lora-llama3p2-1b-pre/base_lr_1e-04.json": {
-        "label": "LoRA lr=1e-4", "color": gradient()
-    },
-    "fresh_pretrained/oloop-lora-llama3p2-1b-pre/base_lr_3e-04.json": {
-        "label": "LoRA lr=3e-4", "color": gradient()
-    },
+    # "fresh_pretrained_adam/oloop-lora-llama3p2-1b-pre/base_lr_1e-03.json": {
+    #     "label": "LoRA lr=1e-3", "color": gradient()
+    # },
     "aklein4--Horizon-TPU_forte-v2-freeze-1b/000000000050.json": {
-        "label": "Learned (freeze) step=50", "color": "black"
+        "label": "Learned (freeze) step=50", "color": gradient()
+    },
+    "aklein4--Horizon-TPU_forte-v2-freeze-1b/000000000100.json": {
+        "label": "Learned (freeze) step=100", "color": gradient()
+    },
+    "aklein4--Horizon-TPU_forte-v2-freeze-1b/000000000150.json": {
+        "label": "Learned (freeze) step=150", "color": gradient()
     },
 }
 
-LORA_LABEL = "LoRA lr=1e-4"
+LORA_LABEL = "LoRA lr=3e-4"
 LORA_REFERENCE_EXAMPLES = (16, 64, 1024)
 CHECKPOINT_LABEL_RE = re.compile(r"^(?P<name>.+) step=(?P<step>\d+)$")
 
@@ -180,6 +189,7 @@ def interpolate_x_at_y(x: list[int], y: list[float], target_y: float) -> float:
 
     if len(x) == 1 and y[0] == target_y:
         return float(x[0])
+    return float("nan")  # target_y is outside the range of y
     raise ValueError(f"Target loss {target_y:.6g} is outside the interpolation range")
 
 

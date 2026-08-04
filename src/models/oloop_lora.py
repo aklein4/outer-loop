@@ -10,7 +10,6 @@ from tqdm import tqdm
 
 from models.llama import LlamaForCausalLM, LlamaDecoderLayer
 from utils.sharding_utils import maybe_shard_with_gradients
-from utils.torch_utils import select_newton_schulz
 from utils.loss_utils import lm_loss_fn
 
 
@@ -63,6 +62,7 @@ class FastWeight(nn.Module):
 
         self.base_lr = config.base_lr
         self.momentum_beta = config.momentum_beta
+        self.second_moment_beta = config.get("second_moment_beta", math.sqrt(config.momentum_beta))
 
         self.grad_eps = config.grad_rms_eps
         self.scalar_scaler = math.sqrt(self.in_features)
@@ -78,7 +78,8 @@ class FastWeight(nn.Module):
         # ephemeral state
         self.state: nn.Buffer
         self.momentum: nn.Buffer
-        self.prev_whitened: nn.Buffer
+        self.second_moment: nn.Buffer
+        self.adam_step: nn.Buffer
                     
 
     def get_lr(self):
@@ -114,17 +115,19 @@ class FastWeight(nn.Module):
         momentum = torch.zeros_like(
             state, dtype=self.momentum_dtype
         )
-        prev_whitened = torch.zeros_like(
+        second_moment = torch.zeros_like(
             state, dtype=self.momentum_dtype
         )
+        adam_step = torch.zeros((), device=device, dtype=torch.long)
 
         state = maybe_shard_with_gradients(state)
         momentum = maybe_shard_with_gradients(momentum)
-        prev_whitened = maybe_shard_with_gradients(prev_whitened)
+        second_moment = maybe_shard_with_gradients(second_moment)
     
         self.register_buffer("state", state, persistent=False)
         self.register_buffer("momentum", momentum, persistent=False)
-        self.register_buffer("prev_whitened", prev_whitened, persistent=False)
+        self.register_buffer("second_moment", second_moment, persistent=False)
+        self.register_buffer("adam_step", adam_step, persistent=False)
         
         self.state.requires_grad_(False)
 
@@ -132,7 +135,7 @@ class FastWeight(nn.Module):
         self.momentum.grad = torch.zeros_like(self.momentum)
         self.momentum.grad = maybe_shard_with_gradients(self.momentum.grad)
 
-        self.prev_whitened.requires_grad_(False)
+        self.second_moment.requires_grad_(False)
 
 
     @torch.no_grad()
@@ -143,7 +146,8 @@ class FastWeight(nn.Module):
         self.momentum.zero_()
         self.momentum.grad.zero_()
 
-        self.prev_whitened.zero_()
+        self.second_moment.zero_()
+        self.adam_step.zero_()
 
     
     @torch.no_grad()
@@ -151,37 +155,24 @@ class FastWeight(nn.Module):
         
         update = self.momentum.grad
 
-        new_momentum = torch.lerp(
-            self.momentum,
-            update,
-            1 - self.momentum_beta
+        new_momentum = torch.lerp(self.momentum, update, 1 - self.momentum_beta)
+        new_second_moment = torch.lerp(
+            self.second_moment, update.square(), 1 - self.second_moment_beta
         )
-        to_whiten = torch.lerp(
-            new_momentum,
-            update,
-            1 - self.momentum_beta
-        )
-        new_whitened = select_newton_schulz()(
-            to_whiten, eps=self.grad_eps
-        )
-
-        # approximates newton_schulz as a linear function:
-        # f(ax) = af(x), f(x+y) = f(x) + f(y)
-        # delta = (
-        #     (new_whitened - self.prev_whitened * self.momentum_beta) /
-        #     (1 - self.momentum_beta)
-        # )
-        delta = new_whitened
-
-        # scale delta to element-wise scale of 1
-        delta = delta * math.sqrt(max(self.in_features, self.out_features))
+        self.adam_step.add_(1)
+        step = self.adam_step.item()
+        first_moment = new_momentum / (1 - self.momentum_beta ** step)
+        second_moment = new_second_moment / (1 - self.second_moment_beta ** step)
+        # Adam's normalized update has element-wise RMS of approximately one,
+        # matching the scaling previously applied to the Muon update.
+        delta = first_moment / (second_moment.sqrt() + self.grad_eps)
         
         self.state.add_(-delta.to(self.state_dtype))
         
         self.momentum.copy_(new_momentum.detach())
         self.momentum.grad.zero_()
 
-        self.prev_whitened.copy_(new_whitened.detach())
+        self.second_moment.copy_(new_second_moment.detach())
 
 
 class FastWeightLoRALinear(nn.Module):
@@ -324,7 +315,7 @@ class OLoopLoRAModel(LlamaForCausalLM):
 
         updates = []
         momentums = []
-        prev_whiteneds = []
+        second_moments = []
         for layer in self.model.layers._iter_layers():
             layer: LlamaDecoderLayer
 
@@ -335,37 +326,27 @@ class OLoopLoRAModel(LlamaForCausalLM):
 
             updates.append(m.momentum.grad)
             momentums.append(m.momentum)
-            prev_whiteneds.append(m.prev_whitened)
+            second_moments.append(m.second_moment)
         
         updates = torch.stack(updates, dim=1)
         momentums = torch.stack(momentums, dim=1)
-        prev_whiteneds = torch.stack(prev_whiteneds, dim=1)
+        second_moments = torch.stack(second_moments, dim=1)
 
         updates = maybe_shard_with_gradients(updates)
         momentums = maybe_shard_with_gradients(momentums)
-        prev_whiteneds = maybe_shard_with_gradients(prev_whiteneds)
+        second_moments = maybe_shard_with_gradients(second_moments)
 
-        new_momentums = torch.lerp(
-            momentums,
-            updates,
-            1 - ref.momentum_beta
+        new_momentums = torch.lerp(momentums, updates, 1 - ref.momentum_beta)
+        new_second_moments = torch.lerp(
+            second_moments, updates.square(), 1 - ref.second_moment_beta
         )
-        to_whitens = torch.lerp(
-            new_momentums,
-            updates,
-            1 - ref.momentum_beta
+        ref.adam_step.add_(1)
+        step = ref.adam_step.to(new_momentums.dtype)
+        first_moments = new_momentums / (1 - ref.momentum_beta ** step)
+        corrected_second_moments = (
+            new_second_moments / (1 - ref.second_moment_beta ** step)
         )
-        new_whiteneds = select_newton_schulz()(
-            to_whitens, eps=ref.grad_eps
-        )
-
-        # deltas = (
-        #     (new_whiteneds - prev_whiteneds * ref.momentum_beta) /
-        #     (1 - ref.momentum_beta)
-        # )
-        deltas = new_whiteneds
-
-        deltas = deltas * math.sqrt(max(ref.in_features, ref.out_features))
+        deltas = first_moments / (corrected_second_moments.sqrt() + ref.grad_eps)
 
         state_deltas = -deltas.to(ref.state_dtype)
 
@@ -382,7 +363,8 @@ class OLoopLoRAModel(LlamaForCausalLM):
             m.momentum.copy_(new_momentums[:, i].detach())
             m.momentum.grad.zero_()
 
-            m.prev_whitened.copy_(new_whiteneds[:, i].detach())
+            m.second_moment.copy_(new_second_moments[:, i].detach())
+            m.adam_step.copy_(ref.adam_step)
 
 
     def get_logits(self, *args, **kwargs):
