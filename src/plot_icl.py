@@ -26,7 +26,7 @@ BASE_PATH = os.path.join(constants.LOCAL_DATA_PATH, "icl_results")
 
 COLOR_MAP = plt.get_cmap("viridis_r")
 COLORBLIND_COLORS = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-NUM_GRADIENT_COLORS = 5
+NUM_GRADIENT_COLORS = 7
 _grad_index = 0
 def gradient():
     global _grad_index
@@ -38,6 +38,9 @@ RUNS = {
     "fresh/oloop-lora-llama3p2-1b-pre/base_lr_1e-04.json": {
         "label": "LoRA lr=1e-4", "color": "black"
     },
+    # "aklein4--Horizon-TPU_alpha/000000000250.json": {
+    #     "label": "Learned (old) step=250", "color": "red"
+    # },
     # "aklein4--Horizon-TPU_alpha/000000000500.json": {
     #     "label": "Learned (old) step=500", "color": "red"
     # },
@@ -56,6 +59,22 @@ RUNS = {
     "aklein4--Horizon-TPU_forte-v2-1b/000000000250.json": {
         "label": "Learned (new) step=250", "color": gradient()
     },
+    "aklein4--Horizon-TPU_forte-v2-1b/000000000400.json": {
+        "label": "Learned (new) step=400", "color": gradient()
+    },
+    "aklein4--Horizon-TPU_forte-v2-1b/000000000450.json": {
+        "label": "Learned (new) step=450", "color": gradient()
+    },
+    # "aklein4--Horizon-TPU_forte-v2-fast-1b/000000000200.json": {
+    #     "label": "Learned (fast) step=200", "color": "red"
+    # },
+    # "aklein4--Horizon-TPU_forte-v2-fast-1b/000000000400.json": {
+    #     "label": "Learned (fast) step=400", "color": "red"
+    # },
+    # "aklein4--Horizon-TPU_forte-v2-fast-1b/000000000600.json": {
+    #     "label": "Learned (fast) step=600", "color": "red"
+    # },
+
 }
 
 LORA_LABEL = "LoRA lr=1e-4"
