@@ -437,6 +437,12 @@ def inv_softplus(x: torch.Tensor | float) -> torch.Tensor:
     return math.log(math.exp(x) - 1.0)
 
 
+def unit_softplus(x: torch.Tensor | float) -> torch.Tensor:
+    if isinstance(x, torch.Tensor):
+        return F.softplus(x) / math.log(2)
+    return math.log(1 + math.exp(x)) / math.log(2)
+
+
 def slerp(
     v0: torch.Tensor,
     v1: torch.Tensor,

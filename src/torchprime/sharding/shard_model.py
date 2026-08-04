@@ -153,7 +153,11 @@ def shard_model_from_config(
       implied_params.add(name)
 
       imp_spec = [None] * len(shape)
-      if param.numel() > 1 and not replicate_default:
+      if (
+        param.numel() > 1 and
+        sum(s > 1 for s in shape) > 1 and
+        not replicate_default
+      ):
         imp_spec[shape.index(max(shape))] = "fsdp"
 
       return shard_param(param, _to_tuple(imp_spec))

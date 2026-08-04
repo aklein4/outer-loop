@@ -5,6 +5,8 @@
 # prevents every group from all-gathering the vocabulary projection.
 lm_head.weight: [null, null]
 
+embed_tokens.weight: [null, null]
+
 
 # Activations
 backbone_layers.layers.*: [[data, fsdp], null, null]

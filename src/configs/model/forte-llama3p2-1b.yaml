@@ -11,11 +11,10 @@ type: forte.ForteModel
 fast_weight_size: 1536
 
 base_lr: 1e-3
-lr_init_std: 0.5
 
 grad_rms_eps: 1.0e-12
 
 num_output_layers: 4
-num_bidirectional_layers: 4
+num_bidirectional_layers: 8
 
 pad_attention_bias_value: -1000.0

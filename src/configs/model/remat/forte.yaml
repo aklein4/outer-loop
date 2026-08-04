@@ -8,8 +8,8 @@ advanced:
         - ForteBackboneLayer
       scan_layers: layers
       is_layer_pure: true
-      offload_tensors: 
-        - backbone_decoder_input
+      # offload_tensors: 
+      #   - backbone_decoder_input
 
   - name: output_layers
     settings:
@@ -19,8 +19,8 @@ advanced:
         - ForteOutputLayer
       scan_layers: layers
       is_layer_pure: true
-      offload_tensors: 
-        - output_decoder_input
+      # offload_tensors: 
+      #   - output_decoder_input
 
   - name: bidirectional_head
     settings:
@@ -30,5 +30,5 @@ advanced:
         - BidirectionalDecoderLayer
       scan_layers: layers.layers
       is_layer_pure: true
-      offload_tensors: 
-        - bidirectional_head_input
+      # offload_tensors: 
+      #   - bidirectional_head_input

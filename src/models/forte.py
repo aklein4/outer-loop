@@ -16,7 +16,7 @@ from models.llama import (
 )
 from utils.sharding_utils import maybe_shard_with_gradients
 from utils.torch_modules import LayerStack
-from utils.torch_utils import fixed_linear, gaussian_init
+from utils.torch_utils import fixed_linear, gaussian_init, unit_softplus
 
 from torchprime.rope.rope import RopeScaling
 
@@ -27,51 +27,32 @@ def _get_G(
     down_weight: torch.FloatTensor,
     activation_gate_logits: torch.FloatTensor,
     gradient_gate_logits: torch.FloatTensor,
-    token_gate_logits: torch.FloatTensor,
     valid_mask: torch.BoolTensor,
     eps: float,
-    episodes_per_trajectory: int = 1,
 ) -> torch.FloatTensor:
+    
     # all float to avoid gradient accumulation drift
     a = activations.float()
     g = fixed_linear(
         output_grad.float(), down_weight.T.float()
     )
 
-    # RMS-normalize each hidden channel over valid sequence positions only.
-    # Masking g explicitly also prevents gradients at padded query positions from
-    # contributing to either the normalization statistics or the update.
+    # explicit masking
     mask = valid_mask[..., None]
     a = a * mask
     g = g * mask
     valid_count = mask.sum(dim=-2, keepdim=True).clamp_min(1).float()
 
-    a_norm = a * torch.rsqrt(
-        a.square().sum(dim=-2, keepdim=True) / valid_count + eps
-    )
     g_norm = g * torch.rsqrt(
-        g.square().sum(dim=-2, keepdim=True) / valid_count + eps
+        g.square().sum(dim=-2, keepdim=True).clamp_min(eps**2) / valid_count
     )
 
-    a_gated = 2 * torch.sigmoid(activation_gate_logits.float()) * a_norm
-    g_gated = 2 * torch.sigmoid(gradient_gate_logits.float()) * g_norm
-
-    a_gated = 2 * torch.sigmoid(token_gate_logits.float()) * a_gated
-
-    trajectory_batch_size = a.shape[0] // episodes_per_trajectory
-    episode_shape = (
-        trajectory_batch_size,
-        episodes_per_trajectory,
-        *a.shape[1:],
-    )
-    a = a.reshape(episode_shape)
-    g = g.reshape(episode_shape)
-    a_gated = a_gated.reshape(episode_shape)
-    g_gated = g_gated.reshape(episode_shape)
+    a_gated = unit_softplus(activation_gate_logits.float()) * a
+    g_gated = unit_softplus(gradient_gate_logits.float()) * g_norm
 
     return (
-        torch.einsum("belo,beli->boi", g, a),
-        torch.einsum("belo,beli->boi", g_gated, a_gated),
+        torch.einsum("blo,bli->boi", g, a),
+        torch.einsum("blo,bli->boi", g_gated, a_gated),
     )
 
 
@@ -127,7 +108,6 @@ class ForteFastWeightFunction(torch.autograd.Function):
         down_weight: torch.FloatTensor,
         activation_gate_logits: torch.FloatTensor,
         gradient_gate_logits: torch.FloatTensor,
-        token_gate_logits: torch.FloatTensor,
         valid_mask: torch.BoolTensor,
         grad_buffer: torch.FloatTensor,
         state: torch.FloatTensor,
@@ -135,7 +115,6 @@ class ForteFastWeightFunction(torch.autograd.Function):
         future_loss_scale: torch.FloatTensor,
         grad_eps: float,
         mode: str,
-        episodes_per_trajectory: int,
     ) -> torch.FloatTensor:
 
         to_save = (
@@ -143,7 +122,6 @@ class ForteFastWeightFunction(torch.autograd.Function):
             down_weight,
             activation_gate_logits,
             gradient_gate_logits,
-            token_gate_logits,
             valid_mask,
         )
         if mode == ForteMode.TRAIN_SECOND:
@@ -152,7 +130,6 @@ class ForteFastWeightFunction(torch.autograd.Function):
         ctx.save_for_backward(*to_save)
         ctx.grad_eps = grad_eps
         ctx.mode = mode
-        ctx.episodes_per_trajectory = episodes_per_trajectory
 
         return output
 
@@ -164,7 +141,6 @@ class ForteFastWeightFunction(torch.autograd.Function):
     ):
         grad_eps = ctx.grad_eps
         mode = ctx.mode
-        episodes_per_trajectory = ctx.episodes_per_trajectory
 
         if mode == ForteMode.TRAIN_FIRST:
             (
@@ -172,7 +148,6 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 down_weight,
                 activation_gate_logits,
                 gradient_gate_logits,
-                token_gate_logits,
                 valid_mask,
             ) = ctx.saved_tensors
 
@@ -182,10 +157,8 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 down_weight,
                 activation_gate_logits,
                 gradient_gate_logits,
-                token_gate_logits,
                 valid_mask,
                 grad_eps,
-                episodes_per_trajectory=episodes_per_trajectory,
             )
 
             return ( 
@@ -194,7 +167,6 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 None, # down_weight
                 None, # activation_gate_logits
                 None, # gradient_gate_logits
-                None, # token_gate_logits
                 None, # valid_mask
                 G, # grad_buffer
                 update, # state
@@ -202,7 +174,6 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 None, # future_loss_scale
                 None, # grad_eps
                 None, # mode
-                None, # episodes_per_trajectory
             )
 
         elif mode != ForteMode.TRAIN_SECOND:
@@ -213,7 +184,6 @@ class ForteFastWeightFunction(torch.autograd.Function):
             down_weight,
             activation_gate_logits,
             gradient_gate_logits,
-            token_gate_logits,
             valid_mask,
             grad_buffer,
             lr,
@@ -225,7 +195,6 @@ class ForteFastWeightFunction(torch.autograd.Function):
             down_weight_leaf = _get_leaf(down_weight)
             activation_gate_logits_leaf = _get_leaf(activation_gate_logits)
             gradient_gate_logits_leaf = _get_leaf(gradient_gate_logits)
-            token_gate_logits_leaf = _get_leaf(token_gate_logits)
             lr_leaf = _get_leaf(lr)
 
             G, update = _get_G(
@@ -234,10 +203,8 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 down_weight_leaf,
                 activation_gate_logits_leaf,
                 gradient_gate_logits_leaf,
-                token_gate_logits_leaf,
                 valid_mask,
                 grad_eps,
-                episodes_per_trajectory=episodes_per_trajectory,
             )
 
             future_grad = (
@@ -260,7 +227,6 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 down_weight_grad,
                 activation_gate_logits_grad,
                 gradient_gate_logits_grad,
-                token_gate_logits_grad,
                 lr_grad,
             ) = torch.autograd.grad(
                 local_loss,
@@ -269,7 +235,6 @@ class ForteFastWeightFunction(torch.autograd.Function):
                     down_weight_leaf,
                     activation_gate_logits_leaf,
                     gradient_gate_logits_leaf,
-                    token_gate_logits_leaf,
                     lr_leaf,
                 ),
             )
@@ -280,7 +245,6 @@ class ForteFastWeightFunction(torch.autograd.Function):
             down_weight_grad.to(down_weight.dtype),
             activation_gate_logits_grad.to(activation_gate_logits.dtype),
             gradient_gate_logits_grad.to(gradient_gate_logits.dtype),
-            token_gate_logits_grad.to(token_gate_logits.dtype),
             None, # valid_mask
             G, # grad_buffer
             update.detach(), # state
@@ -288,7 +252,6 @@ class ForteFastWeightFunction(torch.autograd.Function):
             None, # future_loss_scale
             None, # grad_eps
             None, # mode
-            None, # episodes_per_trajectory
         )
 
 
@@ -298,7 +261,6 @@ class DynamicLR(nn.Module):
         "log_lr",
         "activation_gate_proj",
         "gradient_gate_proj",
-        "token_gate_proj",
     )
 
     def __init__(self, config: DictConfig):
@@ -311,19 +273,9 @@ class DynamicLR(nn.Module):
         self.scalar_scaler = math.sqrt(self.fast_weight_size)
         self.rms_norm_eps = config.rms_norm_eps
 
-        self.fw_norm = LlamaRMSNorm(
-            self.fast_weight_size, eps=self.rms_norm_eps, elementwise_affine=False
-        )
-        self.hs_norm = LlamaRMSNorm(
-            config.hidden_size, eps=self.rms_norm_eps, elementwise_affine=False
-        )
-
         # learning-rate parameters
-        num_lr_std_params = 1
-        lr_std = config.lr_init_std / math.sqrt(num_lr_std_params)
         self.log_lr = nn.Parameter(
-            torch.randn(self.fast_weight_size, self.fast_weight_size)
-            * lr_std / self.scalar_scaler
+            torch.zeros(self.fast_weight_size, self.fast_weight_size)
         )
 
         self.activation_gate_proj = nn.Linear(
@@ -334,11 +286,6 @@ class DynamicLR(nn.Module):
         self.gradient_gate_proj = nn.Linear(
             config.hidden_size,
             self.fast_weight_size,
-            bias=False,
-        )
-        self.token_gate_proj = nn.Linear(
-            config.hidden_size,
-            1,
             bias=False,
         )
 
@@ -440,46 +387,21 @@ class ForteFastWeightMLP(nn.Module):
         if not isinstance(future_loss_scale, torch.Tensor):
             future_loss_scale = x.new_tensor(future_loss_scale)
 
-        if x.shape[0] % self.state.shape[0] != 0:
-            raise ValueError(
-                "fast-weight batch size must be a multiple of the trajectory "
-                f"batch size, got {x.shape[0]} and {self.state.shape[0]}"
-            )
-        trajectory_batch_size = self.state.shape[0]
-        episodes_per_trajectory = x.shape[0] // trajectory_batch_size
-
         # fast mlp
         h = self.fast_act_fn(self.up_fast(x), self.gate_fast(x))
-        if episodes_per_trajectory == 1:
-            value = torch.einsum(
-                "boi,bli->blo", self.state.detach(), h
-            )
-        else:
-            # The leading batch is trajectory-major, so a trajectory's one
-            # persistent state can serve all of its parallel episodes locally.
-            value = torch.einsum(
-                "boi,beli->belo",
-                self.state.detach(),
-                h.reshape(
-                    trajectory_batch_size,
-                    episodes_per_trajectory,
-                    *h.shape[1:],
-                ),
-            ).reshape(x.shape[0], h.shape[1], self.fast_weight_size)
+        value = torch.einsum(
+            "boi,bli->blo", self.state.detach(), h
+        )
         output = self.down_fast(value)
 
         activation_gate_logits = None
         gradient_gate_logits = None
-        token_gate_logits = None
         if mode != ForteMode.INFERENCE:
             activation_gate_logits = (
                 self.fast_dynamic_lr.activation_gate_proj(lr_embeddings)
             )
             gradient_gate_logits = (
                 self.fast_dynamic_lr.gradient_gate_proj(lr_embeddings)
-            )
-            token_gate_logits = (
-                self.fast_dynamic_lr.token_gate_proj(lr_embeddings)
             )
 
         activations = h.detach()
@@ -504,7 +426,6 @@ class ForteFastWeightMLP(nn.Module):
                 self.down_fast.weight,
                 activation_gate_logits,
                 gradient_gate_logits,
-                token_gate_logits,
                 lr_embedding_mask,
                 self.grad_buffer,
                 self.state,
@@ -512,10 +433,16 @@ class ForteFastWeightMLP(nn.Module):
                 future_loss_scale,
                 self.grad_eps,
                 mode,
-                episodes_per_trajectory,
             )
 
         return self.standard_forward(x) + output
+
+
+    @torch.no_grad()
+    def _replace_grad_container(self, name: str, value: torch.Tensor) -> None:
+        value = maybe_shard_with_gradients(value.detach()).requires_grad_(True)
+        value.grad = maybe_shard_with_gradients(torch.zeros_like(value))
+        setattr(self, name, value)
 
 
     @torch.no_grad()
@@ -567,40 +494,39 @@ class ForteFastWeightMLP(nn.Module):
         lr = self.fast_dynamic_lr(embeddings, embedding_mask)
         state_update = -lr * update
 
-        self.state.add_(state_update)
+        next_state = self.state + state_update
 
         if mode == ForteMode.TRAIN_FIRST:
-            self.grad_buffer.add_(G)
+            next_grad_buffer = self.grad_buffer + G
         elif mode == ForteMode.TRAIN_SECOND:
-            self.grad_buffer.sub_(G)
+            next_grad_buffer = self.grad_buffer - G
         else:
             raise ValueError(f"invalid state update mode: {mode}")
 
-        self.grad_buffer.grad.zero_()
-        self.state.grad.zero_()
+        self._replace_grad_container("state", next_state)
+        self._replace_grad_container("grad_buffer", next_grad_buffer)
 
 
     @torch.no_grad()
     def finalize_state(self):
-
-        self.state.zero_()
-
-        self.final_grad_norm.copy_(
-            self.grad_buffer.norm(dim=(-2, -1))
+        self._replace_grad_container(
+            "state", torch.zeros_like(self.state),
         )
-
-        self.grad_buffer.grad.zero_()
+        self._replace_grad_container(
+            "grad_buffer", self.grad_buffer
+        )
+        self.final_grad_norm = self.grad_buffer.norm(dim=(-2, -1)).detach()
 
 
     @torch.no_grad()
     def empty_state(self) -> None:
-
-        self.state.zero_()
-
-        self.grad_buffer.zero_()
-        self.grad_buffer.grad.zero_()
-
-        self.final_grad_norm.zero_()
+        self._replace_grad_container(
+            "state", torch.zeros_like(self.state),
+        )
+        self._replace_grad_container(
+            "grad_buffer", torch.zeros_like(self.grad_buffer),
+        )
+        self.final_grad_norm = torch.zeros_like(self.final_grad_norm)
 
 
     @torch.no_grad()
