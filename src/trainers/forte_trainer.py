@@ -292,6 +292,9 @@ class ForteTrainer(BaseTrainer):
             torch.stack((fast_states, fast_grad_buffers)).detach(),
             spec=(None, None, ("data", "fsdp"), None, None),
         ).requires_grad_(True)
+        # gradient_accumulation matches While carries to materialized
+        # DeviceData IDs; this packed carry was created after the last sync.
+        torch_xla.sync(wait=True)
 
         _, fast_carry, episode_losses = (
             self.first_pass_scan(
@@ -458,6 +461,7 @@ class ForteTrainer(BaseTrainer):
             fast_states,
             fast_grad_buffers,
         ) = self._scan_tensors(episodes)
+        torch_xla.sync(wait=True)
 
         _, fast_states, fast_grad_buffers = self.second_pass_scan(
             (input_ids, assistant_mask, pad_mask),
