@@ -61,7 +61,11 @@ class ScannedTrainingLoop(nn.Module):
         steps = iterable_tensors[0].shape[0]
         model = object.__getattribute__(self, "_scanned_model")
         if model is None and self.sentinel is None:
-            self.sentinel = nn.Parameter(iterable_tensors[0].new_zeros(()))
+            self.sentinel = nn.Parameter(torch.zeros(
+                (),
+                dtype=torch.float32,
+                device=iterable_tensors[0].device,
+            ))
         parameters = tuple(
             parameter for parameter in model.parameters()
             if parameter.requires_grad

@@ -108,6 +108,23 @@ class ScannedTrainingLoopTest(unittest.TestCase):
             torch.testing.assert_close(actual, expected)
         self.assertIsNone(model.weight.grad)
 
+    def test_no_gradient_scan_accepts_integer_inputs(self):
+        indices = torch.arange(5, device="cuda", dtype=torch.long)
+        initial = torch.zeros((), device="cuda")
+
+        def function(index, carry):
+            carry = carry + index
+            return carry, None, carry
+
+        expected_loss, _, expected_carry = python_loop(
+            function, (indices,), initial,
+        )
+        loss, carry = torch_utils.ScannedTrainingLoop(None, function)(
+            (indices,), initial,
+        )
+        torch.testing.assert_close(loss, expected_loss)
+        torch.testing.assert_close(carry, expected_carry[0])
+
     def test_second_pass_outputs_gradients_and_shards_match(self):
         x, target, state, grad_buffer = self.inputs()
         reference = ToyFastModel(x.shape[-1]).cuda()
