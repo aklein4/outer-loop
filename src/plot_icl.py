@@ -26,7 +26,7 @@ BASE_PATH = os.path.join(constants.LOCAL_DATA_PATH, "icl_results")
 
 COLOR_MAP = plt.get_cmap("viridis_r")
 COLORBLIND_COLORS = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-NUM_GRADIENT_COLORS = 3
+NUM_GRADIENT_COLORS = 4
 _grad_index = 0
 def gradient():
     global _grad_index
@@ -103,6 +103,9 @@ RUNS = {
     },
     "aklein4--Horizon-TPU_forte-v2-freeze-1b/000000000150.json": {
         "label": "Learned (freeze) step=150", "color": gradient()
+    },
+    "aklein4--Horizon-TPU_forte-v2-freeze-1b/000000000250.json": {
+        "label": "Learned (freeze) step=250", "color": gradient()
     },
 }
 

@@ -465,13 +465,6 @@ class ForteFastWeightMLP(nn.Module):
 
 
     @torch.no_grad()
-    def _replace_grad_container(self, name: str, value: torch.Tensor) -> None:
-        value = maybe_shard_with_gradients(value.detach().requires_grad_(True))
-        value.grad = maybe_shard_with_gradients(torch.zeros_like(value))
-        setattr(self, name, value)
-
-
-    @torch.no_grad()
     def init_state(self, bs: int, device: torch.device) -> None:
 
         state = torch.zeros(
@@ -524,39 +517,34 @@ class ForteFastWeightMLP(nn.Module):
             lr = self.fast_dynamic_lr(embeddings, embedding_mask)
             state_update = -lr * update
 
-        next_state = self.state + state_update
+        self.state.add_(state_update)
 
         if mode == ForteMode.TRAIN_FIRST:
-            next_grad_buffer = self.grad_buffer + G
+            self.grad_buffer.add_(G)
         elif mode == ForteMode.TRAIN_SECOND:
-            next_grad_buffer = self.grad_buffer - G
+            self.grad_buffer.sub_(G)
         else:
             raise ValueError(f"invalid state update mode: {mode}")
 
-        self._replace_grad_container("state", next_state)
-        self._replace_grad_container("grad_buffer", next_grad_buffer)
+        self.grad_buffer.grad.zero_()
+        self.state.grad.zero_()
 
 
     @torch.no_grad()
     def finalize_state(self):
-        self._replace_grad_container(
-            "state", torch.zeros_like(self.state),
+        self.state.zero_()
+        self.final_grad_norm.copy_(
+            self.grad_buffer.norm(dim=(-2, -1))
         )
-        self._replace_grad_container(
-            "grad_buffer", self.grad_buffer
-        )
-        self.final_grad_norm = self.grad_buffer.norm(dim=(-2, -1)).detach()
+        self.grad_buffer.grad.zero_()
 
 
     @torch.no_grad()
     def empty_state(self) -> None:
-        self._replace_grad_container(
-            "state", torch.zeros_like(self.state),
-        )
-        self._replace_grad_container(
-            "grad_buffer", torch.zeros_like(self.grad_buffer),
-        )
-        self.final_grad_norm = torch.zeros_like(self.final_grad_norm)
+        self.state.zero_()
+        self.grad_buffer.zero_()
+        self.grad_buffer.grad.zero_()
+        self.final_grad_norm.zero_()
 
 
     @torch.no_grad()
