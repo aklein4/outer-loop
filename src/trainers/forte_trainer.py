@@ -257,7 +257,7 @@ class ForteTrainer(BaseTrainer):
         return (
             loss,
             None,
-            next_fast_carry.detach(),
+            next_fast_carry,
             next_episode_losses,
         )
 
@@ -446,8 +446,8 @@ class ForteTrainer(BaseTrainer):
         return (
             loss,
             tuple(parameter_gradients),
-            next_fast_states.detach(),
-            next_fast_grad_buffers.detach(),
+            next_fast_states,
+            next_fast_grad_buffers,
         )
 
 
