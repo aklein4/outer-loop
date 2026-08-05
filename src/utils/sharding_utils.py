@@ -53,8 +53,8 @@ def shard_no_gradients(
         spec = batch_shard_spec(x)
 
     # Keep the annotation but do not expose XLAShardedTensor to callers.
-    # Higher-order ops such as gradient_accumulation index their inputs while
-    # functionalizing them, which is not supported by the wrapper subclass.
+    # Higher-order ops index their inputs while functionalizing them, which is
+    # not supported by the XLAShardedTensor wrapper subclass.
     return xs.mark_sharding(x, mesh, spec).global_tensor
 
 

@@ -9,9 +9,8 @@ import math
 import utils.constants as constants
 
 if constants.XLA_AVAILABLE:
-    from torch_xla.experimental.gradient_accumulation import (
-        gradient_accumulation,
-    )
+    import torch_xla
+    from torch_xla.experimental.scan import scan as xla_scan
 
 """
 A collection of PyTorch utility functions that might be useful.
@@ -25,42 +24,48 @@ class ScannedTrainingLoop(nn.Module):
         super().__init__()
         object.__setattr__(self, "_scanned_model", model)
         self.function = function
-        self.sentinel = None
 
     def forward(
         self,
         iterable_tensors: tuple[torch.Tensor, ...],
         *carried_tensors: torch.Tensor,
     ):
-        steps = iterable_tensors[0].shape[0]
         model = object.__getattribute__(self, "_scanned_model")
-        if model is None and self.sentinel is None:
-            self.sentinel = nn.Parameter(torch.zeros(
-                (),
-                dtype=torch.float32,
-                device=iterable_tensors[0].device,
-            ))
         parameters = tuple(
             parameter for parameter in model.parameters()
             if parameter.requires_grad
         ) if model is not None else ()
+        accumulated_gradients = []
+        for parameter in parameters:
+            gradient = torch.zeros_like(parameter)
+            if constants.XLA_AVAILABLE:
+                sharding = torch_xla._XLAC._get_xla_op_sharding(parameter)
+                if sharding:
+                    torch_xla._XLAC._xla_mark_sharding(gradient, sharding)
+            accumulated_gradients.append(gradient)
 
-        def step(*args):
-            value, gradients, *carry = self.function(*args)
-            value = value.detach() * steps
-            if model is None:
-                loss = value + self.sentinel * 0.0
-            else:
-                torch.autograd.backward(parameters, gradients)
-                loss = value + parameters[0].flatten()[0] * 0.0
-            return loss, *carry
+        def step(carry, values):
+            tensors, gradient_sums = carry
+            value, gradients, *tensors = self.function(*values, *tensors)
+            if gradients is not None:
+                gradient_sums = tuple(
+                    total + gradient
+                    for total, gradient in zip(gradient_sums, gradients)
+                )
+            return (tuple(tensors), gradient_sums), value
 
-        return gradient_accumulation(
+        (carried_tensors, accumulated_gradients), values = xla_scan(
             step,
+            (carried_tensors, tuple(accumulated_gradients)),
             iterable_tensors,
-            model if model is not None else self,
-            *carried_tensors,
+            is_fn_pure=True,
         )
+        for parameter, gradient in zip(parameters, accumulated_gradients):
+            if parameter.grad is None:
+                parameter.grad = gradient
+            else:
+                parameter.grad.add_(gradient)
+        return values.sum(), *carried_tensors
 
 
 def set_no_muon(model: nn.Module) -> None:

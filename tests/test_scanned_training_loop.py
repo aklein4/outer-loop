@@ -13,16 +13,12 @@ import utils.torch_utils as torch_utils
 from models.forte import ForteMode, ForteModel
 
 
-def eager_gradient_accumulation(step, iterable_tensors, model, *carry):
-    """Python equivalent of XLA gradient_accumulation for this test."""
-    steps = iterable_tensors[0].shape[0]
-    total_loss = iterable_tensors[0].new_zeros(())
+def eager_scan(function, carry, iterable_tensors, **_kwargs):
+    outputs = []
     for values in zip(*iterable_tensors):
-        loss, *carry = step(*values, *carry)
-        loss = loss / steps
-        loss.backward()
-        total_loss = total_loss + loss.detach()
-    return total_loss, *carry
+        carry, output = function(carry, values)
+        outputs.append(output)
+    return carry, torch.stack(outputs)
 
 
 class ToyFastModel(nn.Module):
@@ -71,17 +67,15 @@ class ScannedTrainingLoopTest(unittest.TestCase):
     def setUpClass(cls):
         if not torch.cuda.is_available():
             raise unittest.SkipTest("CUDA is required")
-        cls.original_scan = getattr(
-            torch_utils, "gradient_accumulation", None,
-        )
-        torch_utils.gradient_accumulation = eager_gradient_accumulation
+        cls.original_scan = getattr(torch_utils, "xla_scan", None)
+        torch_utils.xla_scan = eager_scan
 
     @classmethod
     def tearDownClass(cls):
         if cls.original_scan is None:
-            del torch_utils.gradient_accumulation
+            del torch_utils.xla_scan
         else:
-            torch_utils.gradient_accumulation = cls.original_scan
+            torch_utils.xla_scan = cls.original_scan
 
     def inputs(self):
         torch.manual_seed(1234)
