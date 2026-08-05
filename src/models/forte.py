@@ -48,8 +48,12 @@ def _get_G(
         g.square().sum(dim=-2, keepdim=True) / valid_count
         + eps**2
     )
+    a_norm = a * torch.rsqrt(
+        a.square().sum(dim=-2, keepdim=True) / valid_count
+        + eps**2
+    )
 
-    a_gated = unit_softplus(activation_gate_logits.float()) * a
+    a_gated = unit_softplus(activation_gate_logits.float()) * a_norm
     g_gated = unit_softplus(gradient_gate_logits.float()) * g_norm
 
     a_gated = a_gated * unit_softplus(token_gate_logits.float())
