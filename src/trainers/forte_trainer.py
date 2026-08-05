@@ -275,6 +275,7 @@ class ForteTrainer(BaseTrainer):
                 embeddings,
                 pad_mask,
                 mode=ForteMode.TRAIN_SECOND,
+                state_update_is_scaled=True,
             )
         
         return loss
