@@ -421,12 +421,16 @@ class ForteFastWeightMLP(nn.Module):
         state = (
             self.state
             if fast_states is None
-            else fast_states[self.fast_state_index]
+            else fast_states.index_select(
+                0, self.fast_state_index.reshape(1)
+            ).squeeze(0)
         )
         grad_buffer = (
             self.grad_buffer
             if fast_grad_buffers is None
-            else fast_grad_buffers[self.fast_state_index]
+            else fast_grad_buffers.index_select(
+                0, self.fast_state_index.reshape(1)
+            ).squeeze(0)
         )
 
         # fast mlp
