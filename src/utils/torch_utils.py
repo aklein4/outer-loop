@@ -63,16 +63,36 @@ class ScannedTrainingLoop(nn.Module):
             tuple(self.body.named_parameters())
             + tuple(self.body.named_buffers())
         )
-        state_names = tuple(name for name, _ in state_items)
-        state = tuple(tensor for _, tensor in state_items)
+        carried_state = tuple(
+            (name, tensor) for name, tensor in state_items
+            if tensor.is_floating_point() or tensor.is_complex()
+        )
+        input_state = tuple(
+            (name, tensor) for name, tensor in state_items
+            if not (tensor.is_floating_point() or tensor.is_complex())
+        )
+        state_names = tuple(name for name, _ in carried_state)
+        state = tuple(tensor for _, tensor in carried_state)
+        input_state_names = tuple(name for name, _ in input_state)
+        steps = iterable_tensors[0].shape[0]
+        scan_inputs = iterable_tensors + tuple(
+            tensor.unsqueeze(0).expand(steps, *tensor.shape)
+            for _, tensor in input_state
+        )
+        num_iterable_tensors = len(iterable_tensors)
 
         def step(carry, values):
             tensors, gradient_sums, state = carry
-            state_dict = dict(zip(state_names, state))
+            iterable_values = values[:num_iterable_tensors]
+            input_state = values[num_iterable_tensors:]
+            state_dict = {
+                **dict(zip(state_names, state)),
+                **dict(zip(input_state_names, input_state)),
+            }
             value, gradients, *tensors = torch.func.functional_call(
                 self.body,
                 state_dict,
-                (values, tensors),
+                (iterable_values, tensors),
                 strict=False,
             )
             if gradients is not None:
@@ -85,7 +105,7 @@ class ScannedTrainingLoop(nn.Module):
         (carried_tensors, accumulated_gradients, _), values = xla_scan(
             step,
             (carried_tensors, tuple(accumulated_gradients), state),
-            iterable_tensors,
+            scan_inputs,
             is_fn_pure=True,
         )
         for parameter, gradient in zip(parameters, accumulated_gradients):
