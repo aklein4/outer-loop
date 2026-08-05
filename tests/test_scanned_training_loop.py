@@ -26,6 +26,9 @@ class ToyFastModel(nn.Module):
     def __init__(self, width):
         super().__init__()
         self.weight = nn.Parameter(torch.randn(width, width))
+        self.register_buffer(
+            "nonpersistent_index", torch.tensor(0), persistent=False,
+        )
 
     def body(self, x, target, state, grad_buffer, with_gradients):
         state = state.detach().requires_grad_(True)

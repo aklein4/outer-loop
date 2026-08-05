@@ -59,10 +59,12 @@ class ScannedTrainingLoop(nn.Module):
                     torch_xla._XLAC._xla_mark_sharding(gradient, sharding)
             accumulated_gradients.append(gradient)
 
-        state_names = tuple(name for name, _ in self.body.named_parameters()) + tuple(
-            name for name, _ in self.body.named_buffers()
+        state_items = (
+            tuple(self.body.named_parameters())
+            + tuple(self.body.named_buffers())
         )
-        state = tuple(self.body.state_dict(keep_vars=True)[name] for name in state_names)
+        state_names = tuple(name for name, _ in state_items)
+        state = tuple(tensor for _, tensor in state_items)
 
         def step(carry, values):
             tensors, gradient_sums, state = carry
