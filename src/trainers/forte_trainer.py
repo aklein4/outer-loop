@@ -334,6 +334,7 @@ class ForteTrainer(BaseTrainer):
             curr_losses = self.multi_first_pass(
                 *[episodes[i] for i in inds]
             )
+            torch_xla.sync(wait=True)
 
             for i, loss in enumerate(curr_losses):
                 aux[f"lm_loss/episode_{inds[i]:02d}"] = loss
@@ -345,6 +346,7 @@ class ForteTrainer(BaseTrainer):
 
         self.model.finalize_state()
         self.model.zero_grad(set_to_none=False)
+        torch_xla.sync(wait=True)
 
         # second loop
         second_inds = split_given_size(
@@ -355,6 +357,7 @@ class ForteTrainer(BaseTrainer):
             self.multi_second_pass(
                 *[episodes[i] for i in inds]
             )
+            torch_xla.sync(wait=True)
         
             master_print(
                 f"Second pass {inds[-1]:02d} completed."
@@ -366,6 +369,7 @@ class ForteTrainer(BaseTrainer):
             no_slow_grads=False,
             update_second_mode=True # so that final error check it correct
         )
+        torch_xla.sync(wait=True)
 
         master_print(
             f"Second pass {terminal_index:02d} completed."
@@ -373,6 +377,7 @@ class ForteTrainer(BaseTrainer):
 
         # optimizer step
         post_aux, grad_norm = self.post_forward()
+        torch_xla.sync(wait=True)
 
         aux.update(post_aux)
         master_print("Optimization step completed.")
