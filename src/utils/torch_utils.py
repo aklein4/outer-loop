@@ -8,9 +8,85 @@ import math
 
 import utils.constants as constants
 
+if constants.XLA_AVAILABLE:
+    from torch_xla.experimental.gradient_accumulation import (
+        gradient_accumulation,
+    )
+
 """
 A collection of PyTorch utility functions that might be useful.
 """
+
+
+class ScannedTrainingLoop(nn.Module):
+    """Run ``function`` in an XLA loop, accumulating supplied gradients."""
+
+    class _InjectGradients(torch.autograd.Function):
+
+        @staticmethod
+        def forward(ctx, value, scale, *parameters_and_gradients):
+            num_parameters = len(parameters_and_gradients) // 2
+            ctx.num_parameters = num_parameters
+            ctx.save_for_backward(
+                scale,
+                *parameters_and_gradients[num_parameters:],
+            )
+            return value
+
+        @staticmethod
+        def backward(ctx, output_grad):
+            scale, *gradients = ctx.saved_tensors
+            parameter_gradients = tuple(
+                output_grad * scale * gradient
+                for gradient in gradients
+            )
+            return (
+                None,
+                None,
+                *parameter_gradients,
+                *(None for _ in range(ctx.num_parameters)),
+            )
+
+    def __init__(self, model: nn.Module | None, function: callable):
+        super().__init__()
+        object.__setattr__(self, "_scanned_model", model)
+        self.function = function
+        self.sentinel = None
+
+    def forward(
+        self,
+        iterable_tensors: tuple[torch.Tensor, ...],
+        *carried_tensors: torch.Tensor,
+    ):
+        steps = iterable_tensors[0].shape[0]
+        model = object.__getattribute__(self, "_scanned_model")
+        if model is None and self.sentinel is None:
+            self.sentinel = nn.Parameter(iterable_tensors[0].new_zeros(()))
+        parameters = tuple(
+            parameter for parameter in model.parameters()
+            if parameter.requires_grad
+        ) if model is not None else ()
+
+        def step(*args):
+            value, gradients, *carry = self.function(*args)
+            value = value.detach() * steps
+            if model is None:
+                loss = value + self.sentinel * 0.0
+            else:
+                loss = self._InjectGradients.apply(
+                    value,
+                    value.new_tensor(steps),
+                    *parameters,
+                    *gradients,
+                )
+            return loss, *carry
+
+        return gradient_accumulation(
+            step,
+            iterable_tensors,
+            model if model is not None else self,
+            *carried_tensors,
+        )
 
 
 def set_no_muon(model: nn.Module) -> None:

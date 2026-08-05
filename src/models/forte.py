@@ -14,11 +14,15 @@ from models.llama import (
     LlamaRMSNorm,
     LlamaRotaryEmbedding,
 )
+import utils.constants as constants
 from utils.sharding_utils import maybe_shard_with_gradients
 from utils.torch_modules import LayerStack
 from utils.torch_utils import fixed_linear, gaussian_init, unit_softplus
 
 from torchprime.rope.rope import RopeScaling
+
+if constants.XLA_AVAILABLE:
+    from torch_xla.experimental.scan import scan as xla_scan
 
 
 def _get_G(
@@ -401,6 +405,8 @@ class ForteFastWeightMLP(nn.Module):
         self,
         x: torch.FloatTensor,
         fast_weight_mode: torch.Tensor | None = None,
+        fast_states: torch.FloatTensor | None = None,
+        fast_grad_buffers: torch.FloatTensor | None = None,
         lr_embeddings: torch.FloatTensor | None = None,
         lr_embedding_mask: torch.BoolTensor | None = None,
         future_loss_scale: torch.FloatTensor | float = 1,
@@ -412,10 +418,21 @@ class ForteFastWeightMLP(nn.Module):
         if not isinstance(future_loss_scale, torch.Tensor):
             future_loss_scale = x.new_tensor(future_loss_scale)
 
+        state = (
+            self.state
+            if fast_states is None
+            else fast_states[self.fast_state_index]
+        )
+        grad_buffer = (
+            self.grad_buffer
+            if fast_grad_buffers is None
+            else fast_grad_buffers[self.fast_state_index]
+        )
+
         # fast mlp
         h = self.fast_act_fn(self.up_fast(x), self.gate_fast(x))
         value = torch.einsum(
-            "boi,bli->blo", self.state.detach(), h
+            "boi,bli->blo", state.detach(), h
         )
         output = self.down_fast(value)
 
@@ -453,8 +470,8 @@ class ForteFastWeightMLP(nn.Module):
                 gradient_gate_logits,
                 token_gate_logits,
                 lr_embedding_mask,
-                self.grad_buffer,
-                self.state,
+                grad_buffer,
+                state,
                 lr,
                 future_loss_scale,
                 self.grad_eps,
@@ -610,8 +627,13 @@ class ForteModel(nn.Module):
         self.bidirectional_head = BidirectionalHead(config)
 
         # fast-weight MLPs
-        for layer in self._causal_layers():
+        for fast_state_index, layer in enumerate(self._causal_layers()):
             layer.mlp = ForteFastWeightMLP(config)
+            layer.mlp.register_buffer(
+                "fast_state_index",
+                torch.tensor(fast_state_index, dtype=torch.long),
+                persistent=False,
+            )
 
         # llama stuff
         rope_scaling = config.get("rope_scaling", None)
@@ -735,6 +757,8 @@ class ForteModel(nn.Module):
         embedding_mask: torch.BoolTensor | None = None,
         mode: ForteMode | None = None,
         future_loss_scale: torch.FloatTensor | float | None = None,
+        fast_states: torch.FloatTensor | None = None,
+        fast_grad_buffers: torch.FloatTensor | None = None,
     ) -> torch.FloatTensor:
 
         hidden_states = self.embed_tokens(input_ids)
@@ -744,6 +768,8 @@ class ForteModel(nn.Module):
             embedding_mask=embedding_mask,
             mode=mode,
             future_loss_scale=future_loss_scale,
+            fast_states=fast_states,
+            fast_grad_buffers=fast_grad_buffers,
         )
 
         return self.backbone_layers(
@@ -760,6 +786,8 @@ class ForteModel(nn.Module):
         mode: ForteMode | None = None,
         logits_to_keep: slice | None = None,
         future_loss_scale: torch.FloatTensor | float | None = None,
+        fast_states: torch.FloatTensor | None = None,
+        fast_grad_buffers: torch.FloatTensor | None = None,
     ) -> torch.FloatTensor:
 
         kwargs = self._layer_kwargs(
@@ -768,6 +796,8 @@ class ForteModel(nn.Module):
             embedding_mask=embedding_mask,
             mode=mode,
             future_loss_scale=future_loss_scale,
+            fast_states=fast_states,
+            fast_grad_buffers=fast_grad_buffers,
         )
 
         hidden_states = self.output_layers(
@@ -856,6 +886,72 @@ class ForteModel(nn.Module):
             mlp.init_state(bs, device)
 
 
+    def functional_update_state(
+        self,
+        fast_states: torch.FloatTensor,
+        fast_grad_buffers: torch.FloatTensor,
+        state_updates: torch.FloatTensor,
+        raw_gradients: torch.FloatTensor,
+        mode: ForteMode,
+        state_update_is_scaled: bool = False,
+    ) -> tuple[torch.FloatTensor, torch.FloatTensor]:
+        """Apply every layer's fast-state transition without side effects."""
+        if mode == ForteMode.TRAIN_FIRST:
+            gradient_sign = 1.0
+        elif mode == ForteMode.TRAIN_SECOND:
+            gradient_sign = -1.0
+        else:
+            raise ValueError(f"invalid state update mode: {mode}")
+
+        fast_modules = self.fast_modules()
+        log_lrs = torch.stack([
+            mlp.fast_dynamic_lr.log_lr for mlp in fast_modules
+        ])
+        fast_module = fast_modules[0]
+        lr_scale = fast_module.fast_dynamic_lr.scalar_scaler
+        lr_offset = (
+            math.log(fast_module.fast_dynamic_lr.base_lr)
+            - math.log(fast_module.fast_dynamic_lr.fast_weight_size)
+        )
+
+        def update_one(carry, values):
+            state, grad_buffer, update, raw_gradient, log_lr = values
+            if state_update_is_scaled:
+                state_update = update
+            else:
+                lr = torch.exp(log_lr[None] * lr_scale + lr_offset)
+                state_update = -lr * update
+            return carry, (
+                state + state_update,
+                grad_buffer + gradient_sign * raw_gradient,
+            )
+
+        values = (
+            fast_states,
+            fast_grad_buffers,
+            state_updates,
+            raw_gradients,
+            log_lrs,
+        )
+        if constants.XLA_AVAILABLE:
+            # The layer axis is replicated. The already-marked batch axis of
+            # the fast tensors remains sharded through this nested XLA While.
+            sentinel = fast_states.new_zeros(())
+            _, result = xla_scan(
+                update_one,
+                sentinel,
+                values,
+                is_fn_pure=True,
+            )
+            return result
+
+        results = [
+            update_one(fast_states.new_zeros(()), layer_values)[1]
+            for layer_values in zip(*values)
+        ]
+        return tuple(torch.stack(items) for items in zip(*results))
+
+
     @torch.no_grad()
     def update_state(
         self,
@@ -864,13 +960,20 @@ class ForteModel(nn.Module):
         mode: ForteMode,
         state_update_is_scaled: bool = False,
     ) -> None:
-        for mlp in self.fast_modules():
-            mlp.update_state(
-                embeddings,
-                embedding_mask,
-                mode,
-                state_update_is_scaled=state_update_is_scaled,
-            )
+        fast_modules = self.fast_modules()
+        fast_states, fast_grad_buffers = self.functional_update_state(
+            torch.stack([mlp.state for mlp in fast_modules]),
+            torch.stack([mlp.grad_buffer for mlp in fast_modules]),
+            torch.stack([mlp.state.grad for mlp in fast_modules]),
+            torch.stack([mlp.grad_buffer.grad for mlp in fast_modules]),
+            mode,
+            state_update_is_scaled=state_update_is_scaled,
+        )
+        for index, mlp in enumerate(fast_modules):
+            mlp.state.copy_(fast_states[index])
+            mlp.grad_buffer.copy_(fast_grad_buffers[index])
+            mlp.grad_buffer.grad.zero_()
+            mlp.state.grad.zero_()
 
 
     @torch.no_grad()

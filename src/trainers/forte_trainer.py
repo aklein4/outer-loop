@@ -4,20 +4,15 @@ import torch_xla
 import torch_xla.core.xla_model as xm
 
 from collections import defaultdict
-import numpy as np
 
 from models.forte import ForteModel, ForteMode
 from trainers.base_trainer import BaseTrainer
 from utils.logging_utils import master_print
-from utils.sharding_utils import maybe_shard_with_gradients
-
-
-def split_given_size(n, size):
-    arr = np.array_split(
-        np.arange(n),
-        np.arange(size,n,size)
-    )
-    return [a.tolist() for a in arr]
+from utils.sharding_utils import (
+    maybe_shard_no_gradients,
+    maybe_shard_with_gradients,
+)
+from utils.torch_utils import ScannedTrainingLoop
 
 
 class ForteTrainer(BaseTrainer):
@@ -39,6 +34,14 @@ class ForteTrainer(BaseTrainer):
         self.model.init_state(
             self.global_batch_size,
             self.device,
+        )
+        self.first_pass_scan = ScannedTrainingLoop(
+            None,
+            self.scanned_first_pass,
+        )
+        self.second_pass_scan = ScannedTrainingLoop(
+            self.model,
+            self.scanned_second_pass,
         )
 
 
@@ -145,22 +148,176 @@ class ForteTrainer(BaseTrainer):
         ).detach().to(lm_states.dtype)
         
         return loss, lm_grad
-    
 
-    def first_pass(
+
+    def _scan_tensors(self, episodes):
+        # Recurrence axes stay replicated; only the batch axis is partitioned.
+        episode_spec = (None, ("data", "fsdp"), None)
+        inputs = tuple(
+            maybe_shard_no_gradients(torch.stack(values), spec=episode_spec)
+            for values in zip(*episodes)
+        )
+        fast_modules = self.model.fast_modules()
+        fast_spec = (None, ("data", "fsdp"), None, None)
+        fast_states, fast_grad_buffers = (
+            maybe_shard_no_gradients(
+                torch.stack([getattr(mlp, name) for mlp in fast_modules]).detach(),
+                spec=fast_spec,
+            )
+            for name in ("state", "grad_buffer")
+        )
+        return inputs, fast_modules, fast_states, fast_grad_buffers
+
+
+    @staticmethod
+    @torch.no_grad()
+    def _store_fast_state(fast_modules, fast_states, fast_grad_buffers):
+        for index, mlp in enumerate(fast_modules):
+            mlp.state.copy_(fast_states[index])
+            mlp.grad_buffer.copy_(fast_grad_buffers[index])
+            mlp.state.grad.zero_()
+            mlp.grad_buffer.grad.zero_()
+
+
+    def scanned_first_pass(
         self,
         input_ids,
         assistant_mask,
         pad_mask,
-        no_slow_grads=True,
-        update_second_mode=False,
+        episode_slot,
+        fast_states,
+        fast_grad_buffers,
+        episode_losses,
+    ):
+        """Pure first-pass body for an XLA While loop."""
+        fast_states_leaf = fast_states.detach().requires_grad_(True)
+        fast_grad_buffers_leaf = (
+            fast_grad_buffers.detach().requires_grad_(True)
+        )
+
+        with self._autocast():
+            with torch.no_grad():
+                infer_hidden_states = self.model.forward_backbone(
+                    input_ids,
+                    mode=ForteMode.INFERENCE,
+                    fast_states=fast_states_leaf,
+                    fast_grad_buffers=fast_grad_buffers_leaf,
+                )
+                embeddings = self.model.forward_embeddings(
+                    infer_hidden_states,
+                    pad_mask,
+                )
+
+            hidden_states = self.model.forward_backbone(
+                input_ids,
+                mode=ForteMode.TRAIN_FIRST,
+                embeddings=embeddings,
+                embedding_mask=pad_mask,
+                fast_states=fast_states_leaf,
+                fast_grad_buffers=fast_grad_buffers_leaf,
+            )
+            lm_states = self.model.forward_lm_states(
+                hidden_states,
+                mode=ForteMode.TRAIN_FIRST,
+                logits_to_keep=slice(0, -1),
+                embeddings=embeddings,
+                embedding_mask=pad_mask,
+                fast_states=fast_states_leaf,
+                fast_grad_buffers=fast_grad_buffers_leaf,
+            )
+            loss, lm_grad = self.loss_and_lm_grad(
+                lm_states,
+                input_ids,
+                assistant_mask,
+            )
+
+        state_updates, raw_gradients = torch.autograd.grad(
+            lm_states,
+            (fast_states_leaf, fast_grad_buffers_leaf),
+            lm_grad,
+        )
+        next_fast_states, next_fast_grad_buffers = (
+            self.model.functional_update_state(
+                fast_states_leaf,
+                fast_grad_buffers_leaf,
+                state_updates,
+                raw_gradients,
+                ForteMode.TRAIN_FIRST,
+            )
+        )
+        next_episode_losses = episode_losses + episode_slot * loss.detach()
+
+        # gradient_accumulation needs a differentiable scalar, but the first
+        # sweep intentionally computes no slow-parameter gradients.
+        return (
+            loss,
+            None,
+            next_fast_states.detach(),
+            next_fast_grad_buffers.detach(),
+            next_episode_losses,
+        )
+
+
+    def scan_first_passes(self, episodes):
+        (
+            (input_ids, assistant_mask, pad_mask),
+            fast_modules,
+            fast_states,
+            fast_grad_buffers,
+        ) = self._scan_tensors(episodes)
+
+        num_episodes = len(episodes)
+        episode_slots = torch.eye(
+            num_episodes,
+            device=input_ids.device,
+            dtype=torch.float32,
+        )
+        episode_slots = maybe_shard_no_gradients(
+            episode_slots,
+            spec=(None, None),
+        )
+        episode_losses = input_ids.new_zeros(
+            num_episodes,
+            dtype=torch.float32,
+        )
+        episode_losses = maybe_shard_no_gradients(
+            episode_losses,
+            spec=(None,),
+        )
+
+        _, fast_states, fast_grad_buffers, episode_losses = (
+            self.first_pass_scan(
+                (
+                    input_ids,
+                    assistant_mask,
+                    pad_mask,
+                    episode_slots,
+                ),
+                fast_states,
+                fast_grad_buffers,
+                episode_losses,
+            )
+        )
+
+        self._store_fast_state(
+            fast_modules, fast_states, fast_grad_buffers,
+        )
+        return episode_losses
+
+
+    @torch_xla.compile(full_graph=True)
+    def terminal_pass(
+        self,
+        input_ids,
+        assistant_mask,
+        pad_mask,
     ):
 
         with self._autocast():
 
             with torch.no_grad():
                 infer_hidden_states = self.model.forward_backbone(
-                    input_ids, mode=ForteMode.INFERENCE,
+                    input_ids, mode=ForteMode.INFERENCE
                 )
                 embeddings = self.model.forward_embeddings(
                     infer_hidden_states,
@@ -173,92 +330,12 @@ class ForteTrainer(BaseTrainer):
                 embeddings=embeddings,
                 embedding_mask=pad_mask,
             )
-
             lm_states = self.model.forward_lm_states(
                 hidden_states,
                 mode=ForteMode.TRAIN_FIRST,
                 logits_to_keep=slice(0, -1),
                 embeddings=embeddings,
                 embedding_mask=pad_mask,
-            )
-            loss, lm_grad = self.loss_and_lm_grad(
-                lm_states,
-                input_ids,
-                assistant_mask,
-            )
-
-
-        if no_slow_grads:
-            torch.autograd.backward(
-                lm_states,
-                lm_grad,
-                inputs=(self.model.grad_containers())
-            )
-        else:
-            torch.autograd.backward(
-                lm_states, lm_grad
-            )
-
-        with self._autocast():
-            self.model.update_state(
-                embeddings,
-                pad_mask,
-                mode=(
-                    ForteMode.TRAIN_SECOND
-                    if update_second_mode
-                    else ForteMode.TRAIN_FIRST
-                ),
-            )
-        
-        return loss
-
-
-    @torch_xla.compile(full_graph=True)
-    def multi_first_pass(
-        self, *episodes, no_slow_grads=True, update_second_mode=False
-    ):
-        return [
-            self.first_pass(
-                *episode,
-                no_slow_grads=no_slow_grads,
-                update_second_mode=update_second_mode,
-            )
-            for episode in episodes
-        ]
-
-
-    def second_pass(
-        self,
-        input_ids,
-        assistant_mask,
-        pad_mask,
-    ):
-
-        with self._autocast():
-
-            infer_hidden_states = self.model.forward_backbone(
-                input_ids, mode=ForteMode.INFERENCE
-            )
-            embeddings = self.model.forward_embeddings(
-                infer_hidden_states,
-                pad_mask,
-            )
-
-            hidden_states = self.model.forward_backbone(
-                input_ids,
-                embeddings,
-                pad_mask,
-                mode=ForteMode.TRAIN_SECOND,
-                future_loss_scale=self.config.trainer.future_loss_scale,
-            )
-
-            lm_states = self.model.forward_lm_states(
-                hidden_states,
-                embeddings,
-                pad_mask,
-                mode=ForteMode.TRAIN_SECOND,
-                logits_to_keep=slice(0, -1),
-                future_loss_scale=self.config.trainer.future_loss_scale,
             )
             loss, lm_grad = self.loss_and_lm_grad(
                 lm_states,
@@ -275,20 +352,112 @@ class ForteTrainer(BaseTrainer):
                 embeddings,
                 pad_mask,
                 mode=ForteMode.TRAIN_SECOND,
+            )
+
+
+    def scanned_second_pass(
+        self,
+        input_ids,
+        assistant_mask,
+        pad_mask,
+        fast_states,
+        fast_grad_buffers,
+    ):
+        """Pure second-pass body for XLA gradient accumulation."""
+        fast_states_leaf = fast_states.detach().requires_grad_(True)
+        fast_grad_buffers_leaf = (
+            fast_grad_buffers.detach().requires_grad_(True)
+        )
+
+        with self._autocast():
+            infer_hidden_states = self.model.forward_backbone(
+                input_ids,
+                mode=ForteMode.INFERENCE,
+                fast_states=fast_states_leaf,
+                fast_grad_buffers=fast_grad_buffers_leaf,
+            )
+            embeddings = self.model.forward_embeddings(
+                infer_hidden_states,
+                pad_mask,
+            )
+            hidden_states = self.model.forward_backbone(
+                input_ids,
+                embeddings,
+                pad_mask,
+                mode=ForteMode.TRAIN_SECOND,
+                future_loss_scale=self.config.trainer.future_loss_scale,
+                fast_states=fast_states_leaf,
+                fast_grad_buffers=fast_grad_buffers_leaf,
+            )
+            lm_states = self.model.forward_lm_states(
+                hidden_states,
+                embeddings,
+                pad_mask,
+                mode=ForteMode.TRAIN_SECOND,
+                logits_to_keep=slice(0, -1),
+                future_loss_scale=self.config.trainer.future_loss_scale,
+                fast_states=fast_states_leaf,
+                fast_grad_buffers=fast_grad_buffers_leaf,
+            )
+            loss, lm_grad = self.loss_and_lm_grad(
+                lm_states,
+                input_ids,
+                assistant_mask,
+            )
+
+        trainable_parameters = tuple(
+            parameter
+            for parameter in self.model.parameters()
+            if parameter.requires_grad
+        )
+        gradients = torch.autograd.grad(
+            lm_states,
+            (
+                fast_states_leaf,
+                fast_grad_buffers_leaf,
+                *trainable_parameters,
+            ),
+            lm_grad,
+            allow_unused=True,
+            materialize_grads=True,
+        )
+        state_updates, raw_gradients, *parameter_gradients = gradients
+        next_fast_states, next_fast_grad_buffers = (
+            self.model.functional_update_state(
+                fast_states_leaf,
+                fast_grad_buffers_leaf,
+                state_updates,
+                raw_gradients,
+                ForteMode.TRAIN_SECOND,
                 state_update_is_scaled=True,
             )
-        
-        return loss
+        )
+
+        return (
+            loss,
+            tuple(parameter_gradients),
+            next_fast_states.detach(),
+            next_fast_grad_buffers.detach(),
+        )
 
 
-    @torch_xla.compile(full_graph=True)
-    def multi_second_pass(
-        self, *episodes
-    ):
-        return [
-            self.second_pass(*episode)
-            for episode in episodes
-        ]
+    def scan_second_passes(self, episodes):
+        (
+            (input_ids, assistant_mask, pad_mask),
+            fast_modules,
+            fast_states,
+            fast_grad_buffers,
+        ) = self._scan_tensors(episodes)
+
+        _, fast_states, fast_grad_buffers = self.second_pass_scan(
+            (input_ids, assistant_mask, pad_mask),
+            fast_states,
+            fast_grad_buffers,
+        )
+
+        self._store_fast_state(
+            fast_modules, fast_states, fast_grad_buffers,
+        )
 
 
     @torch_xla.compile(full_graph=True)
@@ -325,50 +494,29 @@ class ForteTrainer(BaseTrainer):
         losses = []
         aux = {}
 
-        # first loop
-        first_inds = split_given_size(
-            len(episodes), self.config.trainer.num_episodes_per_call
+        # Carry the fast state through the whole first sweep in one XLA While.
+        first_pass_losses = self.scan_first_passes(episodes)
+        torch_xla.sync(wait=True)
+        for index, loss in enumerate(first_pass_losses.unbind()):
+            aux[f"lm_loss/episode_{index:02d}"] = loss
+            losses.append(loss)
+        master_print(
+            f"First passes 00-{terminal_index:02d} completed."
         )
-        for inds in first_inds:
-
-            curr_losses = self.multi_first_pass(
-                *[episodes[i] for i in inds]
-            )
-            torch_xla.sync(wait=True)
-
-            for i, loss in enumerate(curr_losses):
-                aux[f"lm_loss/episode_{inds[i]:02d}"] = loss
-                losses.append(loss)
-
-            master_print(
-                f"First  pass {inds[-1]:02d} completed."
-            )
 
         self.model.finalize_state()
         self.model.zero_grad(set_to_none=False)
         torch_xla.sync(wait=True)
 
-        # second loop
-        second_inds = split_given_size(
-            len(episodes)-1, self.config.trainer.num_episodes_per_call
+        # Accumulate non-terminal gradients in one sharded XLA While.
+        self.scan_second_passes(episodes[:-1])
+        torch_xla.sync(wait=True)
+        master_print(
+            f"Second passes 00-{terminal_index - 1:02d} completed."
         )
-        for inds in second_inds:
-
-            self.multi_second_pass(
-                *[episodes[i] for i in inds]
-            )
-            torch_xla.sync(wait=True)
-        
-            master_print(
-                f"Second pass {inds[-1]:02d} completed."
-            )
 
         # only do lm loss the last chunk last
-        self.multi_first_pass(
-            *[episodes[-1]],
-            no_slow_grads=False,
-            update_second_mode=True # so that final error check it correct
-        )
+        self.terminal_pass(*episodes[-1])
         torch_xla.sync(wait=True)
 
         master_print(
