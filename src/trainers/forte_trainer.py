@@ -36,12 +36,14 @@ class ForteTrainer(BaseTrainer):
             self.device,
         )
         self.first_pass_scan = ScannedTrainingLoop(
-            None,
+            self.model,
             self.scanned_first_pass,
+            accumulate_gradients=False,
         )
         self.second_pass_scan = ScannedTrainingLoop(
             self.model,
             self.scanned_second_pass,
+            accumulate_gradients=True,
         )
 
 

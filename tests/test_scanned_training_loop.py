@@ -94,7 +94,9 @@ class ScannedTrainingLoopTest(unittest.TestCase):
         expected_loss, _, expected_carry = python_loop(
             function, (x, target), state, grad_buffer,
         )
-        scan = torch_utils.ScannedTrainingLoop(None, function)
+        scan = torch_utils.ScannedTrainingLoop(
+            model, function, accumulate_gradients=False,
+        )
         loss, *carry = scan((x, target), state, grad_buffer)
 
         torch.testing.assert_close(loss, expected_loss)
@@ -113,9 +115,10 @@ class ScannedTrainingLoopTest(unittest.TestCase):
         expected_loss, _, expected_carry = python_loop(
             function, (indices,), initial,
         )
-        loss, carry = torch_utils.ScannedTrainingLoop(None, function)(
-            (indices,), initial,
-        )
+        model = nn.Linear(1, 1).cuda()
+        loss, carry = torch_utils.ScannedTrainingLoop(
+            model, function, accumulate_gradients=False,
+        )((indices,), initial)
         torch.testing.assert_close(loss, expected_loss)
         torch.testing.assert_close(carry, expected_carry[0])
 
@@ -133,6 +136,7 @@ class ScannedTrainingLoopTest(unittest.TestCase):
         scan = torch_utils.ScannedTrainingLoop(
             scanned,
             lambda *args: scanned.body(*args, with_gradients=True),
+            accumulate_gradients=True,
         )
         loss, *carry = scan((x, target), state, grad_buffer)
 
@@ -152,6 +156,7 @@ class ScannedTrainingLoopTest(unittest.TestCase):
                 lambda *args, model=model: model.body(
                     *args, with_gradients=True,
                 ),
+                accumulate_gradients=True,
             )
             shard_loss, *shard_carry = shard_scan(
                 (x[:, shard], target[:, shard]),

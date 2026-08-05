@@ -20,21 +20,36 @@ A collection of PyTorch utility functions that might be useful.
 class ScannedTrainingLoop(nn.Module):
     """Run ``function`` in an XLA loop, accumulating supplied gradients."""
 
-    def __init__(self, model: nn.Module | None, function: callable):
+    class _Body(nn.Module):
+
+        def __init__(self, model, function):
+            super().__init__()
+            self.model = model
+            self.function = function
+
+        def forward(self, values, tensors):
+            return self.function(*values, *tensors)
+
+    def __init__(
+        self,
+        model: nn.Module,
+        function: callable,
+        accumulate_gradients: bool,
+    ):
         super().__init__()
-        object.__setattr__(self, "_scanned_model", model)
-        self.function = function
+        self.body = self._Body(model, function)
+        self.accumulate_gradients = accumulate_gradients
 
     def forward(
         self,
         iterable_tensors: tuple[torch.Tensor, ...],
         *carried_tensors: torch.Tensor,
     ):
-        model = object.__getattribute__(self, "_scanned_model")
+        model = self.body.model
         parameters = tuple(
             parameter for parameter in model.parameters()
             if parameter.requires_grad
-        ) if model is not None else ()
+        ) if self.accumulate_gradients else ()
         accumulated_gradients = []
         for parameter in parameters:
             gradient = torch.zeros_like(parameter)
@@ -44,19 +59,30 @@ class ScannedTrainingLoop(nn.Module):
                     torch_xla._XLAC._xla_mark_sharding(gradient, sharding)
             accumulated_gradients.append(gradient)
 
+        state_names = tuple(name for name, _ in self.body.named_parameters()) + tuple(
+            name for name, _ in self.body.named_buffers()
+        )
+        state = tuple(self.body.state_dict(keep_vars=True)[name] for name in state_names)
+
         def step(carry, values):
-            tensors, gradient_sums = carry
-            value, gradients, *tensors = self.function(*values, *tensors)
+            tensors, gradient_sums, state = carry
+            state_dict = dict(zip(state_names, state))
+            value, gradients, *tensors = torch.func.functional_call(
+                self.body,
+                state_dict,
+                (values, tensors),
+                strict=False,
+            )
             if gradients is not None:
                 gradient_sums = tuple(
                     total + gradient
                     for total, gradient in zip(gradient_sums, gradients)
                 )
-            return (tuple(tensors), gradient_sums), value
+            return (tuple(tensors), gradient_sums, state), value
 
-        (carried_tensors, accumulated_gradients), values = xla_scan(
+        (carried_tensors, accumulated_gradients, _), values = xla_scan(
             step,
-            (carried_tensors, tuple(accumulated_gradients)),
+            (carried_tensors, tuple(accumulated_gradients), state),
             iterable_tensors,
             is_fn_pure=True,
         )
