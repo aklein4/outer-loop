@@ -159,11 +159,13 @@ class ForteTrainer(BaseTrainer):
         )
         fast_modules = self.model.fast_modules()
         fast_spec = (None, ("data", "fsdp"), None, None)
+        # Preserve these tensor identities inside the body: XLA uses them to
+        # associate body outputs with While-loop carry slots.
         fast_states, fast_grad_buffers = (
             maybe_shard_no_gradients(
                 torch.stack([getattr(mlp, name) for mlp in fast_modules]).detach(),
                 spec=fast_spec,
-            )
+            ).requires_grad_(True)
             for name in ("state", "grad_buffer")
         )
         return inputs, fast_modules, fast_states, fast_grad_buffers
@@ -190,10 +192,8 @@ class ForteTrainer(BaseTrainer):
         episode_losses,
     ):
         """Pure first-pass body for an XLA While loop."""
-        fast_states_leaf = fast_states.detach().requires_grad_(True)
-        fast_grad_buffers_leaf = (
-            fast_grad_buffers.detach().requires_grad_(True)
-        )
+        fast_states_leaf = fast_states
+        fast_grad_buffers_leaf = fast_grad_buffers
 
         with self._autocast():
             with torch.no_grad():
@@ -364,10 +364,8 @@ class ForteTrainer(BaseTrainer):
         fast_grad_buffers,
     ):
         """Pure second-pass body for XLA gradient accumulation."""
-        fast_states_leaf = fast_states.detach().requires_grad_(True)
-        fast_grad_buffers_leaf = (
-            fast_grad_buffers.detach().requires_grad_(True)
-        )
+        fast_states_leaf = fast_states
+        fast_grad_buffers_leaf = fast_grad_buffers
 
         with self._autocast():
             infer_hidden_states = self.model.forward_backbone(
