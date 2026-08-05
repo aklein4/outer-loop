@@ -14,16 +14,11 @@ from models.llama import (
     LlamaRMSNorm,
     LlamaRotaryEmbedding,
 )
-import utils.constants as constants
 from utils.sharding_utils import maybe_shard_with_gradients
 from utils.torch_modules import LayerStack
 from utils.torch_utils import fixed_linear, gaussian_init, unit_softplus
 
 from torchprime.rope.rope import RopeScaling
-
-if constants.XLA_AVAILABLE:
-    from torch_xla.experimental.scan import scan as xla_scan
-
 
 def _get_G(
     activations: torch.FloatTensor,
@@ -907,53 +902,26 @@ class ForteModel(nn.Module):
         else:
             raise ValueError(f"invalid state update mode: {mode}")
 
-        fast_modules = self.fast_modules()
-        log_lrs = torch.stack([
-            mlp.fast_dynamic_lr.log_lr for mlp in fast_modules
-        ])
-        fast_module = fast_modules[0]
-        lr_scale = fast_module.fast_dynamic_lr.scalar_scaler
-        lr_offset = (
-            math.log(fast_module.fast_dynamic_lr.base_lr)
-            - math.log(fast_module.fast_dynamic_lr.fast_weight_size)
-        )
-
-        def update_one(carry, values):
-            state, grad_buffer, update, raw_gradient, log_lr = values
-            if state_update_is_scaled:
-                state_update = update
-            else:
-                lr = torch.exp(log_lr[None] * lr_scale + lr_offset)
-                state_update = -lr * update
-            return carry, (
-                state + state_update,
-                grad_buffer + gradient_sign * raw_gradient,
+        if state_update_is_scaled:
+            state_update = state_updates
+        else:
+            fast_modules = self.fast_modules()
+            fast_module = fast_modules[0]
+            log_lrs = torch.stack([
+                mlp.fast_dynamic_lr.log_lr for mlp in fast_modules
+            ])
+            lr_scale = fast_module.fast_dynamic_lr.scalar_scaler
+            lr_offset = (
+                math.log(fast_module.fast_dynamic_lr.base_lr)
+                - math.log(fast_module.fast_dynamic_lr.fast_weight_size)
             )
+            lr = torch.exp(log_lrs[:, None] * lr_scale + lr_offset)
+            state_update = -lr * state_updates
 
-        values = (
-            fast_states,
-            fast_grad_buffers,
-            state_updates,
-            raw_gradients,
-            log_lrs,
+        return (
+            fast_states + state_update,
+            fast_grad_buffers + gradient_sign * raw_gradients,
         )
-        if constants.XLA_AVAILABLE:
-            # The layer axis is replicated. The already-marked batch axis of
-            # the fast tensors remains sharded through this nested XLA While.
-            sentinel = fast_states.new_zeros(())
-            _, result = xla_scan(
-                update_one,
-                sentinel,
-                values,
-                is_fn_pure=True,
-            )
-            return result
-
-        results = [
-            update_one(fast_states.new_zeros(()), layer_values)[1]
-            for layer_values in zip(*values)
-        ]
-        return tuple(torch.stack(items) for items in zip(*results))
 
 
     @torch.no_grad()

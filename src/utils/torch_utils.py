@@ -21,32 +21,6 @@ A collection of PyTorch utility functions that might be useful.
 class ScannedTrainingLoop(nn.Module):
     """Run ``function`` in an XLA loop, accumulating supplied gradients."""
 
-    class _InjectGradients(torch.autograd.Function):
-
-        @staticmethod
-        def forward(ctx, value, scale, *parameters_and_gradients):
-            num_parameters = len(parameters_and_gradients) // 2
-            ctx.num_parameters = num_parameters
-            ctx.save_for_backward(
-                scale,
-                *parameters_and_gradients[num_parameters:],
-            )
-            return value
-
-        @staticmethod
-        def backward(ctx, output_grad):
-            scale, *gradients = ctx.saved_tensors
-            parameter_gradients = tuple(
-                output_grad * scale * gradient
-                for gradient in gradients
-            )
-            return (
-                None,
-                None,
-                *parameter_gradients,
-                *(None for _ in range(ctx.num_parameters)),
-            )
-
     def __init__(self, model: nn.Module | None, function: callable):
         super().__init__()
         object.__setattr__(self, "_scanned_model", model)
@@ -77,12 +51,8 @@ class ScannedTrainingLoop(nn.Module):
             if model is None:
                 loss = value + self.sentinel * 0.0
             else:
-                loss = self._InjectGradients.apply(
-                    value,
-                    value.new_tensor(steps),
-                    *parameters,
-                    *gradients,
-                )
+                torch.autograd.backward(parameters, gradients)
+                loss = value + parameters[0].flatten()[0] * 0.0
             return loss, *carry
 
         return gradient_accumulation(
