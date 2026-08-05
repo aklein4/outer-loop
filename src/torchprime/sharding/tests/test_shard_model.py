@@ -112,6 +112,51 @@ def test_shard_model_from_config_mock():
   assert num_shard_output_calls == 6
 
 
+def test_replicate_default_does_not_wrap_implicit_parameters():
+  model = SimpleLinear()
+  config = {
+    "replicate_default": True,
+    "fc1.weight": ["fsdp", None],
+  }
+  marked = []
+
+  def shard_param(param, spec):
+    marked.append(spec)
+    return param
+
+  _, info = shard_model_from_config(
+    model,
+    config,
+    lambda output, _: output,
+    shard_param,
+  )
+
+  assert marked == [("fsdp", None)]
+  assert info["implied_params"] == {
+    "fc1.bias",
+    "fc2.weight",
+    "fc2.bias",
+  }
+
+
+def test_implicit_sharding_wraps_only_partitioned_parameters():
+  model = SimpleLinear()
+  marked = []
+
+  def shard_param(param, spec):
+    marked.append(spec)
+    return param
+
+  shard_model_from_config(
+    model,
+    {},
+    lambda output, _: output,
+    shard_param,
+  )
+
+  assert marked == [("fsdp", None), (None, "fsdp")]
+
+
 def test_nested_spec_converted_to_tuple():
   model = SimpleLinear()
   config = {"fc1": [["fsdp", "tp"], None]}

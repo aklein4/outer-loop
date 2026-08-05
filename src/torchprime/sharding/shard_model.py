@@ -159,13 +159,18 @@ def shard_model_from_config(
         not replicate_default
       ):
         imp_spec[shape.index(max(shape))] = "fsdp"
+        return shard_param(param, _to_tuple(imp_spec))
 
-      return shard_param(param, _to_tuple(imp_spec))
+      else:
+        return param
       
     if spec is not None:
       seen_params.add(name)
-      return shard_param(param, _to_tuple(spec))
-    
+      if _to_tuple(spec) != tuple([None] * len(param.shape)):
+        return shard_param(param, _to_tuple(spec))
+      else:
+        return param
+
     unsharded_params.add(name)
     return param
 
