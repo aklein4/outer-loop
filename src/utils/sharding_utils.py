@@ -52,9 +52,10 @@ def shard_no_gradients(
     if spec is None:
         spec = batch_shard_spec(x)
 
-    return xs.mark_sharding(
-        x, mesh, spec
-    )
+    # Keep the annotation but do not expose XLAShardedTensor to callers.
+    # Higher-order ops such as gradient_accumulation index their inputs while
+    # functionalizing them, which is not supported by the wrapper subclass.
+    return xs.mark_sharding(x, mesh, spec).global_tensor
 
 
 def maybe_shard_no_gradients(
