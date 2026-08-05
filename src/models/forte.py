@@ -462,8 +462,8 @@ class ForteFastWeightMLP(nn.Module):
 
     @torch.no_grad()
     def _replace_grad_container(self, name: str, value: torch.Tensor) -> None:
-        value = maybe_shard_with_gradients(value.detach()).requires_grad_(True)
-        value.grad = maybe_shard_with_gradients(torch.zeros_like(value))
+        value = value.detach().requires_grad_(True)
+        value.grad = torch.zeros_like(value)
         setattr(self, name, value)
 
 
@@ -541,9 +541,7 @@ class ForteFastWeightMLP(nn.Module):
         self._replace_grad_container(
             "grad_buffer", self.grad_buffer
         )
-        self.final_grad_norm = maybe_shard_with_gradients(
-            self.grad_buffer.norm(dim=(-2, -1)).detach()
-        )
+        self.final_grad_norm = self.grad_buffer.norm(dim=(-2, -1)).detach()
 
 
     @torch.no_grad()
