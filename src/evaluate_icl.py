@@ -45,6 +45,13 @@ def parse_args():
     parser.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--lr-scale", type=float, default=1.0, help="Scale the learning rate for adaptation")
+    parser.add_argument(
+        "--lr-scale-decay",
+        action="store_true",
+        help="Linearly decay the adaptation learning-rate scale across the loop",
+    )
+    parser.add_argument("--lr-scale-start", type=float, default=1.0)
+    parser.add_argument("--lr-scale-end", type=float, default=0.1)
     parser.add_argument("--aux-weight", type=float, default=0.0, help="Weight for adaptation loss on non-assistant attended tokens")
     parser.add_argument("--eval-fn", default="output_loss", choices=["exact_match", "output_loss"])
     parser.add_argument("--save-name", default=None, help="Name for saving results (default: checkpoint name)")
@@ -197,7 +204,7 @@ def make_fns(model, args, device):
             loss = adaptation_loss(input_ids, assistant_mask, attention_mask, logits, args.aux_weight)
         loss.backward()
         if is_forte:
-            model.update_state(embeddings, attention_mask, mode=ForteMode.TRAIN_FIRST)
+            model.update_state(embeddings, attention_mask, mode=ForteMode.TRAIN_FIRST, lr_scale=lr_scale)
         else:
             model.update_state()
 
@@ -220,8 +227,22 @@ def adapt(train_fn, tokenizer, rows, example_idx, args, device, lr_scale):
         args.max_length,
         device,
     )
+    # Passing the schedule value as a tensor keeps torch.compile from treating
+    # every Python float in a linear schedule as a distinct specialization.
+    lr_scale = torch.as_tensor(
+        [lr_scale], device=device, dtype=torch.float32
+    ).reshape(1, 1, 1)
     with torch.enable_grad():
         train_fn(input_ids, assistant_mask, attention_mask, lr_scale)
+
+
+def adaptation_lr_scale(args, example_idx: int, total_steps: int) -> float:
+    if not args.lr_scale_decay:
+        return args.lr_scale
+    if total_steps <= 1:
+        return args.lr_scale_start
+    fraction = example_idx / (total_steps - 1)
+    return args.lr_scale_start + fraction * (args.lr_scale_end - args.lr_scale_start)
 
 
 
@@ -292,8 +313,17 @@ def evaluate_rows(model, train_fn, logits_fn, tokenizer, rows, args, device):
         if 0 in totals:
             add_scores(totals, counts, 0, batch, evaluate(model, logits_fn, tokenizer, batch, args, device))
 
-        for example_idx in tqdm(range(max(args.num_examples)), desc="adapting", leave=False):
-            adapt(train_fn, tokenizer, batch, example_idx, args, device, lr_scale=args.lr_scale)
+        total_adaptation_steps = max(args.num_examples)
+        for example_idx in tqdm(range(total_adaptation_steps), desc="adapting", leave=False):
+            adapt(
+                train_fn,
+                tokenizer,
+                batch,
+                example_idx,
+                args,
+                device,
+                lr_scale=adaptation_lr_scale(args, example_idx, total_adaptation_steps),
+            )
             n = example_idx + 1
             if n in totals:
                 add_scores(totals, counts, n, batch, evaluate(model, logits_fn, tokenizer, batch, args, device))
@@ -332,6 +362,11 @@ def main():
         raise ValueError("--checkpoint-steps is required unless --fresh-config is set")
 
     args.num_examples = sorted(set(args.num_examples))
+    if args.lr_scale_decay:
+        print(
+            f"Using linear lr-scale decay from {args.lr_scale_start:g} "
+            f"to {args.lr_scale_end:g} over {max(args.num_examples)} adaptation steps"
+        )
     device = torch.device(args.device)
     subsets = args.subsets or datasets.get_dataset_config_names(args.dataset)
     rows = load_all_rows(args, subsets)

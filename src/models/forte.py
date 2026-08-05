@@ -506,6 +506,7 @@ class ForteFastWeightMLP(nn.Module):
         embedding_mask: torch.BoolTensor,
         mode: ForteMode,
         state_update_is_scaled: bool = False,
+        lr_scale: float = 1.0
     ) -> None:
 
         G = self.grad_buffer.grad
@@ -517,7 +518,7 @@ class ForteFastWeightMLP(nn.Module):
             lr = self.fast_dynamic_lr(embeddings, embedding_mask)
             state_update = -lr * update
 
-        self.state.add_(state_update)
+        self.state.add_(state_update * lr_scale)
 
         if mode == ForteMode.TRAIN_FIRST:
             self.grad_buffer.add_(G)
@@ -862,14 +863,14 @@ class ForteModel(nn.Module):
         embeddings: torch.FloatTensor,
         embedding_mask: torch.BoolTensor,
         mode: ForteMode,
-        state_update_is_scaled: bool = False,
+        **kwargs
     ) -> None:
         for mlp in self.fast_modules():
             mlp.update_state(
                 embeddings,
                 embedding_mask,
                 mode,
-                state_update_is_scaled=state_update_is_scaled,
+                **kwargs
             )
 
 
