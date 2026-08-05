@@ -187,11 +187,11 @@ class ForteTrainer(BaseTrainer):
         assistant_mask,
         pad_mask,
         episode_slot,
-        fast_states,
-        fast_grad_buffers,
+        fast_carry,
         episode_losses,
     ):
         """Pure first-pass body for an XLA While loop."""
+        fast_states, fast_grad_buffers = fast_carry.unbind()
         fast_states_leaf = fast_states
         fast_grad_buffers_leaf = fast_grad_buffers
 
@@ -245,6 +245,11 @@ class ForteTrainer(BaseTrainer):
                 ForteMode.TRAIN_FIRST,
             )
         )
+        # Keep the outer carry visible outside the nested layer scan.
+        next_fast_carry = torch.stack((
+            next_fast_states,
+            next_fast_grad_buffers,
+        )) + fast_carry * 0.0
         next_episode_losses = episode_losses + episode_slot * loss.detach()
 
         # gradient_accumulation needs a differentiable scalar, but the first
@@ -252,8 +257,7 @@ class ForteTrainer(BaseTrainer):
         return (
             loss,
             None,
-            next_fast_states.detach(),
-            next_fast_grad_buffers.detach(),
+            next_fast_carry.detach(),
             next_episode_losses,
         )
 
@@ -284,8 +288,12 @@ class ForteTrainer(BaseTrainer):
             episode_losses,
             spec=(None,),
         )
+        fast_carry = maybe_shard_no_gradients(
+            torch.stack((fast_states, fast_grad_buffers)).detach(),
+            spec=(None, None, ("data", "fsdp"), None, None),
+        ).requires_grad_(True)
 
-        _, fast_states, fast_grad_buffers, episode_losses = (
+        _, fast_carry, episode_losses = (
             self.first_pass_scan(
                 (
                     input_ids,
@@ -293,11 +301,11 @@ class ForteTrainer(BaseTrainer):
                     pad_mask,
                     episode_slots,
                 ),
-                fast_states,
-                fast_grad_buffers,
+                fast_carry,
                 episode_losses,
             )
         )
+        fast_states, fast_grad_buffers = fast_carry.unbind()
 
         self._store_fast_state(
             fast_modules, fast_states, fast_grad_buffers,
@@ -429,6 +437,10 @@ class ForteTrainer(BaseTrainer):
                 ForteMode.TRAIN_SECOND,
                 state_update_is_scaled=True,
             )
+        )
+        next_fast_states = next_fast_states + fast_states * 0.0
+        next_fast_grad_buffers = (
+            next_fast_grad_buffers + fast_grad_buffers * 0.0
         )
 
         return (
