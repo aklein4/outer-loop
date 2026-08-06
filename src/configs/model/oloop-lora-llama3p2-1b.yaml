@@ -73,5 +73,5 @@ base_lr: 1.0e-3
 momentum_beta: 0.95
 grad_rms_eps: 1.0e-12
 
-momentum_dtype: bfloat16
+momentum_dtype: float32
 state_dtype: float32
