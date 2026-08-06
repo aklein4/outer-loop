@@ -11,9 +11,6 @@ import utils.constants as constants
 if constants.XLA_AVAILABLE:
     import torch_xla
     from torch_xla.experimental.scan import scan as xla_scan
-    from torch_xla.experimental.scan_layers import (
-        _create_or_get_cached_one_layer_fn,
-    )
 
 """
 A collection of PyTorch utility functions that might be useful.
@@ -49,14 +46,6 @@ class ScannedTrainingLoop(nn.Module):
         *carried_tensors: torch.Tensor,
     ):
         model = self.body.model
-        for module in model.modules():
-            wrappers = getattr(module, "_scan_layer_wrappers", ())
-            if wrappers and getattr(module, "is_layer_pure", False):
-                _create_or_get_cached_one_layer_fn(
-                    wrappers[0],
-                    module.partition_fn,
-                    is_layer_pure=True,
-                )
         parameters = tuple(
             parameter for parameter in model.parameters()
             if parameter.requires_grad

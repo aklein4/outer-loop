@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from functorch.compile import default_partition
+from torch._subclasses.functional_tensor import FunctionalTensor
 from torch_xla.experimental.scan_layers import scan_layers
 from torch.utils._pytree import tree_leaves
 
@@ -24,6 +25,17 @@ class HomogeneousSequentialScan(HomogeneousSequential):
     )
 
   def forward(self, *input, **broadcasted_inputs: PyTree):
+    # PyTorch/XLA nested scan backward cannot currently accept the outer
+    # AOTAutograd FunctionalTensor tangents. Preserve the same computation by
+    # unrolling layers only while tracing inside another scan.
+    if any(
+      isinstance(value, FunctionalTensor)
+      for value in tree_leaves((input, broadcasted_inputs))
+    ):
+      return HomogeneousSequential.forward(
+        self, *input, **broadcasted_inputs
+      )
+
     if len(input) == 1:
       # Handle single argument case: we don't need to call the module with a tuple.
       input = input[0]
