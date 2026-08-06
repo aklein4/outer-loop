@@ -12,14 +12,6 @@ from utils.logging_utils import master_print
 from utils.sharding_utils import maybe_shard_with_gradients
 
 
-def split_given_size(n, size):
-    arr = np.array_split(
-        np.arange(n),
-        np.arange(size,n,size)
-    )
-    return [a.tolist() for a in arr]
-
-
 class ForteTrainer(BaseTrainer):
 
     model: ForteModel
@@ -79,12 +71,13 @@ class ForteTrainer(BaseTrainer):
             "fast": fast,
             "embeddings": embeddings,
         }
-        if "embeddings" not in self.config.trainer.multiple_optimizers:
-            parameters.pop("embeddings")
-        if "slow" not in self.config.trainer.multiple_optimizers:
-            parameters.pop("slow")
 
-        return parameters
+        out = {}
+        for k, v in parameters.items():
+            if k in self.config.trainer.multiple_optimizers:
+                out[k] = v
+
+        return out
 
 
     def loss_and_lm_grad(
@@ -147,6 +140,7 @@ class ForteTrainer(BaseTrainer):
         return loss, lm_grad
     
 
+    @torch_xla.compile(full_graph=True)
     def first_pass(
         self,
         input_ids,
@@ -165,7 +159,7 @@ class ForteTrainer(BaseTrainer):
                 embeddings = self.model.forward_embeddings(
                     infer_hidden_states,
                     pad_mask,
-                )
+                ).detach()
 
             hidden_states = self.model.forward_backbone(
                 input_ids,
@@ -214,19 +208,6 @@ class ForteTrainer(BaseTrainer):
 
 
     @torch_xla.compile(full_graph=True)
-    def multi_first_pass(
-        self, *episodes, no_slow_grads=True, update_second_mode=False
-    ):
-        return [
-            self.first_pass(
-                *episode,
-                no_slow_grads=no_slow_grads,
-                update_second_mode=update_second_mode,
-            )
-            for episode in episodes
-        ]
-
-
     def second_pass(
         self,
         input_ids,
@@ -236,9 +217,10 @@ class ForteTrainer(BaseTrainer):
 
         with self._autocast():
 
-            infer_hidden_states = self.model.forward_backbone(
-                input_ids, mode=ForteMode.INFERENCE
-            )
+            with torch.set_grad_enabled(self.config.trainer.propagate_embedding_grads):
+                infer_hidden_states = self.model.forward_backbone(
+                    input_ids, mode=ForteMode.INFERENCE
+                )
             embeddings = self.model.forward_embeddings(
                 infer_hidden_states,
                 pad_mask,
@@ -282,16 +264,6 @@ class ForteTrainer(BaseTrainer):
 
 
     @torch_xla.compile(full_graph=True)
-    def multi_second_pass(
-        self, *episodes
-    ):
-        return [
-            self.second_pass(*episode)
-            for episode in episodes
-        ]
-
-
-    @torch_xla.compile(full_graph=True)
     def post_forward(self):
 
         err = self.model.relative_grad_error()
@@ -320,52 +292,48 @@ class ForteTrainer(BaseTrainer):
             assistant_mask.unbind(dim=1),
             pad_mask.unbind(dim=1),
         ))
+
         assert len(episodes) > 1
         terminal_index = len(episodes) - 1
+
         losses = []
         aux = {}
 
         # first loop
-        first_inds = split_given_size(
-            len(episodes), self.config.trainer.num_episodes_per_call
-        )
-        for inds in first_inds:
+        for i, episode in enumerate(episodes):
 
-            curr_losses = self.multi_first_pass(
-                *[episodes[i] for i in inds]
+            loss = self.first_pass(
+                *episode,
             )
             torch_xla.sync(wait=True)
 
-            for i, loss in enumerate(curr_losses):
-                aux[f"lm_loss/episode_{inds[i]:02d}"] = loss
-                losses.append(loss)
+            aux[f"lm_loss/episode_{i:02d}"] = loss
+            losses.append(loss)
 
             master_print(
-                f"First  pass {inds[-1]:02d} completed."
+                f"First  pass {i:02d} completed."
             )
 
+        # finalize the accumulated state and grads
         self.model.finalize_state()
         self.model.zero_grad(set_to_none=False)
         torch_xla.sync(wait=True)
 
         # second loop
-        second_inds = split_given_size(
-            len(episodes)-1, self.config.trainer.num_episodes_per_call
-        )
-        for inds in second_inds:
+        for i, episode in enumerate(episodes[:-1]):
 
-            self.multi_second_pass(
-                *[episodes[i] for i in inds]
+            self.second_pass(
+                *episode,
             )
             torch_xla.sync(wait=True)
         
             master_print(
-                f"Second pass {inds[-1]:02d} completed."
+                f"Second pass {i:02d} completed."
             )
 
         # only do lm loss the last chunk last
-        self.multi_first_pass(
-            *[episodes[-1]],
+        self.first_pass(
+            *episodes[-1],
             no_slow_grads=False,
             update_second_mode=True # so that final error check it correct
         )
@@ -382,7 +350,7 @@ class ForteTrainer(BaseTrainer):
         aux.update(post_aux)
         master_print("Optimization step completed.")
 
-        # metricsc
+        # metrics
         final_loss = torch.stack(losses).mean()
         aux["atom_count"] = pad_mask.long().sum()
 

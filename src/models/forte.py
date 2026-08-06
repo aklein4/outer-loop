@@ -303,16 +303,30 @@ class DynamicLR(nn.Module):
             self.fast_weight_size,
             bias=False,
         )
+        self.activation_gate_proj.weight.data.normal_(
+            std=0.10/math.sqrt(config.hidden_size)
+        )
+        self.activation_gate_proj.inited = True
+
         self.gradient_gate_proj = nn.Linear(
             config.hidden_size,
             self.fast_weight_size,
             bias=False,
         )
+        self.gradient_gate_proj.weight.data.normal_(
+            std=0.10/math.sqrt(config.hidden_size)
+        )
+        self.gradient_gate_proj.inited = True
+
         self.token_gate_proj = nn.Linear(
             config.hidden_size,
             1,
             bias=False,
         )
+        self.token_gate_proj.weight.data.normal_(
+            std=0.10/math.sqrt(config.hidden_size)
+        )
+        self.token_gate_proj.inited = True
 
 
     def forward(
