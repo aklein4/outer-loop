@@ -21,46 +21,74 @@ from utils.torch_utils import fixed_linear, gaussian_init, unit_softplus
 from torchprime.rope.rope import RopeScaling
 
 
+def _mean_rms(
+    x: torch.FloatTensor,
+    eps: float,
+    count: torch.FloatTensor,
+    invert: bool = False,
+) -> torch.FloatTensor:
+    ms = (
+        x.square().sum(dim=-2, keepdim=True) / count
+        + eps**2
+    )
+    if invert:
+        return torch.rsqrt(ms)
+    return torch.sqrt(ms)
+
+
+def _float_mask(
+    x: torch.Tensor,
+    mask: torch.BoolTensor
+) -> torch.FloatTensor:
+    return x.float() * mask
+
+
 def _get_G(
     activations: torch.FloatTensor,
     output_grad: torch.FloatTensor,
     down_weight: torch.FloatTensor,
-    activation_gate_logits: torch.FloatTensor,
-    gradient_gate_logits: torch.FloatTensor,
+    activation_delta: torch.FloatTensor,
+    gradient_delta: torch.FloatTensor,
     token_gate_logits: torch.FloatTensor,
     valid_mask: torch.BoolTensor,
     eps: float,
 ) -> torch.FloatTensor:
+    valid_mask = valid_mask[..., None].float()
     
     # all float to avoid gradient accumulation drift
-    a = activations.float()
+    a = _float_mask(activations, valid_mask)
+    output_grad = _float_mask(output_grad, valid_mask)
+    activation_delta = _float_mask(activation_delta, valid_mask)
+    gradient_delta = _float_mask(gradient_delta, valid_mask)
+
+    down_weight = down_weight.float()
+    token_gate_logits = token_gate_logits.float()
+    count = valid_mask.sum(dim=-2, keepdim=True).clamp_min(1.0)
+
+    gradient_delta = gradient_delta * _mean_rms(
+        output_grad, eps, count, invert=False
+    )
     g = fixed_linear(
-        output_grad.float(), down_weight.T.float()
+        (output_grad + gradient_delta),
+        down_weight.T
+    )
+    g_raw = fixed_linear(
+        output_grad,
+        down_weight.T
     )
 
-    # explicit masking
-    mask = valid_mask[..., None].float()
-    a = a * mask
-    g = g * mask
-    valid_count = mask.sum(dim=-2, keepdim=True).clamp_min(1.0)
-
-    g_norm = g * torch.rsqrt(
-        g.square().sum(dim=-2, keepdim=True) / valid_count
-        + eps**2
+    g_norm = g * _mean_rms(
+        g, eps, count, invert=True
     )
-    a_norm = a * torch.rsqrt(
-        a.square().sum(dim=-2, keepdim=True) / valid_count
-        + eps**2
-    )
+    a_norm = a * _mean_rms(
+        a, eps, count, invert=True
+    ) + activation_delta
 
-    a_gated = unit_softplus(activation_gate_logits.float()) * a_norm
-    g_gated = unit_softplus(gradient_gate_logits.float()) * g_norm
-
-    a_gated = a_gated * unit_softplus(token_gate_logits.float())
+    a_gated = a_norm * unit_softplus(token_gate_logits)
 
     return (
-        torch.einsum("blo,bli->boi", g, a),
-        torch.einsum("blo,bli->boi", g_gated, a_gated),
+        torch.einsum("blo,bli->boi", g_raw, a),
+        torch.einsum("blo,bli->boi", g_norm, a_gated),
     )
 
 
@@ -114,8 +142,8 @@ class ForteFastWeightFunction(torch.autograd.Function):
         activations: torch.FloatTensor,
         output: torch.FloatTensor,
         down_weight: torch.FloatTensor,
-        activation_gate_logits: torch.FloatTensor,
-        gradient_gate_logits: torch.FloatTensor,
+        activation_delta: torch.FloatTensor,
+        gradient_delta: torch.FloatTensor,
         token_gate_logits: torch.FloatTensor,
         valid_mask: torch.BoolTensor,
         grad_buffer: torch.FloatTensor,
@@ -129,8 +157,8 @@ class ForteFastWeightFunction(torch.autograd.Function):
         to_save = (
             activations,
             down_weight,
-            activation_gate_logits,
-            gradient_gate_logits,
+            activation_delta,
+            gradient_delta,
             token_gate_logits,
             valid_mask,
         )
@@ -156,8 +184,8 @@ class ForteFastWeightFunction(torch.autograd.Function):
             (
                 activations,
                 down_weight,
-                activation_gate_logits,
-                gradient_gate_logits,
+                activation_delta,
+                gradient_delta,
                 token_gate_logits,
                 valid_mask,
             ) = ctx.saved_tensors
@@ -166,8 +194,8 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 activations,
                 output_grad,
                 down_weight,
-                activation_gate_logits,
-                gradient_gate_logits,
+                activation_delta,
+                gradient_delta,
                 token_gate_logits,
                 valid_mask,
                 grad_eps,
@@ -177,8 +205,8 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 None, # activations
                 output_grad, # output
                 None, # down_weight
-                None, # activation_gate_logits
-                None, # gradient_gate_logits
+                None, # activation_delta
+                None, # gradient_delta
                 None, # token_gate_logits
                 None, # valid_mask
                 G, # grad_buffer
@@ -195,8 +223,8 @@ class ForteFastWeightFunction(torch.autograd.Function):
         (
             activations,
             down_weight,
-            activation_gate_logits,
-            gradient_gate_logits,
+            activation_delta,
+            gradient_delta,
             token_gate_logits,
             valid_mask,
             grad_buffer,
@@ -207,8 +235,8 @@ class ForteFastWeightFunction(torch.autograd.Function):
         with torch.enable_grad():
             activations_leaf = _get_leaf(activations)
             down_weight_leaf = _get_leaf(down_weight)
-            activation_gate_logits_leaf = _get_leaf(activation_gate_logits)
-            gradient_gate_logits_leaf = _get_leaf(gradient_gate_logits)
+            activation_delta_leaf = _get_leaf(activation_delta)
+            gradient_delta_leaf = _get_leaf(gradient_delta)
             token_gate_logits_leaf = _get_leaf(token_gate_logits)
             lr_leaf = _get_leaf(lr)
 
@@ -216,8 +244,8 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 activations_leaf,
                 output_grad,
                 down_weight_leaf,
-                activation_gate_logits_leaf,
-                gradient_gate_logits_leaf,
+                activation_delta_leaf,
+                gradient_delta_leaf,
                 token_gate_logits_leaf,
                 valid_mask,
                 grad_eps,
@@ -241,8 +269,8 @@ class ForteFastWeightFunction(torch.autograd.Function):
             (
                 activation_grad,
                 down_weight_grad,
-                activation_gate_logits_grad,
-                gradient_gate_logits_grad,
+                activation_delta_grad,
+                gradient_delta_grad,
                 token_gate_logits_grad,
                 lr_grad,
             ) = torch.autograd.grad(
@@ -250,8 +278,8 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 (
                     activations_leaf,
                     down_weight_leaf,
-                    activation_gate_logits_leaf,
-                    gradient_gate_logits_leaf,
+                    activation_delta_leaf,
+                    gradient_delta_leaf,
                     token_gate_logits_leaf,
                     lr_leaf,
                 ),
@@ -261,8 +289,8 @@ class ForteFastWeightFunction(torch.autograd.Function):
             activation_grad.to(activations.dtype),
             output_grad,
             down_weight_grad.to(down_weight.dtype),
-            activation_gate_logits_grad.to(activation_gate_logits.dtype),
-            gradient_gate_logits_grad.to(gradient_gate_logits.dtype),
+            activation_delta_grad.to(activation_delta.dtype),
+            gradient_delta_grad.to(gradient_delta.dtype),
             token_gate_logits_grad.to(token_gate_logits.dtype),
             None, # valid_mask
             G, # grad_buffer
@@ -278,8 +306,8 @@ class DynamicLR(nn.Module):
 
     no_muon_patterns = (
         "log_lr",
-        "activation_gate_proj",
-        "gradient_gate_proj",
+        "activation_delta_proj",
+        "gradient_delta_proj",
         "token_gate_proj",
     )
 
@@ -298,25 +326,25 @@ class DynamicLR(nn.Module):
             torch.zeros(self.fast_weight_size, self.fast_weight_size)
         )
 
-        self.activation_gate_proj = nn.Linear(
+        self.activation_delta_proj = nn.Linear(
             config.hidden_size,
             self.fast_weight_size,
             bias=False,
         )
-        self.activation_gate_proj.weight.data.normal_(
+        self.activation_delta_proj.weight.data.normal_(
             std=0.10/math.sqrt(config.hidden_size)
         )
-        self.activation_gate_proj.inited = True
+        self.activation_delta_proj.inited = True
 
-        self.gradient_gate_proj = nn.Linear(
+        self.gradient_delta_proj = nn.Linear(
             config.hidden_size,
-            self.fast_weight_size,
+            config.hidden_size,
             bias=False,
         )
-        self.gradient_gate_proj.weight.data.normal_(
+        self.gradient_delta_proj.weight.data.normal_(
             std=0.10/math.sqrt(config.hidden_size)
         )
-        self.gradient_gate_proj.inited = True
+        self.gradient_delta_proj.inited = True
 
         self.token_gate_proj = nn.Linear(
             config.hidden_size,
@@ -433,15 +461,15 @@ class ForteFastWeightMLP(nn.Module):
         )
         output = self.down_fast(value)
 
-        activation_gate_logits = None
-        gradient_gate_logits = None
+        activation_delta = None
+        gradient_delta = None
         token_gate_logits = None
         if mode != ForteMode.INFERENCE:
-            activation_gate_logits = (
-                self.fast_dynamic_lr.activation_gate_proj(lr_embeddings)
+            activation_delta = (
+                self.fast_dynamic_lr.activation_delta_proj(lr_embeddings)
             )
-            gradient_gate_logits = (
-                self.fast_dynamic_lr.gradient_gate_proj(lr_embeddings)
+            gradient_delta = (
+                self.fast_dynamic_lr.gradient_delta_proj(lr_embeddings)
             )
             token_gate_logits = (
                 self.fast_dynamic_lr.token_gate_proj(lr_embeddings)
@@ -463,8 +491,8 @@ class ForteFastWeightMLP(nn.Module):
                 activations,
                 output,
                 self.down_fast.weight,
-                activation_gate_logits,
-                gradient_gate_logits,
+                activation_delta,
+                gradient_delta,
                 token_gate_logits,
                 lr_embedding_mask,
                 self.grad_buffer,

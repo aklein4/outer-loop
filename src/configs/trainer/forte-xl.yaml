@@ -84,7 +84,7 @@ max_grad_value: null
 
 input_sharding_spec: [[data, fsdp], null, null]
 
-propagate_embedding_grads: false
+propagate_embedding_grads: true
 
 num_logit_iterations: 8
 
