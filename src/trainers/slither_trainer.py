@@ -31,6 +31,23 @@ class SlitherTrainer(BaseTrainer):
             enabled=self.config.trainer.use_autocast,
         )
     
+
+    def loss_fn(self, logits, labels, total_labels):
+
+        sum_loss = lm_loss_fn(
+            logits, labels,
+            shift_logits=False, shift_labels=False,
+            ignore_index=self.model.config.pad_token_id,
+            reduction="sum",
+        )
+
+        portion_loss = sum_loss / total_labels.to(sum_loss.dtype)
+        chunk_loss = sum_loss / (
+            labels != self.model.config.pad_token_id
+        ).long().sum().clamp_min(1).to(sum_loss.dtype)
+
+        return portion_loss, chunk_loss
+
     
     @torch_xla.compile(full_graph=True)
     def go_forward(
@@ -68,7 +85,24 @@ class SlitherTrainer(BaseTrainer):
         if curr_mem_states is not None:
             curr_mem_states = curr_mem_states.detach().requires_grad_(True)
 
+            tmp_grad = self.model.get_state_grad()
+
+            with self._autocast():
+                repeat_logits, _ = self.model.forward(
+                    input_ids=input_ids,
+                    mem_states=curr_mem_states,
+                )
+                repeat_portion_loss, repeat_chunk_loss = self.loss_fn(
+                    repeat_logits, labels, total_labels,
+                )
+
+            torch.autograd.backward(
+                repeat_portion_loss * self.config.trainer.repeat_loss_weight,
+                inputs=tuple(m.state for m in self.model._mechanisms())
+            )
+
             self.model.decrement_state(curr_mem_states)
+            self.model.set_state_grad(tmp_grad)
 
         if self.config.trainer.decay is not None:
             self.model.scale_state_grad(self.config.trainer.decay)
@@ -83,16 +117,9 @@ class SlitherTrainer(BaseTrainer):
                 mem_states=prev_mem_states,
             )
 
-            sum_loss = lm_loss_fn(
-                logits, labels,
-                shift_logits=False, shift_labels=False,
-                ignore_index=self.model.config.pad_token_id,
-                reduction="sum",
+            portion_loss, chunk_loss = self.loss_fn(
+                logits, labels, total_labels,
             )
-            portion_loss = sum_loss / total_labels.to(sum_loss.dtype)
-            chunk_loss = sum_loss / (
-                labels != self.model.config.pad_token_id
-            ).long().sum().clamp_min(1).to(sum_loss.dtype)
 
             mem_attn_loss = 0.0
             if curr_mem_grad is not None:
@@ -116,7 +143,12 @@ class SlitherTrainer(BaseTrainer):
             else None
         )
 
-        return portion_loss.detach(), chunk_loss.detach(), prev_mem_grad
+        return (
+            portion_loss.detach(), chunk_loss.detach(),
+            repeat_portion_loss.detach() if curr_mem_states is not None else None,
+            repeat_chunk_loss.detach() if curr_mem_states is not None else None,
+            prev_mem_grad
+        )
 
 
     @torch_xla.compile(full_graph=True)
@@ -158,7 +190,9 @@ class SlitherTrainer(BaseTrainer):
 
         aux = {}
         mem_stack = []
+
         portion_losses = []
+        repeat_portion_losses = []
 
         assert len(episodes) >= 2
 
@@ -187,7 +221,11 @@ class SlitherTrainer(BaseTrainer):
             curr_mem_states = mem_stack[index] if index < len(episodes)-1 else None
             prev_mem_states = mem_stack[index-1] if index > 0 else None
 
-            portion_loss, chunk_loss, curr_mem_grad = self.go_backward(
+            (
+                portion_loss, chunk_loss,
+                repeat_portion_loss, repeat_chunk_loss,
+                curr_mem_grad
+            ) = self.go_backward(
                 input_ids=input_ids,
                 labels=labels,
                 curr_mem_states=curr_mem_states,
@@ -198,6 +236,10 @@ class SlitherTrainer(BaseTrainer):
         
             aux[f"lm_loss/chunk_{index:02d}"] = chunk_loss
             portion_losses.append(portion_loss)
+
+            if repeat_portion_loss is not None:
+                aux[f"repeat_lm_loss/chunk_{index:02d}"] = repeat_chunk_loss
+                repeat_portion_losses.append(repeat_portion_loss)
 
             if curr_mem_states is not None:
                 mem_stack.pop()
@@ -214,20 +256,31 @@ class SlitherTrainer(BaseTrainer):
 
         # metrics
         final_loss = torch.stack(portion_losses).sum()
+        aux["repeat_loss"] = torch.stack(repeat_portion_losses).sum()
         aux["atom_count"] = total_labels
 
         decades = defaultdict(list)
+        repeat_decades = defaultdict(list)
         for key, value in aux.items():
 
             if "chunk_" not in key or key.endswith("00"):
                 continue
 
-            decade = int(key.split("_")[-1][0])
-            decades[decade].append(value)
+            if "repeat" in key:
+                decade = int(key.split("_")[-1][0])
+                repeat_decades[decade].append(value)
+
+            else:
+                decade = int(key.split("_")[-1][0])
+                decades[decade].append(value)
 
         for decade, values in decades.items():
             aux[
                 f"grouped_lm_loss/decade_{decade:02d}"
+            ] = torch.stack(values).mean()
+        for decade, values in repeat_decades.items():
+            aux[
+                f"grouped_repeat_lm_loss/decade_{decade:02d}"
             ] = torch.stack(values).mean()
 
         return final_loss, aux, grad_norm

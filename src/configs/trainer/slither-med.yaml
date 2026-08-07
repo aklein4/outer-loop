@@ -58,3 +58,4 @@ max_grad_value: null
 # They will appear as attributes of config.trainer
 
 decay: null
+repeat_loss_weight: 1.0

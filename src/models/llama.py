@@ -190,6 +190,11 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
 class LlamaAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
+    no_muon_patterns = [
+        "gate_proj"
+    ]
+
+
     def __init__(self, config: DictConfig, layer_idx: int | None = None, is_causal: bool = True):
         super().__init__()
         self.config = config
@@ -365,6 +370,11 @@ class LlamaModel(nn.Module):
     layer_type = LlamaDecoderLayer
     do_norm = True
 
+    no_muon_patterns = [
+        "embed_tokens",
+    ]
+
+
     def __init__(self, config: DictConfig):
         super().__init__()
         self.config = config
@@ -461,6 +471,10 @@ class LlamaModel(nn.Module):
 class LlamaForCausalLM(nn.Module):
 
     transformer_type = LlamaModel
+
+    no_muon_patterns = [
+        "lm_head",
+    ]
 
     
     def __init__(self, config):

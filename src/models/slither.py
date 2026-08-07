@@ -382,6 +382,14 @@ class SlitherStateMechanism(nn.Module):
 
 
     @torch.no_grad()
+    def get_state_grad(self) -> torch.FloatTensor:
+        return self.state.grad.clone()
+
+    @torch.no_grad()
+    def set_state_grad(self, grad: torch.FloatTensor) -> None:
+        self.state.grad.copy_(grad)
+
+    @torch.no_grad()
     def scale_state_grad(self, scale: float) -> None:
         self.state.grad.mul_(scale)
 
@@ -707,6 +715,18 @@ class SlitherModel(nn.Module):
         for mechanism in self._mechanisms():
             mechanism.decrement_state(mem_states)
 
+
+    @torch.no_grad()
+    def get_state_grad(self) -> torch.FloatTensor:
+        grads = []
+        for mechanism in self._mechanisms():
+            grads.append(mechanism.get_state_grad())
+        return torch.stack(grads, dim=1)
+
+    @torch.no_grad()
+    def set_state_grad(self, grad: torch.FloatTensor) -> None:
+        for mechanism, g in zip(self._mechanisms(), grad.unbind(dim=1)):
+            mechanism.set_state_grad(g)
 
     @torch.no_grad()
     def scale_state_grad(self, scale: float) -> None:
