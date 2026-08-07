@@ -119,11 +119,12 @@ def load_checkpoint_state(
     
     subfolder = f"{step:012d}"
     subfolder_path = os.path.join(local_path, subfolder)
+    state_path = os.path.join(subfolder_path, "model.pt")
 
     if ignore_cache:
         shutil.rmtree(subfolder_path, ignore_errors=True)
         
-    if not os.path.exists(subfolder_path):
+    if not os.path.isfile(state_path):
         hf.snapshot_download(
             repo_id=url,
             allow_patterns=[subfolder + "/*"],
@@ -131,7 +132,6 @@ def load_checkpoint_state(
         )
 
     # load the weights
-    state_path = os.path.join(subfolder_path, "model.pt")
     state_dict = torch.load(state_path, map_location="cpu")
 
     # remove and xla specific keys

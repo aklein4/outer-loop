@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils._pytree import tree_leaves, tree_map
 
 from omegaconf import DictConfig
 import math
@@ -39,7 +40,33 @@ class LayerStack(nn.Module):
             yield layer
 
 
+    @staticmethod
+    def _tensorize_scalars(carry, kwargs):
+        reference = next(
+            value for value in tree_leaves(carry)
+            if isinstance(value, torch.Tensor)
+        )
+        dtype = (
+            reference.dtype
+            if reference.is_floating_point()
+            else torch.get_default_dtype()
+        )
+
+        def tensorize(value):
+            if isinstance(value, (float, int, bool)):
+                return torch.tensor(
+                    value,
+                    device=reference.device,
+                    dtype=dtype,
+                )
+            return value
+
+        return tree_map(tensorize, kwargs)
+
+
     def forward(self, carry, **kwargs):
+
+        kwargs = self._tensorize_scalars(carry, kwargs)
 
         if (
             self.gradient_checkpointing

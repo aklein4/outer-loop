@@ -13,6 +13,17 @@ A collection of PyTorch utility functions that might be useful.
 """
 
 
+def set_no_muon(model: nn.Module) -> None:
+    """Mark parameters matching the model's ``no_muon_patterns``."""
+    for module in model.modules():
+        patterns = getattr(module, "no_muon_patterns", ())
+        for name, param in module.named_parameters(recurse=True):
+            if any(pattern in name for pattern in patterns):
+                param.no_muon = True
+
+    return model
+
+
 def scale_gradient(
     x: torch.Tensor,
     scale: torch.Tensor | float | dict
@@ -424,6 +435,12 @@ def inv_softplus(x: torch.Tensor | float) -> torch.Tensor:
     if isinstance(x, torch.Tensor):
         return torch.log(x.exp() - 1.0)
     return math.log(math.exp(x) - 1.0)
+
+
+def unit_softplus(x: torch.Tensor | float) -> torch.Tensor:
+    if isinstance(x, torch.Tensor):
+        return F.softplus(x) / math.log(2)
+    return math.log(1 + math.exp(x)) / math.log(2)
 
 
 def slerp(
