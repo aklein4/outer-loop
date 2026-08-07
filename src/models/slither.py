@@ -165,6 +165,48 @@ class SlitherAttention(nn.Module):
         return attn_output
 
 
+class ResidualConvMixer(nn.Module):
+
+    no_muon_patterns = [
+        "conv"
+    ]
+
+
+    def __init__(
+        self,
+        hidden_size: int,
+        kernel_size: int,
+        init_scale: float = 1.0,
+    ):
+        super().__init__()
+        assert kernel_size % 2 == 1, "kernel_size must be odd"
+
+        self.hidden_size = hidden_size
+        self.kernel_size = kernel_size
+        self.init_scale = init_scale
+
+        self.weight_scale = math.sqrt(self.hidden_size)
+
+        self.conv = nn.Conv1d(
+            in_channels=hidden_size,
+            out_channels=hidden_size,
+            kernel_size=kernel_size,
+            padding=kernel_size // 2,
+            groups=hidden_size,
+            bias=False,
+        )
+        self.conv.weight.data.normal_(
+            std=init_scale/(self.weight_scale*math.sqrt(kernel_size))
+        )
+
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return (
+            x +
+            self.conv(x.mT).mT * self.weight_scale
+        )
+
+
 class OddActivation(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -229,6 +271,12 @@ class SlitherStateWriter(nn.Module):
             bias=False,
         )
 
+        self.v_mixer = ResidualConvMixer(
+            self.state_size,
+            config.write_mixer_kernel_size,
+            init_scale=config.write_mixer_init_scale,
+        )
+
         self.v_gate = nn.Linear(
             config.hidden_size,
             self.num_state_heads,
@@ -245,6 +293,7 @@ class SlitherStateWriter(nn.Module):
         key_states = self.in_norm(key_states)
 
         value_states = self.v_proj(mem_states)
+        value_states = self.v_mixer(value_states)
         gate = 2.0 * torch.sigmoid(self.v_gate(mem_states).float())
         value_states = self.out_norm(value_states, scales=gate)
 

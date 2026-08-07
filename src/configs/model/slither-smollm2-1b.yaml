@@ -65,4 +65,7 @@ num_state_heads: 48
 
 init_state_out_scale: 0.1
 
+write_mixer_kernel_size: 5
+write_mixer_init_scale: 0.1
+
 chunk_length: 1024
