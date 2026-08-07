@@ -6,7 +6,6 @@ import torch.nn.functional as F
 import math
 from omegaconf import DictConfig
 
-from torchprime.layers.sequential import HomogeneousSequential
 from torchprime.rope.rope import RopeScaling
 from torchprime.torch_xla_models.attention import AttentionModule
 
@@ -27,6 +26,11 @@ from models.llama import (
 
 
 class SlitherAttention(nn.Module):
+
+    no_muon_patterns = [
+        "gate_proj"
+    ]
+
 
     def __init__(self, config: DictConfig, layer_idx: int, is_causal: bool = True):
         super().__init__()
@@ -195,22 +199,23 @@ class GroupRMSNorm(nn.Module):
 
 class SlitherStateWriter(nn.Module):
 
+    no_muon_patterns = [
+        "v_gate"
+    ]
+
+
     def __init__(self, config: DictConfig):
         super().__init__()
 
         self.state_size = config.state_size
-
-        self.num_state_in_heads = config.num_state_in_heads
-        self.num_state_out_heads = config.num_state_out_heads
-
-        self.in_head_dim = self.state_size // self.num_state_in_heads
+        self.num_state_heads = config.num_state_heads
 
         self.activation = OddActivation()
-        self.in_norm = GroupRMSNorm(
-            self.state_size, self.num_state_in_heads, eps=config.rms_norm_eps
+        self.in_norm = LlamaRMSNorm(
+            self.state_size, eps=config.rms_norm_eps, elementwise_affine=False
         )
         self.out_norm = GroupRMSNorm(
-            self.state_size, self.num_state_out_heads, eps=config.rms_norm_eps
+            self.state_size, self.num_state_heads, eps=config.rms_norm_eps
         )
 
         self.k_proj = nn.Linear(
@@ -224,14 +229,9 @@ class SlitherStateWriter(nn.Module):
             bias=False,
         )
 
-        self.in_gate = nn.Linear(
+        self.v_gate = nn.Linear(
             config.hidden_size,
-            self.num_state_in_heads,
-            bias=False,
-        )
-        self.out_gate = nn.Linear(
-            config.hidden_size,
-            self.num_state_out_heads,
+            self.num_state_heads,
             bias=False,
         )
 
@@ -239,37 +239,27 @@ class SlitherStateWriter(nn.Module):
     def forward(
         self,
         mem_states: torch.FloatTensor,
-    ) -> tuple[torch.FloatTensor, torch.FloatTensor, torch.IntTensor]:
+    ) -> torch.FloatTensor:
         
         key_states = self.activation(self.k_proj(mem_states))
-        in_gate = torch.softmax(self.in_gate(mem_states).float(), dim=-1) * self.num_state_in_heads
-        key_states = self.in_norm(key_states, scales=in_gate)
+        key_states = self.in_norm(key_states)
 
         value_states = self.v_proj(mem_states)
-        gate = 2.0 * torch.sigmoid(self.out_gate(mem_states).float())
+        gate = 2.0 * torch.sigmoid(self.v_gate(mem_states).float())
         value_states = self.out_norm(value_states, scales=gate)
 
         update = value_states.mT @ key_states
 
-        k = key_states.view(
-            *mem_states.shape[:-1],
-            self.num_state_in_heads,
-            self.in_head_dim
-        ).float()
-        corr = torch.einsum(
-            "blhd,blhe->bhde", k, k
-        )
-
-        count = torch.full_like(
-            mem_states[:, 0, 0],
-            mem_states.shape[1],
-            dtype=torch.int32,
-        )
-
-        return update, corr, count
+        return update
 
 
 class SlitherStateMechanism(nn.Module):
+
+    no_muon_patterns = [
+        "o_gate",
+        "odot",
+    ]
+
 
     def __init__(self, config: DictConfig):
         super().__init__()
@@ -279,19 +269,14 @@ class SlitherStateMechanism(nn.Module):
         self.eps = config.rms_norm_eps
 
         self.state_size = config.state_size
-        self.num_state_in_heads = config.num_state_in_heads
-        self.num_state_out_heads = config.num_state_out_heads
-
-        self.in_head_dim = self.state_size // self.num_state_in_heads
-
-        self.mse_solve = config.mse_solve
+        self.num_state_heads = config.num_state_heads
 
         self.activation = OddActivation()
-        self.in_norm = GroupRMSNorm(
-            self.state_size, self.num_state_in_heads, eps=config.rms_norm_eps
+        self.in_norm = LlamaRMSNorm(
+            self.state_size, eps=config.rms_norm_eps, elementwise_affine=False
         )
         self.out_norm = GroupRMSNorm(
-            self.state_size, self.num_state_out_heads, eps=config.rms_norm_eps
+            self.state_size, self.num_state_heads, eps=config.rms_norm_eps
         )
 
         self.q_proj = nn.Linear(
@@ -300,14 +285,9 @@ class SlitherStateMechanism(nn.Module):
             bias=False,
         )
 
-        self.in_gate = nn.Linear(
+        self.o_gate = nn.Linear(
             self.hidden_size,
-            self.num_state_in_heads,
-            bias=False,
-        )
-        self.out_gate = nn.Linear(
-            self.hidden_size,
-            self.num_state_out_heads,
+            self.num_state_heads,
             bias=False,
         )
 
@@ -317,12 +297,9 @@ class SlitherStateMechanism(nn.Module):
             bias=False,
         )
 
-        # self.log_out_scale = nn.Parameter(
-        #     torch.tensor([inv_softplus(config.init_state_out_scale)])
-        #     / math.sqrt(self.state_size)
-        # )
-        self.log_lambda = nn.Parameter(
-            torch.zeros(self.num_state_in_heads, self.in_head_dim)
+        self.log_out_scale = nn.Parameter(
+            torch.tensor([inv_softplus(config.init_state_out_scale)])
+            / math.sqrt(self.state_size)
         )
 
         self.odot = torch.nn.Parameter(
@@ -333,53 +310,12 @@ class SlitherStateMechanism(nn.Module):
 
         # ephemeral state
         self.state: nn.Buffer
-        self.k_corr: nn.Buffer
-        self.k_count: nn.Buffer
-
-
-    def get_lambda(self):
-        return F.softplus(
-            self.log_lambda * math.sqrt(self.state_size)
-            + inv_softplus(self.config.init_mse_lambda)
-        ) + self.eps
-
-
-    def _solve(self, q: torch.FloatTensor) -> torch.FloatTensor:
-        if not self.mse_solve:
-            return q
-
-        count = self.k_count.clamp_min(1).to(self.k_corr.dtype)
-        corr = self.k_corr / count[:, None, None, None]
-
-        matrix = corr + torch.diag_embed(self.get_lambda())[None]
-
-        rhs = q.view(
-            *q.shape[:-1],
-            self.num_state_in_heads,
-            self.in_head_dim
-        )
-
-        with torch.autocast(str(matrix.device.type), enabled=False):
-            inverse, _ = torch.linalg.inv_ex(
-                matrix.float(),
-                check_errors=False,
-            )
-
-            solution = torch.einsum(
-                "bhoi,blhi->blho",
-                inverse,
-                rhs.float()
-            )
-
-        return solution.reshape(*q.shape).to(q.dtype)
 
 
     def get_s(self) -> torch.FloatTensor:
 
         dot = self.odot + math.sqrt(1.0 / self.state_size)
         s = self.state * dot[None]
-
-        # don't need to divide by count because of the later rms norm
 
         return s
 
@@ -394,18 +330,15 @@ class SlitherStateMechanism(nn.Module):
     ):
 
         query_states = self.activation(self.q_proj(hidden_states))
-        in_gate = torch.softmax(self.in_gate(hidden_states).float(), dim=-1) * self.num_state_in_heads
-        query_states = self.in_norm(query_states, scales=in_gate)
-
-        query_states = self._solve(query_states)
+        query_states = self.in_norm(query_states)
 
         s = self.get_s()
         output = torch.einsum("boi,bli->blo", s, query_states)
 
-        out_gate = torch.softmax(self.out_gate(hidden_states).float(), dim=-1) * self.num_state_out_heads
+        out_gate = 2.0 * torch.sigmoid(self.o_gate(hidden_states).float())
         output = self.out_norm(output, scales=out_gate)
 
-        return self.o_proj(output) # * self.get_out_scale()
+        return self.o_proj(output) * self.get_out_scale()
 
 
     @torch.no_grad()
@@ -415,74 +348,42 @@ class SlitherStateMechanism(nn.Module):
             bs, self.state_size, self.state_size,
             device=device, dtype=torch.float32
         )
-        k_corr = torch.zeros(
-            bs, self.num_state_in_heads, self.in_head_dim, self.in_head_dim,
-            device=device, dtype=torch.float32
-        )
-        k_count = torch.zeros(
-            bs, device=device, dtype=torch.int32
-        )
-
         state = maybe_shard_with_gradients(state)
-        k_corr = maybe_shard_with_gradients(k_corr)
-        k_count = maybe_shard_with_gradients(k_count)
 
         self.register_buffer("state", state, persistent=False)
-        self.register_buffer("k_corr", k_corr, persistent=False)
-        self.register_buffer("k_count", k_count, persistent=False)
 
         self.state.requires_grad_(True)
         self.state.grad = maybe_shard_with_gradients(
             torch.zeros_like(self.state)
         )
 
-        self.k_corr.requires_grad_(True)
-        self.k_corr.grad = maybe_shard_with_gradients(
-            torch.zeros_like(self.k_corr)
-        )
-
-        # (k_count is not differentiable)
-
 
     @torch.no_grad()
     def empty_state(self) -> None:
-
         self.state.zero_()
         self.state.grad.zero_()
-
-        self.k_corr.zero_()
-        self.k_corr.grad.zero_()
-
-        self.k_count.zero_()
 
 
     @torch.no_grad()
     def increment_state(self, mem_states: torch.FloatTensor) -> None:
-        update, corr, count = self.writer(mem_states)
-
-        self.state.add_(update)
-        self.k_corr.add_(corr)
-        self.k_count.add_(count)
+        self.state.add_(self.writer(mem_states))
 
 
     def decrement_state(self, mem_states: torch.FloatTensor) -> None:
-        update, corr, count = self.writer(mem_states)
+        update = self.writer(mem_states)
 
         torch.autograd.backward(
-            (update, corr),
-            (self.state.grad, self.k_corr.grad)
+            update,
+            self.state.grad
         )
 
         with torch.no_grad():
             self.state.sub_(update)
-            self.k_corr.sub_(corr)
-            self.k_count.sub_(count)
 
 
     @torch.no_grad()
     def scale_state_grad(self, scale: float) -> None:
         self.state.grad.mul_(scale)
-        self.k_corr.grad.mul_(scale)
 
 
 class SlitherLayer(nn.Module):
@@ -560,6 +461,14 @@ class SlitherMemoryLayer(SlitherLayer):
 
 
 class SlitherModel(nn.Module):
+
+    no_muon_patterns = [
+        "embed_tokens",
+        "lm_head",
+        "embed_positions",
+        "position_proj",
+    ]
+
 
     def __init__(self, config: DictConfig):
         super().__init__()
@@ -640,19 +549,14 @@ class SlitherModel(nn.Module):
             mechanism: SlitherStateMechanism
 
             w = mechanism.q_proj.weight.data
-            w_h = w.view(
-                mechanism.num_state_in_heads,
-                mechanism.in_head_dim,
-                mechanism.hidden_size
+            w = select_newton_schulz()(
+                w, steps=6, polar=True
             )
 
-            w_h = select_newton_schulz()(
-                w_h, steps=6, polar=True
-            )
-
-            w = w_h.view_as(w)
             mechanism.q_proj.weight.data.copy_(w)
-            mechanism.writer.k_proj.weight.data.copy_(mechanism.q_proj.weight.data)
+            mechanism.writer.k_proj.weight.data.copy_(w)
+
+            mechanism.o_gate.weight.data.copy_(mechanism.writer.v_gate.weight.data)
 
 
     def forward(

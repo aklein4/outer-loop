@@ -61,12 +61,8 @@ num_output_layers: 4
 num_memory_layers: 4
 
 state_size: 512
-num_state_in_heads: 4
-num_state_out_heads: 16
+num_state_heads: 16
 
 init_state_out_scale: 0.1
-
-init_mse_lambda: 0.1
-mse_solve: true
 
 chunk_length: 1024
