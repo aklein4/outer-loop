@@ -320,6 +320,9 @@ class SlitherStateMechanism(nn.Module):
         self.state_size = config.state_size
         self.num_state_heads = config.num_state_heads
 
+        self.disable_read_gates = config.get("disable_read_gates", False)
+        self.disable_out_scale = config.get("disable_output_scale", False)
+
         self.activation = OddActivation()
         self.in_norm = LlamaRMSNorm(
             self.state_size, eps=config.rms_norm_eps, elementwise_affine=False
@@ -370,6 +373,8 @@ class SlitherStateMechanism(nn.Module):
 
 
     def get_out_scale(self) -> torch.FloatTensor:
+        if self.disable_out_scale:
+            return 1.0
         return F.softplus(self.log_out_scale * math.sqrt(self.state_size))
 
 
@@ -384,8 +389,11 @@ class SlitherStateMechanism(nn.Module):
         s = self.get_s()
         output = torch.einsum("boi,bli->blo", s, query_states)
 
-        out_gate = 2.0 * torch.sigmoid(self.o_gate(hidden_states).float())
-        output = self.out_norm(output, scales=out_gate)
+        if self.disable_read_gates:
+            output = self.out_norm(output)
+        else:
+            out_gate = 2.0 * torch.sigmoid(self.o_gate(hidden_states).float())
+            output = self.out_norm(output, scales=out_gate)
 
         return self.o_proj(output) * self.get_out_scale()
 
