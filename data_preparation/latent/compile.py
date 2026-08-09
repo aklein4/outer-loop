@@ -2,7 +2,7 @@
 import random
 import numpy as np
 
-from handlers import HANDLERS
+from handlers import get_handlers
 from trajectory import trajectify
 
 
@@ -28,17 +28,7 @@ def main():
         f.write("")
 
     # select the handlers to run
-    handler_list = HANDLERS
-    if NAMES_TO_DO is not None:
-
-        names = [h_type().source() for h_type in handler_list]
-        for name in NAMES_TO_DO:
-            if name not in names:
-                raise ValueError(f"Dataset name {name} not found in handlers.")
-
-        handler_list = [
-            h_type for h_type in handler_list if h_type().source() in NAMES_TO_DO
-        ]
+    handler_list = get_handlers(NAMES_TO_DO)
 
     # iterate over handlers
     total_examples = 0
@@ -51,13 +41,15 @@ def main():
 
         try:
 
-            ds, counts = h.process(
+            ds = h.process(
                 max_count=MAX_COUNT,
                 num_proc=NUM_PROC,
                 batch_size=BATCH_SIZE
             )
-            trajectory_ds = trajectify(ds, counts, HORIZON_LENGTH)
-            
+
+            trajectory_ds = trajectify(ds, HORIZON_LENGTH)
+            trajectory_count = len(trajectory_ds) if trajectory_ds is not None else 0
+
             trajectory_ds.push_to_hub(
                 DS_NAME,
                 config_name=h.source().replace("/", "--"),
@@ -70,12 +62,12 @@ def main():
                 raise e
 
             with open(LOG_FILE, "a") as f:
-                f.write(f"\n[{i+1}/{len(handler_list)}] {h.source()}: FAIL")
+                f.write(f"\n[{i+1}/{trajectory_count}] {h.source()}: FAIL")
             continue
 
         with open(LOG_FILE, "a") as f:
-            f.write(f"\n[{i+1}/{len(handler_list)}] {h.source()}: SUCCESS ({len(trajectory_ds):_} examples)")
-        total_examples += len(ds)
+            f.write(f"\n[{i+1}/{len(handler_list)}] {h.source()}: SUCCESS ({trajectory_count:_} examples)")
+        total_examples += trajectory_count
     
     with open(LOG_FILE, "a") as f:
         f.write(f"\n\nTotal examples: {total_examples:_}\n")

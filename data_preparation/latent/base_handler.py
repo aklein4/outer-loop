@@ -1,11 +1,12 @@
 
-from collections import defaultdict
+from abc import ABC, abstractmethod
+
 import datasets
 
 from utils import clean_conversation, convert_role_conversation
 
 
-class BaseHandler:
+class BaseHandler(ABC):
 
     # basic dataset information
     url = None
@@ -22,9 +23,6 @@ class BaseHandler:
     def __init__(self, **kwargs):
         for key, value in kwargs.items():
             setattr(self, key, value)
-
-        self._latent_counts = None
-    
 
     def load_dataset(self):
         if self.subset is not None and self.split is not None:
@@ -87,15 +85,13 @@ class BaseHandler:
 
 
     def process(self, max_count=None, num_proc=1, batch_size=1000):
-        self._latent_counts = defaultdict(int)
-
         ds = self.load_dataset()
         if max_count is not None:
             ds = ds.select(range(min(max_count, len(ds))))
 
         ds = ds.map(
             self.full_map_fn,
-            num_proc=None,
+            num_proc=num_proc,
             batched=False,
             remove_columns=[
                 n for n in ds.column_names
@@ -116,10 +112,7 @@ class BaseHandler:
         ds = ds.add_column("kind", [self.kind] * len(ds))
         ds = ds.remove_columns(["keep"])
 
-        counts = self._latent_counts
-        self._latent_counts = None
-        
-        return ds, counts
+        return ds
 
 
     def source(self):
@@ -127,8 +120,6 @@ class BaseHandler:
 
 
     def full_map_fn(self, example):
-        assert self._latent_counts is not None, "full_map_fn should only be called during processing."
-        
         conversation, latent, keep = self.map_fn(example)
 
         if not keep:
@@ -138,7 +129,6 @@ class BaseHandler:
             conversation = convert_role_conversation(conversation)
             conversation = clean_conversation(conversation)
             latent = latent.strip() if isinstance(latent, str) else latent
-            self._latent_counts[latent] += 1
         
         return {
             "messages": conversation,
@@ -146,10 +136,10 @@ class BaseHandler:
             "keep": keep
         }
 
-    def map_fn(self, example) -> tuple[list[dict]|None, str|int|None, bool]:
-        raise NotImplementedError("Subclasses must implement this method.")
+    @abstractmethod
+    def map_fn(self, example) -> tuple[list[dict] | None, str | int | None, bool]:
+        """Convert one source example into a conversation, latent, and keep flag."""
     
 
     def filter_fn(self, keeps):
         return keeps
-    
