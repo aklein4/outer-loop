@@ -1,4 +1,0 @@
-
-[1/1] RyokoAI/Fandom23K: SUCCESS (157 examples)
-
-Total examples: 10_000

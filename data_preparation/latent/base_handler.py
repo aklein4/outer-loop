@@ -1,5 +1,6 @@
 
 from abc import ABC, abstractmethod
+from functools import partial
 
 import datasets
 
@@ -23,6 +24,7 @@ class BaseHandler(ABC):
     def __init__(self, **kwargs):
         for key, value in kwargs.items():
             setattr(self, key, value)
+
 
     def load_dataset(self):
         if self.subset is not None and self.split is not None:
@@ -84,7 +86,13 @@ class BaseHandler(ABC):
         return datasets.load_dataset(self.url, self.subset, split=self.split, verification_mode=self.verification_mode)
 
 
-    def process(self, max_count=None, num_proc=1, batch_size=1000):
+    def process(
+        self,
+        tokenizer=None,
+        max_count=None,
+        num_proc=1,
+        batch_size=1000
+    ):
         ds = self.load_dataset()
         if max_count is not None:
             ds = ds.select(range(min(max_count, len(ds))))
@@ -100,9 +108,8 @@ class BaseHandler(ABC):
             load_from_cache_file=False
         )
         ds = ds.filter(
-            self.filter_fn,
-            input_columns="keep",
-            num_proc=num_proc,
+            partial(self.filter_fn, tokenizer=tokenizer),
+            num_proc=None,
             batched=True,
             batch_size=batch_size,
             load_from_cache_file=False
@@ -122,12 +129,23 @@ class BaseHandler(ABC):
     def full_map_fn(self, example):
         conversation, latent, keep = self.map_fn(example)
 
+        if conversation is None:
+            keep = False
+        else:
+            conversation = convert_role_conversation(conversation)
+            conversation = clean_conversation(conversation)
+
+            count = 0
+            for message in conversation:
+                if message["role"] == "assistant" and len(message["content"]) > 0:
+                    count += 1
+            if count == 0:
+                keep = False
+            
         if not keep:
             conversation = None
             latent = None
         else:
-            conversation = convert_role_conversation(conversation)
-            conversation = clean_conversation(conversation)
             latent = latent.strip() if isinstance(latent, str) else latent
         
         return {
@@ -141,5 +159,23 @@ class BaseHandler(ABC):
         """Convert one source example into a conversation, latent, and keep flag."""
     
 
-    def filter_fn(self, keeps):
+    def filter_fn(self, examples, tokenizer=None):
+        keeps = examples["keep"].copy()
+
+        if tokenizer is None:
+            return keeps
+
+        m = []
+        inds = []
+        for i, keep in enumerate(keeps):
+            if keep:
+                m.append(examples["messages"][i])
+                inds.append(i)
+
+        if len(m) != 0:
+            mask = tokenizer(m)["assistant_mask"].any(dim=-1)
+            for i, m in zip(inds, mask):
+                if not m:
+                    keeps[i] = False
+
         return keeps
