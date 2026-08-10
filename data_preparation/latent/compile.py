@@ -17,7 +17,8 @@ DEBUG = True
 
 NUM_PROC = 8
 BATCH_SIZE = 1024
-MAX_COUNT = None
+MAX_COUNT = 10000
+KEEP_IN_MEMORY = True
 
 TOKENIZER_URL = "meta-llama/Llama-3.2-1B-Instruct"
 MAX_SEQUENCE_LENGTH = 1024
@@ -58,7 +59,12 @@ def main():
                 batch_size=BATCH_SIZE
             )
 
-            trajectory_ds = trajectify(ds, HORIZON_LENGTH)
+            trajectory_ds = trajectify(
+                ds,
+                HORIZON_LENGTH,
+                num_proc=NUM_PROC,
+                keep_in_memory=KEEP_IN_MEMORY,
+            )
             trajectory_count = len(trajectory_ds) if trajectory_ds is not None else 0
 
             if trajectory_ds is not None:

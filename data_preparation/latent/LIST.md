@@ -98,7 +98,7 @@
  - [ ] Asap7772/persona_paired (group by persona)
  - [ ] PaDaS-Lab/webfaq + PaDaS-Lab/webfaq-v2 (filter english, group by origin)
  - [ ] barilan/blog_authorship_corpus (group by author)
- - [ ] HuggingFaceTB/stackexchange_2025_md (group by answer user id)
+ - [x] HuggingFaceTB/stackexchange_2025_md (group by answer user id)
  - [ ] vngclinh/goodreads-reviews (group by user id)
  - [ ] McAuley-Lab/Amazon-Reviews-2023 (group by user id)
  - [ ] Johnnyeee/Yelpdata_663 (group by user id) 
@@ -107,7 +107,7 @@
  - [ ] code-search-net/code_search_net (group by repo/file, prompt with comment?)
  - [ ] PaDaS-Lab/moltbook-corpus (group by author/user id)
  - [ ] open-index/hacker-news (group by author/user id)
- - [ ] LxYxvv/quora_qa_raw (group by answer author id)
+ - [x] LxYxvv/quora_qa_raw (group by answer author id)
  - [ ] xywang1/OpenCharacter/Synthetic-Dialogue (group by character_id)
  - [ ] LongLaMP/LongLaMP (group by author)
  - [ ] bowen-upenn/PersonaMem-v2

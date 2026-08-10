@@ -10,14 +10,21 @@ def trajectify(
     horizon_length: int,
     latent_key: str = "latent",
     messages_key: str = "messages",
-    episode_key: str = "episode"
+    episode_key: str = "episode",
+    num_proc: int | None = None,
+    keep_in_memory: bool = False,
 ) -> datasets.Dataset | None:
     """
     Convert a dataset of conversations into a dataset of trajectories.
     """
     assert horizon_length % 2 == 0, "Horizon length must be even."
 
-    ds = ds.sort(latent_key)
+    # ``sort`` returns an indices mapping. Materialize it once so trajectory
+    # batches do not repeatedly gather scattered rows through that mapping.
+    ds = ds.sort(latent_key).flatten_indices(
+        num_proc=num_proc,
+        keep_in_memory=keep_in_memory,
+    )
     latents = ds[latent_key]
 
     trajectories = []

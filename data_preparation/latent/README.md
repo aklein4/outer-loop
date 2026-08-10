@@ -7,6 +7,7 @@
 
 ## Process each example
 - convert into message format
+- a handler may emit one output or parallel lists of conversations, latents, and keep flags
 - store the latent
     - count number of the kept examples per latent
 - determine whether to keep or discard

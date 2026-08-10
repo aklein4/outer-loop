@@ -1,5 +1,15 @@
 
 import datasets
+from markdownify import markdownify
+
+
+def html_to_markdown(content):
+    return markdownify(
+        content or "",
+        heading_style="ATX",
+        bullets="-",
+        strip=["script", "style"],
+    ).strip()
 
 
 def get_splits(url, subset, remove=[]):
