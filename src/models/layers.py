@@ -5,6 +5,8 @@ from omegaconf import DictConfig
 from torchprime.rope.rope import RopeScaling
 from torchprime.torch_xla_models.attention import AttentionModule
 
+import math
+
 from models.llama import (
     LlamaMLP,
     LlamaRMSNorm,
@@ -17,6 +19,48 @@ if constants.XLA_AVAILABLE:
     from torchprime.torch_xla_models import offloading
 
 
+class ResidualConvMixer(nn.Module):
+
+    no_muon_patterns = [
+        "conv"
+    ]
+
+
+    def __init__(
+        self,
+        hidden_size: int,
+        kernel_size: int,
+        init_scale: float = 0.1,
+    ):
+        super().__init__()
+        assert kernel_size % 2 == 1, "kernel_size must be odd"
+
+        self.hidden_size = hidden_size
+        self.kernel_size = kernel_size
+        self.init_scale = init_scale
+
+        self.weight_scale = math.sqrt(self.hidden_size)
+
+        self.conv = nn.Conv1d(
+            in_channels=hidden_size,
+            out_channels=hidden_size,
+            kernel_size=kernel_size,
+            padding=kernel_size // 2,
+            groups=hidden_size,
+            bias=False,
+        )
+        self.conv.weight.data.normal_(
+            std=init_scale/(self.weight_scale*math.sqrt(kernel_size))
+        )
+
+
+    def forward(self, x: torch.Tensor, mask=None) -> torch.Tensor:
+        x_mask = x * mask[..., None] if mask is not None else x
+        return (
+            x +
+            self.conv(x_mask.mT).mT * self.weight_scale
+        )
+    
 
 class BidirectionalAttention(nn.Module):
     """Non-causal Llama attention with custom-Llama elementwise padding."""
@@ -34,7 +78,7 @@ class BidirectionalAttention(nn.Module):
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
         self.head_dim = self.hidden_size // self.num_heads
-        self.num_key_value_heads = config.num_key_value_heads
+        self.num_key_value_heads = config.num_attention_heads # config.num_key_value_heads
 
         if self.head_dim * self.num_heads != self.hidden_size:
             raise ValueError(
@@ -62,10 +106,25 @@ class BidirectionalAttention(nn.Module):
             bias=config.attention_bias,
         )
 
+        self.q_mixer = ResidualConvMixer(
+            hidden_size=self.num_heads*self.head_dim,
+            kernel_size=config.mixer_kernel_size,
+        )
+        self.k_mixer = ResidualConvMixer(
+            hidden_size=self.num_key_value_heads*self.head_dim,
+            kernel_size=config.mixer_kernel_size,
+        )
+        self.v_mixer = ResidualConvMixer(
+            hidden_size=self.num_key_value_heads*self.head_dim,
+            kernel_size=config.mixer_kernel_size,
+        )
+
+
     def forward(
         self,
         hidden_states: torch.Tensor,
-        elementwise_pad_mask,
+        pad_mask: torch.Tensor,
+        qk_mask,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
     ) -> torch.FloatTensor:
@@ -74,6 +133,10 @@ class BidirectionalAttention(nn.Module):
         query_states = self.q_proj(hidden_states)
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
+
+        query_states = self.q_mixer(query_states, pad_mask)
+        key_states = self.k_mixer(key_states, pad_mask)
+        value_states = self.v_mixer(value_states, pad_mask)
 
         query_states = query_states.view(
             batch_size,
@@ -102,8 +165,8 @@ class BidirectionalAttention(nn.Module):
             sin,
         )
 
-        # handle elementwise_pad_mask
-        query_pad, key_pad = elementwise_pad_mask
+        # handle qk_mask
+        query_pad, key_pad = qk_mask
         query_scale, query_offset = query_pad
         key_scale, key_offset = key_pad
 
@@ -153,7 +216,8 @@ class BidirectionalDecoderLayer(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        elementwise_pad_mask: torch.Tensor,
+        pad_mask: torch.Tensor,
+        qk_mask: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
@@ -169,7 +233,8 @@ class BidirectionalDecoderLayer(nn.Module):
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_embeddings=position_embeddings,
-            elementwise_pad_mask=elementwise_pad_mask,
+            pad_mask=pad_mask,
+            qk_mask=qk_mask,
         )
         hidden_states = residual + hidden_states
 
@@ -205,10 +270,10 @@ class BidirectionalHead(nn.Module):
             scaling=rope_scaling,
         )
 
-        self._init_elementwise_pad_mask()
+        self._init_qk_mask()
 
 
-    def _init_elementwise_pad_mask(self):
+    def _init_qk_mask(self):
         head_dim = self.config.hidden_size // self.config.num_attention_heads
         first_index = (head_dim // 2) - 1
         second_index = -1
@@ -249,7 +314,7 @@ class BidirectionalHead(nn.Module):
         )
 
 
-    def _elementwise_pad_mask(self, mask: torch.BoolTensor):
+    def _qk_mask(self, mask: torch.BoolTensor):
         mask = mask.long()
         return (
             (
@@ -266,37 +331,37 @@ class BidirectionalHead(nn.Module):
     def forward(
         self,
         hidden_states: torch.FloatTensor,
-        elementwise_pad_mask: torch.BoolTensor | None = None,
+        pad_mask: torch.BoolTensor | None = None,
         attention_mask: torch.FloatTensor | None = None,
     ) -> torch.FloatTensor:
         batch_size, sequence_length, _ = hidden_states.shape
 
-        if elementwise_pad_mask is None:
-            elementwise_pad_mask = torch.ones(
+        if pad_mask is None:
+            pad_mask = torch.ones(
                 batch_size,
                 sequence_length,
                 dtype=torch.bool,
                 device=hidden_states.device,
             )
-        elif elementwise_pad_mask.shape != (
+        elif pad_mask.shape != (
             batch_size,
             sequence_length,
         ):
             raise ValueError(
-                "elementwise_pad_mask must have shape "
+                "pad_mask must have shape "
                 f"{(batch_size, sequence_length)}, got "
-                f"{tuple(elementwise_pad_mask.shape)}"
+                f"{tuple(pad_mask.shape)}"
             )
 
         position_ids = (
-            torch.cumsum(elementwise_pad_mask.long(), dim=-1) - 1
+            torch.cumsum(pad_mask.long(), dim=-1) - 1
         )
         position_embeddings = self.rotary_emb(
             hidden_states,
             position_ids,
         )
-        elementwise_pad_mask = self._elementwise_pad_mask(
-            elementwise_pad_mask
+        qk_mask = self._qk_mask(
+            pad_mask
         )
 
         kwargs = {}
@@ -305,7 +370,8 @@ class BidirectionalHead(nn.Module):
 
         hidden_states = self.layers(
             hidden_states,
-            elementwise_pad_mask=elementwise_pad_mask,
+            pad_mask=pad_mask.float(),
+            qk_mask=qk_mask,
             position_embeddings=position_embeddings,
             **kwargs
         )

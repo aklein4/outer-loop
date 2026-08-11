@@ -1,12 +1,23 @@
 # See docs/sharding.md for more details about sharding configuration.
 
-# Parameters use the repository's default implied FSDP placement.
-# The loss is evaluated in separate token-group graphs. Replicating the head
-# prevents every group from all-gathering the vocabulary projection.
-lm_head.weight: [null, null]
+# Replicate parameters unless explicitly sharded below. This keeps attention,
+# embeddings, vocabulary projection, norms, and Forte-specific parameters local
+# on every device while sharding only the largest standard MLP matrices.
+replicate_default: true
 
-embed_tokens.weight: [null, null]
+# Main causal MLP matrices
+backbone_layers.layers.*.mlp.gate_proj.weight: [fsdp, null]
+backbone_layers.layers.*.mlp.up_proj.weight: [fsdp, null]
+backbone_layers.layers.*.mlp.down_proj.weight: [fsdp, null]
 
+output_layers.layers.*.mlp.gate_proj.weight: [fsdp, null]
+output_layers.layers.*.mlp.up_proj.weight: [fsdp, null]
+output_layers.layers.*.mlp.down_proj.weight: [fsdp, null]
+
+# Main bidirectional-head MLP matrices
+bidirectional_head.layers.layers.*.mlp.gate_proj.weight: [fsdp, null]
+bidirectional_head.layers.layers.*.mlp.up_proj.weight: [fsdp, null]
+bidirectional_head.layers.layers.*.mlp.down_proj.weight: [fsdp, null]
 
 # Activations
 backbone_layers.layers.*: [[data, fsdp], null, null]

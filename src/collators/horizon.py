@@ -69,14 +69,14 @@ ASSISTANT_MASK_CHAT_TEMPLATE = r"""{{- bos_token }}
 {%- endif %}
 
 {%- for message in messages %}
-    {%- if not (message.role == 'ipython' or message.role == 'tool' or 'tool_calls' in message) %}
+    {%- if not (message.role == 'ipython' or message.role == 'tool' or (message.tool_calls is defined and message.tool_calls is not none)) %}
         {{- '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n' }}
         {%- if message['role'] == 'assistant' %}
             {%- generation %}{{- message['content'] | trim + '<|eot_id|>' }}{%- endgeneration %}
         {%- else %}
             {{- message['content'] | trim + '<|eot_id|>' }}
         {%- endif %}
-    {%- elif 'tool_calls' in message %}
+    {%- elif message.tool_calls is defined and message.tool_calls is not none %}
         {%- if not message.tool_calls|length == 1 %}
             {{- raise_exception("This model only supports single tool-calls at once!") }}
         {%- endif %}
@@ -85,7 +85,11 @@ ASSISTANT_MASK_CHAT_TEMPLATE = r"""{{- bos_token }}
         {%- generation %}
             {{- '{"name": "' + tool_call.name + '", ' }}
             {{- '"parameters": ' }}
-            {{- tool_call.arguments | tojson }}
+            {%- if tool_call.arguments is string %}
+                {{- tool_call.arguments }}
+            {%- else %}
+                {{- tool_call.arguments | tojson }}
+            {%- endif %}
             {{- "}" }}
             {{- "<|eot_id|>" }}
         {%- endgeneration %}
