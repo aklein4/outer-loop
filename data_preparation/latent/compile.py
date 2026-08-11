@@ -1,5 +1,6 @@
 
 import random
+import traceback
 import numpy as np
 
 from handlers import get_handlers
@@ -15,9 +16,9 @@ LOG_FILE = "compilation_log.txt"
 NAMES_TO_DO = None
 DEBUG = True
 
-NUM_PROC = 8
+NUM_PROC = 16
 BATCH_SIZE = 1024
-MAX_COUNT = 10000
+MAX_COUNT = None
 KEEP_IN_MEMORY = True
 
 TOKENIZER_URL = "meta-llama/Llama-3.2-1B-Instruct"
@@ -50,8 +51,10 @@ def main():
         random.seed(42)
         np.random.seed(42)
 
+        stage = "processing"
         try:
 
+            print(f"Processing {h.source()}...", flush=True)
             ds = h.process(
                 tokenizer=tokenizer,
                 max_count=MAX_COUNT,
@@ -59,6 +62,8 @@ def main():
                 batch_size=BATCH_SIZE
             )
 
+            stage = "trajectifying"
+            print(f"Trajectifying {h.source()}...", flush=True)
             trajectory_ds = trajectify(
                 ds,
                 HORIZON_LENGTH,
@@ -69,10 +74,15 @@ def main():
 
             if trajectory_ds is not None:
 
+                stage = "shuffling"
+                print(f"Shuffling {h.source()}...", flush=True)
                 trajectory_ds = trajectory_ds.shuffle(
                     seed=random.randrange(2**31),
                     load_from_cache_file=False
                 )
+
+                stage = "uploading"
+                print(f"Uploading {h.source()}...", flush=True)
                 trajectory_ds.push_to_hub(
                     DS_NAME,
                     config_name=h.source().replace("/", "--"),
@@ -80,12 +90,19 @@ def main():
                     split="train",
                 )
 
-        except Exception as e:
-            if isinstance(e, KeyboardInterrupt) or DEBUG:
-                raise e
+        except Exception as error:
+            failure = (
+                f"[{i+1}/{len(handler_list)}] {h.source()}: "
+                f"FAIL during {stage}: {type(error).__name__}: {error}"
+            )
+            details = traceback.format_exc()
+            print(f"{failure}\n{details}", flush=True)
 
             with open(LOG_FILE, "a") as f:
-                f.write(f"\n[{i+1}/{len(handler_list)}] {h.source()}: FAIL")
+                f.write(f"\n{failure}\n{details}")
+
+            if DEBUG:
+                raise
             continue
 
         with open(LOG_FILE, "a") as f:

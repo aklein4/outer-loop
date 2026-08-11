@@ -2,6 +2,7 @@
 import json
 import re
 import zipfile
+from pathlib import Path
 
 import datasets
 from huggingface_hub import hf_hub_download
@@ -176,7 +177,7 @@ class WebFaqHandler(BaseHandler):
 
     def map_fn(self, example):
         conversation = simple_format(example["question"], example["answer"])
-        return conversation, example["url"], True
+        return conversation, example["origin"], True
 
 
 @register_handler
@@ -287,10 +288,95 @@ class StackExchangeHandler(BaseHandler):
 
     kind = "qa"
 
+    # The full 31M-row source peaked above 400 GiB when mapped as one table.
+    # Keep the caller's configured parallelism inside bounded source slices.
+    max_num_proc = 16
+    source_batch_size = 1_000_000
+
+    def _config_names(self):
+        configs = datasets.get_dataset_config_names(self.url)
+        if configs != ["default"]:
+            return configs
+
+        # During Hub rate limiting, ``datasets`` can silently return the
+        # fallback config ``default`` even though this dataset has only named
+        # community configs. Recover already-discovered configs for a safe
+        # offline/resume path.
+        cache_root = (
+            Path(datasets.config.HF_DATASETS_CACHE)
+            / self.url.replace("/", "___")
+        )
+        cached_configs = sorted(
+            path.name for path in cache_root.iterdir() if path.is_dir()
+        ) if cache_root.is_dir() else []
+        return cached_configs or configs
+
+    def process(
+        self,
+        tokenizer=None,
+        max_count=None,
+        num_proc=1,
+        batch_size=1000,
+    ):
+        # Mapping one 31M-row concatenation causes each worker to fault large
+        # portions of every source table into memory. Process configurations
+        # in bounded contiguous slices, then concatenate the uniform mapped
+        # outputs (messages/latent/source/kind) in their original order.
+        num_proc = min(num_proc, self.max_num_proc)
+        parts = []
+        remaining = max_count
+        for subset in self._config_names():
+            if remaining == 0:
+                break
+
+            ds = self._load_dataset_part(subset, self.split, remaining)
+            source_count = len(ds)
+            if source_count == 0:
+                continue
+
+            for source_start in range(0, source_count, self.source_batch_size):
+                source_end = min(
+                    source_start + self.source_batch_size,
+                    source_count,
+                )
+                source_part = (
+                    ds
+                    if source_start == 0 and source_end == source_count
+                    else ds.select(range(source_start, source_end))
+                )
+                source_part = source_part.add_column(
+                    "subset",
+                    [subset] * len(source_part),
+                )
+                mapped = self.process_dataset(
+                    source_part,
+                    tokenizer=tokenizer,
+                    num_proc=num_proc,
+                    batch_size=batch_size,
+                    # Each source slice has a stable fingerprint. This makes
+                    # an interrupted run resumable without redoing every
+                    # already completed map and tokenizer filter.
+                    load_from_cache_file=True,
+                )
+                if len(mapped):
+                    parts.append(mapped)
+
+            if remaining is not None:
+                remaining -= source_count
+
+        if not parts:
+            return datasets.Dataset.from_dict({
+                "messages": [],
+                "latent": [],
+                "source": [],
+                "kind": [],
+            })
+        return datasets.concatenate_datasets(parts)
+
     def load_dataset(self, max_count=None):
         parts = []
         remaining = max_count
-        for subset in datasets.get_dataset_config_names(self.url):
+        for subset in self._config_names():
             if remaining == 0:
                 break
             ds = self._load_dataset_part(subset, self.split, remaining)

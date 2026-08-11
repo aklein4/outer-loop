@@ -30,6 +30,12 @@ class BaseHandler(ABC):
     # to fix loading on some datasets
     verification_mode = None
 
+    # Some handlers load source tables large enough that every map worker's
+    # Arrow scan buffers materially increase system memory usage. Leave the
+    # caller's requested parallelism unchanged unless a handler opts into a
+    # safe cap.
+    max_num_proc = None
+
 
     def __init__(self, **kwargs):
         for key, value in kwargs.items():
@@ -132,9 +138,30 @@ class BaseHandler(ABC):
         num_proc=1,
         batch_size=1000
     ):
+        if self.max_num_proc is not None:
+            num_proc = min(num_proc, self.max_num_proc)
+
         ds = self.load_dataset(max_count=max_count)
         if max_count is not None:
             ds = ds.select(range(min(max_count, len(ds))))
+
+        return self.process_dataset(
+            ds,
+            tokenizer=tokenizer,
+            num_proc=num_proc,
+            batch_size=batch_size,
+        )
+
+
+    def process_dataset(
+        self,
+        ds,
+        tokenizer=None,
+        num_proc=1,
+        batch_size=1000,
+        load_from_cache_file=False,
+    ):
+        """Map and filter one already-loaded source dataset."""
 
         ds = ds.map(
             self.full_map_batch_fn,
@@ -142,15 +169,20 @@ class BaseHandler(ABC):
             batched=True,
             batch_size=batch_size,
             remove_columns=ds.column_names,
-            load_from_cache_file=False
+            load_from_cache_file=load_from_cache_file,
         )
         ds = ds.filter(
             partial(self.filter_fn, tokenizer=tokenizer),
-            num_proc=None,
+            num_proc=num_proc,
             batched=True,
             batch_size=batch_size,
-            load_from_cache_file=False
+            load_from_cache_file=load_from_cache_file,
         )
+
+        # ``filter`` returns an indices mapping. ``add_column`` otherwise
+        # materializes that mapping with its single-process default, which is
+        # prohibitively slow for full-sized datasets.
+        ds = ds.flatten_indices(num_proc=num_proc)
 
         ds = ds.add_column("source", [self.source()] * len(ds))
         ds = ds.add_column("kind", [self.kind] * len(ds))

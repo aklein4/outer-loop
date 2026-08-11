@@ -5,6 +5,8 @@ from typing import Any
 
 import torch
 from gigatoken import Tokenizer as GigaTokenizer
+from huggingface_hub import snapshot_download
+from huggingface_hub.errors import LocalEntryNotFoundError
 from transformers import AutoTokenizer
 from transformers.utils.chat_template_utils import render_jinja_template
 
@@ -121,10 +123,36 @@ class GigaChat:
         tokenizer_url: str,
         max_length: int | None = None,
         chat_template: str = ASSISTANT_MASK_CHAT_TEMPLATE,
+        tokenizer_path: str | None = None,
     ) -> None:
-        self.hf_tokenizer = AutoTokenizer.from_pretrained(tokenizer_url)
+        self.tokenizer_url = tokenizer_url
+        self.max_length = max_length
+        self.chat_template = chat_template
+        if tokenizer_path is None:
+            try:
+                tokenizer_path = snapshot_download(
+                    tokenizer_url,
+                    local_files_only=True,
+                )
+            except LocalEntryNotFoundError:
+                # Resolve/download once in the parent. Pickled worker copies
+                # receive this local path and never repeat Hub API requests.
+                tokenizer_path = snapshot_download(tokenizer_url)
+        self.tokenizer_path = tokenizer_path
+        self.hf_tokenizer = None
+        self.gigatokenizer = None
+        self._giga_hf = None
+
+    def _initialize(self) -> None:
+        if self.gigatokenizer is not None:
+            return
+
+        self.hf_tokenizer = AutoTokenizer.from_pretrained(
+            self.tokenizer_path,
+            local_files_only=True,
+        )
         self.hf_tokenizer.padding_side = "right"
-        self.hf_tokenizer.chat_template = chat_template
+        self.hf_tokenizer.chat_template = self.chat_template
         if self.hf_tokenizer.pad_token_id is None:
             self.hf_tokenizer.pad_token = self.hf_tokenizer.eos_token
 
@@ -132,8 +160,19 @@ class GigaChat:
         self._giga_hf = self.gigatokenizer.as_hf()
         self._giga_hf.padding_side = self.hf_tokenizer.padding_side
         self._giga_hf.pad_token = self.hf_tokenizer.pad_token
-        self.max_length = max_length
-        self.chat_template = chat_template
+
+    def __getstate__(self) -> dict[str, Any]:
+        # The native Gigatoken BPETokenizer cannot be pickled. Persist only the
+        # constructor inputs and rebuild local tokenizer state in each worker.
+        return {
+            "tokenizer_url": self.tokenizer_url,
+            "max_length": self.max_length,
+            "chat_template": self.chat_template,
+            "tokenizer_path": self.tokenizer_path,
+        }
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        self.__init__(**state)
 
     @staticmethod
     def _as_batch(messages: list[dict[str, Any]] | list[list[dict[str, Any]]]) -> list[list[dict[str, Any]]]:
@@ -161,6 +200,7 @@ class GigaChat:
         contain Hugging Face-style JSON schemas or typed Python callables.
         Additional keyword arguments are made available to the Jinja template.
         """
+        self._initialize()
         conversations = self._as_batch(messages)
         effective_max_length = max_length if max_length is not None else self.max_length
         if padding is None:
