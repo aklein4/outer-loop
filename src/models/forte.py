@@ -299,8 +299,8 @@ class DynamicLR(nn.Module):
 
     no_muon_patterns = (
         "log_lr",
-        "activation_gate_proj",
-        "gradient_gate_proj",
+        # "activation_gate_proj",
+        # "gradient_gate_proj",
         "token_gate_proj",
     )
 
