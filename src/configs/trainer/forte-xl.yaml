@@ -46,7 +46,7 @@ multiple_optimizers:
         decay_type: linear
 
   # original transformer weights
-  # slow:
+  slow:
 
     optimizer:
       type: adamw.AdamW

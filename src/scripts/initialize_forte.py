@@ -140,7 +140,7 @@ def main() -> None:
     parser.add_argument("--repo", default="aklein4/forte-init")
     parser.add_argument("--step", type=int, default=0)
     parser.add_argument("--inv-quantile", type=float, default=0.25)
-    parser.add_argument("--checkpoint")
+    parser.add_argument("--checkpoint", type=str, default="aklein4/Llama-3.2-1B-TPU")
     parser.add_argument("--checkpoint-step", type=int, default=0)
     args, overrides = parser.parse_known_args()
 
