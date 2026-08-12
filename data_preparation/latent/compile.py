@@ -1,5 +1,8 @@
 
+import gc
+import os
 import random
+import tempfile
 import traceback
 import numpy as np
 
@@ -52,6 +55,11 @@ def main():
         np.random.seed(42)
 
         stage = "processing"
+        ds = None
+        trajectory_ds = None
+        intermediate_cache = tempfile.TemporaryDirectory(
+            prefix=f"latent-compile-{h.source().replace('/', '--')}-",
+        )
         try:
 
             print(f"Processing {h.source()}...", flush=True)
@@ -59,7 +67,8 @@ def main():
                 tokenizer=tokenizer,
                 max_count=MAX_COUNT,
                 num_proc=NUM_PROC,
-                batch_size=BATCH_SIZE
+                batch_size=BATCH_SIZE,
+                intermediate_cache_dir=intermediate_cache.name,
             )
 
             stage = "trajectifying"
@@ -69,6 +78,8 @@ def main():
                 HORIZON_LENGTH,
                 num_proc=NUM_PROC,
                 keep_in_memory=KEEP_IN_MEMORY,
+                shuffle_episodes=h.shuffle_episodes,
+                drop_incomplete=h.drop_incomplete_trajectories,
             )
             trajectory_count = len(trajectory_ds) if trajectory_ds is not None else 0
 
@@ -78,7 +89,11 @@ def main():
                 print(f"Shuffling {h.source()}...", flush=True)
                 trajectory_ds = trajectory_ds.shuffle(
                     seed=random.randrange(2**31),
-                    load_from_cache_file=False
+                    load_from_cache_file=False,
+                    indices_cache_file_name=os.path.join(
+                        intermediate_cache.name,
+                        "trajectory-shuffle-indices.arrow",
+                    ),
                 )
 
                 stage = "uploading"
@@ -104,6 +119,15 @@ def main():
             if DEBUG:
                 raise
             continue
+
+        finally:
+            # Every Arrow transform is routed here. Close its memory maps
+            # before unlinking so disk space is reclaimed after each handler,
+            # including when processing or upload raises.
+            ds = None
+            trajectory_ds = None
+            gc.collect()
+            intermediate_cache.cleanup()
 
         with open(LOG_FILE, "a") as f:
             f.write(f"\n[{i+1}/{len(handler_list)}] {h.source()}: SUCCESS ({trajectory_count:_} examples)")

@@ -78,6 +78,8 @@ def trajectify(
     episode_key: str = "episode",
     num_proc: int | None = None,
     keep_in_memory: bool = False,
+    shuffle_episodes: bool = True,
+    drop_incomplete: bool = False,
 ) -> datasets.Dataset | None:
     """
     Convert a dataset of conversations into a dataset of trajectories.
@@ -117,12 +119,16 @@ def trajectify(
         latent_num = latent_end - latent_start
 
         latent_indices = list(range(latent_start, latent_end))
-        random.shuffle(latent_indices)
+        if shuffle_episodes:
+            random.shuffle(latent_indices)
 
         # iterate over trajectories
         for curr_start in range(0, latent_num, horizon_length):
             curr_end = min(curr_start + horizon_length, latent_num)
             curr_num = curr_end - curr_start
+
+            if curr_num < horizon_length and drop_incomplete:
+                break
 
             if curr_num < horizon_length // 2:
                 break
@@ -132,7 +138,8 @@ def trajectify(
             # duplicate examples if the trajectory is too short
             if curr_num < horizon_length:
                 curr_indices += curr_indices[:horizon_length - curr_num]
-                random.shuffle(curr_indices)
+                if shuffle_episodes:
+                    random.shuffle(curr_indices)
 
             trajectory_indices.append(curr_indices)
 
@@ -165,10 +172,13 @@ def trajectify(
             continue
 
         column = ds.data.column(key)
-        first_values = pc.take(column, first_indices)
+        # ``pc.take`` concatenates variable-width chunks and can overflow
+        # 32-bit string offsets for a large source/latent column. Use the
+        # same bounded gather used for message episodes instead.
+        first_values = _take_chunked(column, first_indices)
         if not pa.types.is_null(column.type):
             for indices in episode_indices[1:]:
-                episode_values = pc.take(column, indices)
+                episode_values = _take_chunked(column, indices)
                 matches = pc.or_(
                     pc.fill_null(pc.equal(episode_values, first_values), False),
                     pc.and_(pc.is_null(episode_values), pc.is_null(first_values)),

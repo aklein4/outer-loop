@@ -1,10 +1,14 @@
 
+import ast
+import gzip
+import hashlib
 import json
 import re
 import zipfile
 from pathlib import Path
 
 import datasets
+import semchunk
 from huggingface_hub import hf_hub_download
 
 from base_handler import BaseHandler
@@ -13,6 +17,151 @@ from utils import html_to_markdown, simple_format
 
 _HANDLER_REGISTRY: dict[str, type[BaseHandler]] = {}
 _FIRST_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+def _split_lead(text):
+    """Split prose after its first paragraph, or first sentence as fallback."""
+    text = (text or "").strip()
+    paragraphs = re.split(r"\n\s*\n", text, maxsplit=1)
+    if len(paragraphs) == 2:
+        return paragraphs[0].strip(), paragraphs[1].strip()
+
+    boundary = _FIRST_SENTENCE_END.search(text)
+    if boundary is None:
+        return "", ""
+    return text[:boundary.start()].strip(), text[boundary.end():].strip()
+
+
+def _parse_jsonish(value):
+    """Parse JSON and the Python-literal tool calls used by Toucan SFT."""
+    if not isinstance(value, str):
+        return value
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            return parser(value)
+        except (TypeError, ValueError, SyntaxError, json.JSONDecodeError):
+            pass
+    return None
+
+
+def _json_compatible(value):
+    """Normalize Python-literal values into deterministic JSON values."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _json_compatible(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_compatible(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        normalized = [_json_compatible(item) for item in value]
+        return sorted(
+            normalized,
+            key=lambda item: json.dumps(
+                item, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            ),
+        )
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _canonical_tools_hash(tools):
+    if isinstance(tools, str):
+        tools = _parse_jsonish(tools)
+    if not isinstance(tools, list) or not tools:
+        return None
+
+    canonical_tools = sorted(
+        json.dumps(
+            _json_compatible(tool),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        for tool in tools
+    )
+    canonical = "[" + ",".join(canonical_tools) + "]"
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _llama_tool_messages(raw_messages, available_tools):
+    """Convert Toucan's provider formats to Llama function-call messages."""
+    messages = _parse_jsonish(raw_messages)
+    tools = _parse_jsonish(available_tools)
+    if not isinstance(messages, list) or not isinstance(tools, list) or not tools:
+        return None
+
+    tool_instructions = (
+        "You have access to the following functions. To call a function, "
+        "respond with a function call using its name and arguments.\n\n"
+        + "\n".join(
+            json.dumps(
+                _json_compatible(tool), sort_keys=True, ensure_ascii=False
+            )
+            for tool in tools
+        )
+    )
+    converted = [{"role": "system", "content": tool_instructions}]
+
+    for message in messages:
+        if not isinstance(message, dict):
+            return None
+        role = message.get("role")
+        content = message.get("content")
+
+        # Original system prompts contain model-specific tool syntax. The
+        # canonical Llama-compatible declaration above replaces them.
+        if role == "system":
+            continue
+
+        function_call = message.get("function_call")
+        if function_call is None and role == "tool_call":
+            function_call = _parse_jsonish(content)
+        if function_call is not None:
+            function_call = _parse_jsonish(function_call)
+            if not isinstance(function_call, dict) or not function_call.get("name"):
+                return None
+            arguments = _parse_jsonish(function_call.get("arguments", {}))
+            if not isinstance(arguments, dict):
+                return None
+            converted.append({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "type": "function",
+                    "function": {
+                        "name": function_call["name"],
+                        # OpenAI/Llama tool-call interchange represents
+                        # arguments as a JSON-encoded string. Keeping that
+                        # scalar schema also avoids Arrow trying to unify the
+                        # unrelated argument structs of different tools.
+                        "arguments": json.dumps(
+                            _json_compatible(arguments),
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            ensure_ascii=False,
+                        ),
+                    },
+                }],
+            })
+            continue
+
+        if role in {"function", "tool_response", "tool"}:
+            converted.append({
+                "role": "tool",
+                "content": "" if content is None else str(content),
+            })
+            continue
+
+        if role not in {"user", "assistant"}:
+            return None
+        if content is None or not str(content).strip():
+            # Some OSS rows contain empty assistant messages whose useful
+            # payload is provider-only hidden reasoning.
+            continue
+        converted.append({"role": role, "content": str(content)})
+
+    return converted
 
 
 def _render_quora_span(span):
@@ -167,7 +316,7 @@ class FandomHandler(BaseHandler):
 
 
 @register_handler
-class WebFaqHandler(BaseHandler):
+class WebFaqHandler(BaseHandler): 
 
     url = "PaDaS-Lab/webfaq-v2"
     subset = "eng"
@@ -228,6 +377,7 @@ class BlogAuthorshipHandler(BaseHandler):
             self._generate_examples,
             gen_kwargs={"archive_path": archive_path, "max_count": max_count},
             features=features,
+            cache_dir=self.generator_cache_dir(),
         )
 
     def map_fn(self, example):
@@ -317,6 +467,7 @@ class StackExchangeHandler(BaseHandler):
         max_count=None,
         num_proc=1,
         batch_size=1000,
+        intermediate_cache_dir=None,
     ):
         # Mapping one 31M-row concatenation causes each worker to fault large
         # portions of every source table into memory. Process configurations
@@ -357,6 +508,7 @@ class StackExchangeHandler(BaseHandler):
                     # an interrupted run resumable without redoing every
                     # already completed map and tokenizer filter.
                     load_from_cache_file=True,
+                    intermediate_cache_dir=intermediate_cache_dir,
                 )
                 if len(mapped):
                     parts.append(mapped)
@@ -448,3 +600,438 @@ class QuoraQaHandler(BaseHandler):
             keeps.append(True)
 
         return conversations, latents, keeps
+
+
+@register_handler
+class SummScreenHandler(BaseHandler):
+
+    url = "YuanPJ/summ_screen"
+    subset = "all"
+    split = ["train", "validation", "test"]
+
+    kind = "screenplay"
+
+    @staticmethod
+    def _generate_examples(paths, max_count):
+        count = 0
+        for path in paths:
+            with open(path, encoding="utf-8") as source:
+                for example in json.load(source):
+                    yield {
+                        "recap": "\n".join(example.get("Recap") or []),
+                        "transcript": "\n".join(example.get("Transcript") or []),
+                        "show_title": example.get("Show Title") or "",
+                    }
+                    count += 1
+                    if max_count is not None and count >= max_count:
+                        return
+
+    def load_dataset(self, max_count=None):
+        paths = [
+            hf_hub_download(
+                self.url,
+                f"data/{subset}_{split}.json",
+                repo_type="dataset",
+            )
+            for subset in ("fd", "tms")
+            for split in ("train", "dev", "test")
+        ]
+        features = datasets.Features({
+            "recap": datasets.Value("string"),
+            "transcript": datasets.Value("string"),
+            "show_title": datasets.Value("string"),
+        })
+        return datasets.Dataset.from_generator(
+            self._generate_examples,
+            gen_kwargs={"paths": paths, "max_count": max_count},
+            features=features,
+            cache_dir=self.generator_cache_dir(),
+        )
+
+    def map_fn(self, example):
+        recap = example["recap"].strip()
+        transcript = example["transcript"].strip()
+        show_title = example["show_title"].strip()
+        keep = bool(recap and transcript and show_title)
+        return simple_format(recap, transcript), show_title, keep
+
+
+@register_handler
+class Ao3Handler(BaseHandler):
+
+    url = "ray0rf1re/AO3-2020"
+    subset = "full"
+    split = "train"
+
+    kind = "fiction"
+
+    def map_fn(self, example):
+        prompt, response = _split_lead(example["text"])
+        story_id = example["storyId"]
+        keep = bool(prompt and response and story_id is not None)
+        return simple_format(prompt, response), story_id, keep
+
+
+@register_handler
+class StarcoderIssuesHandler(BaseHandler):
+
+    url = "bigcode/starcoder2data-extras"
+    subset = "issues"
+    split = "train"
+
+    kind = "code"
+
+    def map_fn(self, example):
+        content = (example["content"] or "").strip()
+        content = re.sub(r"^<issue_start>\s*", "", content)
+        first_line, separator, rest = content.partition("\n")
+        title = re.sub(r"^Title:\s*", "", first_line).strip()
+        repo_name = (example["repo_name"] or "").strip()
+        keep = bool(separator and title and rest.strip() and repo_name)
+        return simple_format(title, rest.strip()), repo_name, keep
+
+
+@register_handler
+class HiCupidEvaluationHandler(BaseHandler):
+
+    url = "arranonymsub/HiCUPID"
+    subset = "evaluation"
+    split = ["test_1", "test_2"]
+
+    kind = "qa"
+
+    def map_fn(self, example):
+        question = (example["question"] or "").strip()
+        answer = (example["personalized_answer"] or "").strip()
+        user_id = example["user_id"]
+        keep = bool(question and answer and user_id is not None)
+        return simple_format(question, answer), user_id, keep
+
+
+@register_handler
+class Tldr17Handler(BaseHandler):
+
+    url = "webis/tldr-17"
+    subset = None
+    split = "train"
+
+    kind = "summary"
+
+    @staticmethod
+    def _generate_examples(archive_path, max_count):
+        count = 0
+        with zipfile.ZipFile(archive_path) as archive:
+            member = next(
+                name for name in archive.namelist()
+                if name.endswith("corpus-webis-tldr-17.json")
+            )
+            with archive.open(member) as source:
+                for line in source:
+                    example = json.loads(line)
+                    if "summary" not in example or "content" not in example:
+                        continue
+                    yield {
+                        "summary": example.get("summary") or "",
+                        "content": example.get("content") or "",
+                        "author": example.get("author") or "",
+                    }
+                    count += 1
+                    if max_count is not None and count >= max_count:
+                        return
+
+    def load_dataset(self, max_count=None):
+        archive_path = hf_hub_download(
+            self.url,
+            "data/corpus-webis-tldr-17.zip",
+            repo_type="dataset",
+        )
+        features = datasets.Features({
+            "summary": datasets.Value("string"),
+            "content": datasets.Value("string"),
+            "author": datasets.Value("string"),
+        })
+        return datasets.Dataset.from_generator(
+            self._generate_examples,
+            gen_kwargs={"archive_path": archive_path, "max_count": max_count},
+            features=features,
+            cache_dir=self.generator_cache_dir(),
+        )
+
+    def map_fn(self, example):
+        summary = example["summary"].strip()
+        content = example["content"].strip()
+        author = example["author"].strip()
+        keep = bool(summary and content and author)
+        return simple_format(summary, content), author, keep
+
+
+@register_handler
+class ToucanHandler(BaseHandler):
+
+    url = "Agent-Ark/Toucan-1.5M"
+    subset = ["Kimi-K2", "OSS", "Qwen3", "SFT"]
+    split = "train"
+
+    kind = "tool"
+
+    output_features = datasets.Features({
+        "messages": datasets.List({
+            "role": datasets.Value("string"),
+            "content": datasets.Value("string"),
+            "tool_calls": datasets.List({
+                "type": datasets.Value("string"),
+                "function": {
+                    "name": datasets.Value("string"),
+                    "arguments": datasets.Value("string"),
+                },
+            }),
+        }),
+        "latent": datasets.Value("string"),
+        "keep": datasets.Value("bool"),
+    })
+
+    def load_dataset(self, max_count=None):
+        parts = []
+        subset_count = len(self.subset)
+        for index, subset in enumerate(self.subset):
+            subset_max = None
+            if max_count is not None:
+                subset_max = max_count // subset_count + (
+                    index < max_count % subset_count
+                )
+                if subset_max == 0:
+                    continue
+
+            ds = self._load_dataset_part(subset, self.split, subset_max)
+            tools_column = "tools" if subset == "SFT" else "available_tools"
+            if tools_column != "available_tools":
+                ds = ds.rename_column(tools_column, "available_tools")
+            if subset == "SFT":
+                ds = ds.add_column(
+                    "question_quality_assessment",
+                    [""] * len(ds),
+                )
+                ds = ds.add_column(
+                    "response_quality_assessment",
+                    [""] * len(ds),
+                )
+            normalized = ds.add_column("config", [subset] * len(ds))
+            normalized = normalized.select_columns([
+                "config",
+                "messages",
+                "available_tools",
+                "question_quality_assessment",
+                "response_quality_assessment",
+            ])
+            parts.append(normalized)
+        return datasets.concatenate_datasets(parts)
+
+    @staticmethod
+    def _is_correct(example):
+        if example["config"] == "SFT":
+            return True
+        assessment = _parse_jsonish(example["response_quality_assessment"])
+        return bool(
+            isinstance(assessment, dict)
+            and assessment.get("desired_tools_used_percentage") == 1.0
+            and assessment.get("order_correctness") is True
+        )
+
+    def map_fn(self, example):
+        latent = _canonical_tools_hash(example["available_tools"])
+        conversation = _llama_tool_messages(
+            example["messages"],
+            example["available_tools"],
+        )
+        keep = bool(latent and conversation and self._is_correct(example))
+        return conversation, latent, keep
+
+
+@register_handler
+class MqaEnglishHandler(BaseHandler):
+
+    url = "clips/mqa"
+    subset = ["en-cqa-question", "en-faq-domain"]
+    split = "train"
+
+    kind = "qa"
+
+    @staticmethod
+    def _generate_examples(paths, max_counts, schema_version):
+        del schema_version  # Included in gen_kwargs to invalidate old caches.
+        for source_index, (subset, path) in enumerate(paths):
+            source_max = None if max_counts is None else max_counts[source_index]
+            count = 0
+            with gzip.open(path, "rt", encoding="utf-8") as source:
+                for line in source:
+                    page = json.loads(line)
+                    domain = page.get("domain") or ""
+                    for question in page.get("questions") or []:
+                        prompt = (
+                            question.get("text")
+                            or question.get("name")
+                            or ""
+                        )
+                        yield {
+                            "subset": subset,
+                            "question": prompt,
+                            "answers": [
+                                answer.get("text") or ""
+                                for answer in question.get("answers") or []
+                            ],
+                            "domain": domain,
+                        }
+                        count += 1
+                        if source_max is not None and count >= source_max:
+                            break
+                    if source_max is not None and count >= source_max:
+                        break
+
+    def load_dataset(self, max_count=None):
+        paths = [
+            (
+                "en-cqa-question",
+                hf_hub_download(
+                    self.url,
+                    "data/data.en.cqa.json.gz",
+                    repo_type="dataset",
+                ),
+            ),
+            (
+                "en-faq-domain",
+                hf_hub_download(
+                    self.url,
+                    "data/data.en.faq.json.gz",
+                    repo_type="dataset",
+                ),
+            ),
+        ]
+        features = datasets.Features({
+            "subset": datasets.Value("string"),
+            "question": datasets.Value("string"),
+            "answers": datasets.List(datasets.Value("string")),
+            "domain": datasets.Value("string"),
+        })
+        max_counts = None
+        if max_count is not None:
+            max_counts = [
+                max_count // len(paths) + (index < max_count % len(paths))
+                for index in range(len(paths))
+            ]
+        return datasets.Dataset.from_generator(
+            self._generate_examples,
+            gen_kwargs={
+                "paths": paths,
+                "max_counts": max_counts,
+                "schema_version": 3,
+            },
+            features=features,
+            cache_dir=self.generator_cache_dir(),
+            # Each requested upstream config is a separate large gzip archive.
+            # Shard the two paths rather than reading them serially for hours.
+            num_proc=len(paths),
+        )
+
+    def map_fn(self, example):
+        question = example["question"].strip()
+        domain = example["domain"].strip()
+        answers = [answer.strip() for answer in example["answers"] if answer.strip()]
+        conversations = [simple_format(question, answer) for answer in answers]
+        keep = bool(question and domain)
+        return (
+            conversations,
+            [domain] * len(conversations),
+            [keep] * len(conversations),
+        )
+
+
+@register_handler
+class FanaticFandomHandler(BaseHandler):
+
+    url = "recursal/Fanatic-Fandom"
+    subset = "default"
+    split = "train"
+
+    kind = "wiki"
+
+    def map_fn(self, example):
+        metadata = example.get("meta") or {}
+        title = (metadata.get("title") or "").strip()
+        text = (example.get("text") or "").strip()
+        domain = (metadata.get("domain") or "").strip()
+        keep = bool(title and text and domain)
+        return simple_format(title, text), domain, keep
+
+
+@register_handler
+class SynthHandler(BaseHandler):
+
+    url = "PleIAs/SYNTH"
+    subset = "default"
+    split = "train"
+
+    kind = "qa"
+
+    def map_fn(self, example):
+        query = (example.get("query") or "").strip()
+        answer = (example.get("synthetic_answer") or "").strip()
+        seed_url = (example.get("query_seed_url") or "").strip()
+        language = (example.get("language") or "").strip().lower()
+        keep = bool(
+            language in {"en", "english"}
+            and query
+            and answer
+            and seed_url
+        )
+        return simple_format(query, answer), seed_url, keep
+
+
+@register_handler
+class LongAbcHandler(BaseHandler):
+
+    url = "Lyun0912/LongABC"
+    subset = "default"
+    split = "train"
+
+    kind = "document"
+
+    chunk_tokenizer_url = "meta-llama/Llama-3.2-1B-Instruct"
+    chunk_size = 448
+
+    # A LongABC latent is an ordered document sequence. Preserve consecutive
+    # chunk pairs and only emit trajectories containing a complete horizon.
+    shuffle_episodes = False
+    drop_incomplete_trajectories = True
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._chunker = None
+
+    def _get_chunker(self):
+        if self._chunker is None:
+            self._chunker = semchunk.chunkerify(
+                self.chunk_tokenizer_url,
+                chunk_size=self.chunk_size,
+            )
+        return self._chunker
+
+    def map_fn(self, example):
+        content = (example.get("content") or "").strip()
+        sequence = (example.get("data_id") or "").strip()
+        if not content or not sequence:
+            return [], [], []
+
+        chunks = [
+            chunk.strip()
+            for chunk in self._get_chunker()(content)
+            if chunk.strip()
+        ]
+        conversations = [
+            simple_format(current, following)
+            for current, following in zip(chunks, chunks[1:])
+        ]
+        return (
+            conversations,
+            [sequence] * len(conversations),
+            [True] * len(conversations),
+        )

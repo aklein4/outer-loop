@@ -1,6 +1,8 @@
 
 from abc import ABC, abstractmethod
 from functools import partial
+import os
+import uuid
 
 import datasets
 
@@ -35,6 +37,15 @@ class BaseHandler(ABC):
     # caller's requested parallelism unchanged unless a handler opts into a
     # safe cap.
     max_num_proc = None
+
+    # Controls passed to ``trajectify`` by compile.py. Handlers with ordered
+    # sequences can opt out of within-latent shuffling and padding.
+    shuffle_episodes = True
+    drop_incomplete_trajectories = False
+
+    # Optional fixed schema for handlers whose valid output types cannot be
+    # inferred from every independent map-worker shard.
+    output_features = None
 
 
     def __init__(self, **kwargs):
@@ -136,11 +147,13 @@ class BaseHandler(ABC):
         tokenizer=None,
         max_count=None,
         num_proc=1,
-        batch_size=1000
+        batch_size=1000,
+        intermediate_cache_dir=None,
     ):
         if self.max_num_proc is not None:
             num_proc = min(num_proc, self.max_num_proc)
 
+        self.intermediate_cache_dir = intermediate_cache_dir
         ds = self.load_dataset(max_count=max_count)
         if max_count is not None:
             ds = ds.select(range(min(max_count, len(ds))))
@@ -150,7 +163,17 @@ class BaseHandler(ABC):
             tokenizer=tokenizer,
             num_proc=num_proc,
             batch_size=batch_size,
+            intermediate_cache_dir=intermediate_cache_dir,
         )
+
+
+    def generator_cache_dir(self):
+        """Return an ephemeral cache root for Dataset.from_generator."""
+        if self.intermediate_cache_dir is None:
+            return None
+        path = os.path.join(self.intermediate_cache_dir, "generator")
+        os.makedirs(path, exist_ok=True)
+        return path
 
 
     def process_dataset(
@@ -160,8 +183,18 @@ class BaseHandler(ABC):
         num_proc=1,
         batch_size=1000,
         load_from_cache_file=False,
+        intermediate_cache_dir=None,
     ):
         """Map and filter one already-loaded source dataset."""
+
+        def cache_file_name(stage):
+            if intermediate_cache_dir is None:
+                return None
+            os.makedirs(intermediate_cache_dir, exist_ok=True)
+            return os.path.join(
+                intermediate_cache_dir,
+                f"{stage}-{uuid.uuid4().hex}.arrow",
+            )
 
         ds = ds.map(
             self.full_map_batch_fn,
@@ -169,7 +202,13 @@ class BaseHandler(ABC):
             batched=True,
             batch_size=batch_size,
             remove_columns=ds.column_names,
+            # A source may already use an output name with an incompatible
+            # physical type (Toucan SFT stores ``messages`` as JSON text).
+            # Those columns are removed, so infer the mapped output afresh.
+            try_original_type=False,
+            features=self.output_features,
             load_from_cache_file=load_from_cache_file,
+            cache_file_name=cache_file_name("map"),
         )
         ds = ds.filter(
             partial(self.filter_fn, tokenizer=tokenizer),
@@ -177,12 +216,16 @@ class BaseHandler(ABC):
             batched=True,
             batch_size=batch_size,
             load_from_cache_file=load_from_cache_file,
+            cache_file_name=cache_file_name("filter"),
         )
 
         # ``filter`` returns an indices mapping. ``add_column`` otherwise
         # materializes that mapping with its single-process default, which is
         # prohibitively slow for full-sized datasets.
-        ds = ds.flatten_indices(num_proc=num_proc)
+        ds = ds.flatten_indices(
+            num_proc=num_proc,
+            cache_file_name=cache_file_name("flatten"),
+        )
 
         ds = ds.add_column("source", [self.source()] * len(ds))
         ds = ds.add_column("kind", [self.kind] * len(ds))
