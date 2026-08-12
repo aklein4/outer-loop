@@ -64,18 +64,20 @@
 
 ### Special
  - [ ] github.com/allenai/natural-instructions (group by task)
- - [ ] bigscience/P3 (group by task)
+ - [x] bigscience/P3 (group by task)
+ - [x] tasksource/tasksource-instruct-v0 (group by task)
 
 
 ## Single Sequence
 
 ### Long context
  - [ ] institutional/institutional-books-1.0 (filter to english, split by gen pages?)
- - [ ] Lyun0912/LongABC (naive or semantic chunking?)
+ - [x] Lyun0912/LongABC (naive chunking)
  - [ ] common-pile/project_gutenberg_filtered (naive or semantic chunking?)
  - [ ] zkeown/gutenberg-corpus (split by chapter or paragraph)
  - [ ] Despina/project_gutenberg (use existing chunks)
- - [ ] sxiong/DHSA_Long-Data-Collections (naive or semantic chunking?)
+ - [x] sxiong/DHSA_Long-Data-Collections (naive chunking)
+ - [ ] PleIAs/English-PD
 
 ### Knowledge
  - [ ] HuggingFaceTB/smollm-corpus/cosmopedia-v2 (group by format, semantic cluster)
@@ -113,11 +115,14 @@
  - [ ] bowen-upenn/PersonaMem-v2
  - [ ] Neph0s/CoSER (group by novel/character)
  - [ ] cornell-movie-dialog/cornell_movie_dialog (group by movie/characters)
- - [ ] webis/tldr-17 (group by author)
+ - [x] webis/tldr-17 (group by author; exclude deleted users)
  - [ ] Kaylee0501/ImplexConv-opposed + Kaylee0501/ImplexConv-supportive (group by conversation)
  - [ ] arranonymsub/HiCUPID (group by user)
  - [ ] common-pile/caselaw_access_project (filter generic, group by author)
- - [ ] blitt/SPoRC (group by podcast, speaker)
+ - [x] blitt/SPoRC (group by author)
+ - [x] PleIAs/YouTube-Commons (group by channel/author)
+ - [x] theelderemo/genius-lyrics-cleaned (group by artist)
+ - [x] BEE-spoke-data/medium-articles-en (group by author)
  - [ ] open-index/arctic (group by author)
  - [ ] gk4u/reddit_dataset_139 (group by user)
  - [ ] biglam/hansard_speech (group by speaker id)
@@ -134,4 +139,6 @@
 
 ## Tools
 
-- [ ] Agent-Ark/Toucan-1.5M
+- [x] Agent-Ark/Toucan-1.5M
+- [x] nvidia/Nemotron-SFT-Agentic-v2 (interactive_agent, tool_calling)
+- [x] nvidia/Nemotron-Agentic-v1 (interactive_agent, tool_calling)

@@ -16,11 +16,19 @@ HORIZON_LENGTH = 64
 DS_NAME = "aklein4/latent-compilation"
 LOG_FILE = "compilation_log.txt"
 
-NAMES_TO_DO = None
-DEBUG = True
+NAMES_TO_DO = [
+    "Lyun0912/LongABC",
+    # "blitt/SPoRC",
+    # "PleIAs/YouTube-Commons",
+    # "theelderemo/genius-lyrics-cleaned",
+    # "sxiong/DHSA_Long-Data-Collections",
+    # "bigscience/P3",
+    # "clips/mqa",
+]
+DEBUG = False
 
-NUM_PROC = 16
-BATCH_SIZE = 1024
+NUM_PROC = 48
+BATCH_SIZE = 256
 MAX_COUNT = None
 KEEP_IN_MEMORY = True
 

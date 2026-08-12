@@ -2,14 +2,19 @@
 import ast
 import gzip
 import hashlib
+import html
+import io
 import json
 import re
 import zipfile
 from pathlib import Path
 
 import datasets
+import pyarrow as pa
+import pyarrow.parquet as pq
+import requests
 import semchunk
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, hf_hub_url, list_repo_files
 
 from base_handler import BaseHandler
 from utils import html_to_markdown, simple_format
@@ -17,6 +22,28 @@ from utils import html_to_markdown, simple_format
 
 _HANDLER_REGISTRY: dict[str, type[BaseHandler]] = {}
 _FIRST_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+def _is_english_language(value):
+    language = (value or "").strip().lower().replace("_", "-")
+    return language == "english" or language == "en" or language.startswith("en-")
+
+
+def _safe_html_to_markdown(content):
+    """Convert HTML while tolerating pathologically deep markup trees."""
+    try:
+        return html_to_markdown(content)
+    except RecursionError:
+        # Some feed descriptions contain thousands of nested tags. Beautiful
+        # Soup/markdownify recursively walks that tree and can exceed Python's
+        # recursion limit. This fallback is deliberately non-recursive: retain
+        # readable text and line boundaries without hiding other exceptions.
+        text = re.sub(r"(?i)<br\s*/?>|</p\s*>|</div\s*>|</li\s*>", "\n", content or "")
+        text = re.sub(r"<[^>]*>", "", text)
+        text = html.unescape(text)
+        return "\n".join(
+            line.strip() for line in text.splitlines() if line.strip()
+        )
 
 
 def _split_lead(text):
@@ -84,8 +111,55 @@ def _canonical_tools_hash(tools):
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _llama_tool_messages(raw_messages, available_tools):
-    """Convert Toucan's provider formats to Llama function-call messages."""
+def _message_content(value):
+    """Represent structured tool results as deterministic message text."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(
+        _json_compatible(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+
+
+def _normalize_tool_call(raw_call):
+    """Convert legacy and OpenAI-style calls to the output tool schema."""
+    raw_call = _parse_jsonish(raw_call)
+    if not isinstance(raw_call, dict):
+        return None
+
+    function = _parse_jsonish(raw_call.get("function"))
+    if not isinstance(function, dict):
+        function = raw_call
+    name = function.get("name")
+    if not name:
+        return None
+
+    arguments = _parse_jsonish(function.get("arguments", {}))
+    if not isinstance(arguments, dict):
+        return None
+    return {
+        "type": "function",
+        "function": {
+            "name": str(name),
+            # OpenAI/Llama tool-call interchange represents arguments as a
+            # JSON-encoded string. This also prevents Arrow from trying to
+            # unify unrelated argument structs from different tools.
+            "arguments": json.dumps(
+                _json_compatible(arguments),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ),
+        },
+    }
+
+
+def _toucan_tool_messages(raw_messages, available_tools):
+    """Convert Toucan provider formats without changing legacy behavior."""
     messages = _parse_jsonish(raw_messages)
     tools = _parse_jsonish(available_tools)
     if not isinstance(messages, list) or not isinstance(tools, list) or not tools:
@@ -109,8 +183,6 @@ def _llama_tool_messages(raw_messages, available_tools):
         role = message.get("role")
         content = message.get("content")
 
-        # Original system prompts contain model-specific tool syntax. The
-        # canonical Llama-compatible declaration above replaces them.
         if role == "system":
             continue
 
@@ -131,10 +203,6 @@ def _llama_tool_messages(raw_messages, available_tools):
                     "type": "function",
                     "function": {
                         "name": function_call["name"],
-                        # OpenAI/Llama tool-call interchange represents
-                        # arguments as a JSON-encoded string. Keeping that
-                        # scalar schema also avoids Arrow trying to unify the
-                        # unrelated argument structs of different tools.
                         "arguments": json.dumps(
                             _json_compatible(arguments),
                             sort_keys=True,
@@ -156,12 +224,163 @@ def _llama_tool_messages(raw_messages, available_tools):
         if role not in {"user", "assistant"}:
             return None
         if content is None or not str(content).strip():
-            # Some OSS rows contain empty assistant messages whose useful
-            # payload is provider-only hidden reasoning.
             continue
         converted.append({"role": role, "content": str(content)})
 
     return converted
+
+
+def _interleave_parallel_tool_calls(messages):
+    """Pair parallel assistant calls with their following tool responses."""
+    interleaved = []
+    message_index = 0
+    while message_index < len(messages):
+        message = messages[message_index]
+        if not isinstance(message, dict):
+            interleaved.append(message)
+            message_index += 1
+            continue
+
+        tool_calls = _parse_jsonish(message.get("tool_calls"))
+        if not isinstance(tool_calls, list) or len(tool_calls) <= 1:
+            interleaved.append(message)
+            message_index += 1
+            continue
+
+        response_end = message_index + 1
+        responses = []
+        while response_end < len(messages):
+            response = messages[response_end]
+            if not isinstance(response, dict) or response.get("role") not in {
+                "function", "tool_response", "tool",
+            }:
+                break
+            responses.append(response)
+            response_end += 1
+
+        unused_response_indices = set(range(len(responses)))
+        for call_index, tool_call in enumerate(tool_calls):
+            split_message = dict(message)
+            split_message["content"] = (
+                message.get("content") if call_index == 0 else ""
+            )
+            split_message["tool_calls"] = [tool_call]
+            interleaved.append(split_message)
+
+            call_id = tool_call.get("id") if isinstance(tool_call, dict) else None
+            response_index = next((
+                index
+                for index in unused_response_indices
+                if call_id is not None
+                and responses[index].get("tool_call_id") == call_id
+            ), None)
+            if response_index is None and unused_response_indices:
+                response_index = min(unused_response_indices)
+            if response_index is not None:
+                interleaved.append(responses[response_index])
+                unused_response_indices.remove(response_index)
+
+        # Preserve surplus responses instead of silently dropping malformed
+        # source data when the number of results does not match the calls.
+        interleaved.extend(
+            responses[index] for index in sorted(unused_response_indices)
+        )
+        message_index = response_end
+
+    return interleaved
+
+
+def _llama_tool_messages(
+    raw_messages,
+    available_tools,
+    preserve_system=False,
+):
+    """Convert provider tool formats to Llama function-call messages."""
+    messages = _parse_jsonish(raw_messages)
+    tools = _parse_jsonish(available_tools)
+    if not isinstance(messages, list) or not isinstance(tools, list) or not tools:
+        return None
+    messages = _interleave_parallel_tool_calls(messages)
+
+    tool_instructions = (
+        "You have access to the following functions. To call a function, "
+        "respond with a function call using its name and arguments.\n\n"
+        + "\n".join(
+            json.dumps(
+                _json_compatible(tool), sort_keys=True, ensure_ascii=False
+            )
+            for tool in tools
+        )
+    )
+    converted = []
+    system_contents = []
+
+    for message in messages:
+        if not isinstance(message, dict):
+            return None
+        role = message.get("role")
+        content = message.get("content")
+
+        # Original system prompts contain model-specific tool syntax. The
+        # canonical Llama-compatible declaration above replaces them.
+        if role == "system":
+            if preserve_system and content is not None and str(content).strip():
+                system_contents.append(str(content).strip())
+            continue
+
+        function_call = message.get("function_call")
+        if function_call is None and role == "tool_call":
+            function_call = _parse_jsonish(content)
+        if function_call is not None:
+            function_call = _normalize_tool_call(function_call)
+            if function_call is None:
+                return None
+            converted.append({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [function_call],
+            })
+            continue
+
+        tool_calls = _parse_jsonish(message.get("tool_calls"))
+        if tool_calls:
+            if not isinstance(tool_calls, list):
+                return None
+            normalized_calls = [_normalize_tool_call(call) for call in tool_calls]
+            if any(call is None for call in normalized_calls):
+                return None
+            # The interleaving pass normally leaves exactly one call here.
+            # Retain this loop as a schema-safe fallback for malformed rows
+            # where calls could not be expanded before conversion.
+            for call_index, normalized_call in enumerate(normalized_calls):
+                converted.append({
+                    "role": "assistant",
+                    "content": (
+                        _message_content(content) if call_index == 0 else ""
+                    ),
+                    "tool_calls": [normalized_call],
+                })
+            continue
+
+        if role in {"function", "tool_response", "tool"}:
+            converted.append({
+                "role": "tool",
+                "content": _message_content(content),
+            })
+            continue
+
+        if role not in {"user", "assistant"}:
+            return None
+        if content is None or not str(content).strip():
+            # Some OSS rows contain empty assistant messages whose useful
+            # payload is provider-only hidden reasoning.
+            continue
+        converted.append({"role": role, "content": _message_content(content)})
+
+    system_content = tool_instructions
+    if system_contents:
+        system_content += "\n\n" + "\n\n".join(system_contents)
+    return [{"role": "system", "content": system_content}, *converted]
 
 
 def _render_quora_span(span):
@@ -761,7 +980,12 @@ class Tldr17Handler(BaseHandler):
         summary = example["summary"].strip()
         content = example["content"].strip()
         author = example["author"].strip()
-        keep = bool(summary and content and author)
+        keep = bool(
+            summary
+            and content
+            and author
+            and author.casefold() != "[deleted]"
+        )
         return simple_format(summary, content), author, keep
 
 
@@ -839,12 +1063,124 @@ class ToucanHandler(BaseHandler):
 
     def map_fn(self, example):
         latent = _canonical_tools_hash(example["available_tools"])
-        conversation = _llama_tool_messages(
+        conversation = _toucan_tool_messages(
             example["messages"],
             example["available_tools"],
         )
         keep = bool(latent and conversation and self._is_correct(example))
         return conversation, latent, keep
+
+
+class _NemotronAgenticHandler(BaseHandler):
+
+    subset = "default"
+    split = ["interactive_agent", "tool_calling"]
+
+    kind = "tool"
+
+    output_features = ToucanHandler.output_features
+
+    @staticmethod
+    def _generate_examples(repo_id, splits, max_counts, schema_version):
+        del schema_version  # Included in gen_kwargs to invalidate old caches.
+        for split, max_count in zip(splits, max_counts):
+            if max_count == 0:
+                continue
+
+            filename = f"data/{split}.jsonl"
+            response = None
+            if max_count is None:
+                path = hf_hub_download(repo_id, filename, repo_type="dataset")
+                source = open(path, "rb")
+            else:
+                # The upstream JSONL has heterogeneous nested tool schemas,
+                # which Arrow cannot infer. Stream bounded runs line-by-line
+                # so a smoke test does not download the full 5-15 GiB file.
+                response = requests.get(
+                    hf_hub_url(repo_id, filename, repo_type="dataset"),
+                    stream=True,
+                    timeout=60,
+                )
+                response.raise_for_status()
+                source = response.iter_lines()
+
+            try:
+                lines = source if response is not None else iter(source)
+                count = 0
+                for line in lines:
+                    if not line or not line.strip():
+                        continue
+                    example = json.loads(line)
+                    yield {
+                        "messages_json": json.dumps(
+                            example.get("messages"), ensure_ascii=False
+                        ),
+                        "tools_json": json.dumps(
+                            example.get("tools"), ensure_ascii=False
+                        ),
+                        "split": split,
+                    }
+                    count += 1
+                    if max_count is not None and count >= max_count:
+                        break
+            finally:
+                if response is None:
+                    source.close()
+                else:
+                    response.close()
+
+    def load_dataset(self, max_count=None):
+        splits = list(self.split)
+        if max_count is None:
+            max_counts = [None] * len(splits)
+        else:
+            max_counts = [
+                max_count // len(splits) + (index < max_count % len(splits))
+                for index in range(len(splits))
+            ]
+
+        features = datasets.Features({
+            "messages_json": datasets.Value("string"),
+            "tools_json": datasets.Value("string"),
+            "split": datasets.Value("string"),
+        })
+        return datasets.Dataset.from_generator(
+            self._generate_examples,
+            gen_kwargs={
+                "repo_id": self.url,
+                "splits": splits,
+                "max_counts": max_counts,
+                "schema_version": 1,
+            },
+            features=features,
+            cache_dir=self.generator_cache_dir(),
+            num_proc=min(len(splits), max_count or len(splits)),
+        )
+
+    def map_fn(self, example):
+        tools = example.get("tools_json")
+        latent = _canonical_tools_hash(tools)
+        conversation = _llama_tool_messages(
+            example.get("messages_json"),
+            tools,
+            # Unlike Toucan's provider-specific system tool declaration, the
+            # Nemotron system message often contains an agent policy needed
+            # to understand and reproduce the trajectory.
+            preserve_system=True,
+        )
+        return conversation, latent, bool(latent and conversation)
+
+
+@register_handler
+class NemotronSftAgenticV2Handler(_NemotronAgenticHandler):
+
+    url = "nvidia/Nemotron-SFT-Agentic-v2"
+
+
+@register_handler
+class NemotronAgenticV1Handler(_NemotronAgenticHandler):
+
+    url = "nvidia/Nemotron-Agentic-v1"
 
 
 @register_handler
@@ -946,6 +1282,43 @@ class MqaEnglishHandler(BaseHandler):
 
 
 @register_handler
+class P3Handler(BaseHandler):
+
+    url = "bigscience/P3"
+    # P3 exposes every task/template as a separate dataset configuration.
+    # The configuration names are discovered at runtime rather than copied
+    # into this handler (there are several hundred of them).
+    subset = datasets.get_dataset_config_names("bigscience/P3")
+    split = "train"
+
+    kind = "qa"
+
+    def map_fn(self, example):
+        prompt = (example.get("inputs_pretokenized") or "").strip()
+        target = (example.get("targets_pretokenized") or "").strip()
+        subset = example.get("subset")
+        keep = bool(prompt and target and subset)
+        return simple_format(prompt, target), subset, keep
+
+
+@register_handler
+class TasksourceInstructHandler(BaseHandler):
+
+    url = "tasksource/tasksource-instruct-v0"
+    subset = "default"
+    split = "train"
+
+    kind = "qa"
+
+    def map_fn(self, example):
+        prompt = (example.get("inputs") or "").strip()
+        target = (example.get("targets") or "").strip()
+        task = (example.get("task") or "").strip()
+        keep = bool(prompt and target and task)
+        return simple_format(prompt, target), task, keep
+
+
+@register_handler
 class FanaticFandomHandler(BaseHandler):
 
     url = "recursal/Fanatic-Fandom"
@@ -996,10 +1369,11 @@ class LongAbcHandler(BaseHandler):
     kind = "document"
 
     chunk_tokenizer_url = "meta-llama/Llama-3.2-1B-Instruct"
-    chunk_size = 448
+    chunk_size = 256
 
-    # A LongABC latent is an ordered document sequence. Preserve consecutive
-    # chunk pairs and only emit trajectories containing a complete horizon.
+    # A LongABC latent is an ordered document sequence. Preserve disjoint
+    # consecutive chunk pairs and only emit trajectories containing a
+    # complete horizon.
     shuffle_episodes = False
     drop_incomplete_trajectories = True
 
@@ -1028,10 +1402,354 @@ class LongAbcHandler(BaseHandler):
         ]
         conversations = [
             simple_format(current, following)
-            for current, following in zip(chunks, chunks[1:])
+            for current, following in zip(chunks[::2], chunks[1::2])
         ]
         return (
             conversations,
             [sequence] * len(conversations),
             [True] * len(conversations),
+        )
+
+
+@register_handler
+class DhsaLongDataCollectionsHandler(LongAbcHandler):
+
+    url = "sxiong/DHSA_Long-Data-Collections"
+    subset = ["32k_64k", "64k_128k", "gt_128k"]
+    split = "pretrain"
+
+    @staticmethod
+    def _generate_examples(repo_id, filenames, max_counts, schema_version):
+        del schema_version  # Included in gen_kwargs to invalidate old caches.
+        for filename, max_count in zip(filenames, max_counts):
+            path = hf_hub_download(repo_id, filename, repo_type="dataset")
+            with pa.input_stream(path) as compressed:
+                with io.TextIOWrapper(compressed, encoding="utf-8") as source:
+                    count = 0
+                    for line_number, line in enumerate(source):
+                        if not line.strip():
+                            continue
+                        example = json.loads(line)
+                        yield {
+                            "content": example.get("text") or "",
+                            # DHSA does not publish a document identifier. A
+                            # repository path plus JSONL line number is stable
+                            # and keeps every document's chunks in one latent.
+                            "sequence": hashlib.sha256(
+                                f"{filename}:{line_number}".encode("utf-8")
+                            ).hexdigest(),
+                        }
+                        count += 1
+                        if max_count is not None and count >= max_count:
+                            break
+
+    def load_dataset(self, max_count=None):
+        prefixes = tuple(f"pretrain/{bucket}/" for bucket in self.subset)
+        filenames = sorted(
+            filename
+            for filename in list_repo_files(self.url, repo_type="dataset")
+            if filename.startswith(prefixes) and filename.endswith(".jsonl.zst")
+        )
+        if not filenames:
+            raise FileNotFoundError(
+                f"No requested pretrain length buckets found in {self.url}."
+            )
+
+        # A bounded smoke test should not download one multi-GiB file per
+        # source merely to take a handful of total rows.
+        if max_count is not None:
+            filenames = filenames[:1] if max_count > 0 else []
+        max_counts = [max_count] * len(filenames)
+        features = datasets.Features({
+            "content": datasets.Value("string"),
+            "sequence": datasets.Value("string"),
+        })
+        if not filenames:
+            return datasets.Dataset.from_dict(
+                {"content": [], "sequence": []},
+                features=features,
+            )
+
+        return datasets.Dataset.from_generator(
+            self._generate_examples,
+            gen_kwargs={
+                "repo_id": self.url,
+                "filenames": filenames,
+                "max_counts": max_counts,
+                "schema_version": 1,
+            },
+            features=features,
+            cache_dir=self.generator_cache_dir(),
+            num_proc=min(4, len(filenames)),
+        )
+
+    def map_fn(self, example):
+        content = (example.get("content") or "").strip()
+        sequence = (example.get("sequence") or "").strip()
+        if not content or not sequence:
+            return [], [], []
+
+        chunks = [
+            chunk.strip()
+            for chunk in self._get_chunker()(content)
+            if chunk.strip()
+        ]
+        conversations = [
+            simple_format(current, following)
+            for current, following in zip(chunks[::2], chunks[1::2])
+        ]
+        return (
+            conversations,
+            [sequence] * len(conversations),
+            [True] * len(conversations),
+        )
+
+
+@register_handler
+class SporcHandler(BaseHandler):
+
+    url = "blitt/SPoRC"
+    subset = "episodes"
+    split = "train"
+
+    kind = "podcast"
+    max_num_proc = 16
+
+    @staticmethod
+    def _generate_examples(repo_id, filenames, max_counts, schema_version):
+        del schema_version  # Included in gen_kwargs to invalidate old caches.
+        columns = [
+            "ep_title",
+            "ep_description",
+            "transcript",
+            "itunes_author",
+            "language",
+        ]
+        for filename, max_count in zip(filenames, max_counts):
+            path = hf_hub_download(repo_id, filename, repo_type="dataset")
+            count = 0
+            parquet_file = pq.ParquetFile(path)
+            for row_group in range(parquet_file.num_row_groups):
+                table = parquet_file.read_row_group(row_group, columns=columns)
+                for example in table.to_pylist():
+                    yield example
+                    count += 1
+                    if max_count is not None and count >= max_count:
+                        break
+                if max_count is not None and count >= max_count:
+                    break
+
+    def load_dataset(self, max_count=None):
+        filenames = sorted(
+            filename
+            for filename in list_repo_files(self.url, repo_type="dataset")
+            if filename.startswith("episodes/part-")
+            and filename.endswith(".parquet")
+        )
+        if max_count is not None:
+            filenames = filenames[:1] if max_count > 0 else []
+
+        features = datasets.Features({
+            "ep_title": datasets.Value("string"),
+            "ep_description": datasets.Value("string"),
+            "transcript": datasets.Value("string"),
+            "itunes_author": datasets.Value("string"),
+            "language": datasets.Value("string"),
+        })
+        if not filenames:
+            return datasets.Dataset.from_dict(
+                {key: [] for key in features},
+                features=features,
+            )
+        return datasets.Dataset.from_generator(
+            self._generate_examples,
+            gen_kwargs={
+                "repo_id": self.url,
+                "filenames": filenames,
+                "max_counts": [max_count] * len(filenames),
+                "schema_version": 2,
+            },
+            features=features,
+            cache_dir=self.generator_cache_dir(),
+            num_proc=min(4, len(filenames)),
+        )
+
+    def map_fn(self, example):
+        title = (example.get("ep_title") or "").strip()
+        description = _safe_html_to_markdown(example.get("ep_description"))
+        prompt = f"{title}\n{description}" if description else title
+        transcript = (example.get("transcript") or "").strip()
+        author = (example.get("itunes_author") or "").strip()
+        keep = bool(
+            _is_english_language(example.get("language"))
+            and prompt
+            and transcript
+            and author
+        )
+        return simple_format(prompt, transcript), author, keep
+
+
+@register_handler
+class YoutubeCommonsHandler(BaseHandler):
+
+    url = "PleIAs/YouTube-Commons"
+    subset = "default"
+    split = "train"
+
+    kind = "video"
+    max_num_proc = 16
+
+    @staticmethod
+    def _generate_examples(repo_id, filenames, max_counts, schema_version):
+        del schema_version  # Included in gen_kwargs to invalidate old caches.
+        for filename, max_count in zip(filenames, max_counts):
+            path = hf_hub_download(repo_id, filename, repo_type="dataset")
+            count = 0
+            parquet_file = pq.ParquetFile(path)
+            available = set(parquet_file.schema_arrow.names)
+            columns = [
+                column
+                for column in (
+                    "description",
+                    "video_description",
+                    "title",
+                    "text",
+                    "channel",
+                    "channel_id",
+                    "transcription_language",
+                )
+                if column in available
+            ]
+            for row_group in range(parquet_file.num_row_groups):
+                table = parquet_file.read_row_group(row_group, columns=columns)
+                for example in table.to_pylist():
+                    yield {
+                        "description": (
+                            example.get("description")
+                            or example.get("video_description")
+                            or example.get("title")
+                            or ""
+                        ),
+                        "transcript": example.get("text") or "",
+                        "channel": example.get("channel") or "",
+                        "channel_id": example.get("channel_id") or "",
+                        "transcription_language": (
+                            example.get("transcription_language") or ""
+                        ),
+                    }
+                    count += 1
+                    if max_count is not None and count >= max_count:
+                        break
+                if max_count is not None and count >= max_count:
+                    break
+
+    def load_dataset(self, max_count=None):
+        filenames = sorted(
+            filename
+            for filename in list_repo_files(self.url, repo_type="dataset")
+            if re.fullmatch(r"cctube_\d+\.parquet", filename)
+        )
+        if max_count is not None:
+            filenames = filenames[:1] if max_count > 0 else []
+
+        features = datasets.Features({
+            "description": datasets.Value("string"),
+            "transcript": datasets.Value("string"),
+            "channel": datasets.Value("string"),
+            "channel_id": datasets.Value("string"),
+            "transcription_language": datasets.Value("string"),
+        })
+        if not filenames:
+            return datasets.Dataset.from_dict(
+                {key: [] for key in features},
+                features=features,
+            )
+        return datasets.Dataset.from_generator(
+            self._generate_examples,
+            gen_kwargs={
+                "repo_id": self.url,
+                "filenames": filenames,
+                "max_counts": [max_count] * len(filenames),
+                "schema_version": 2,
+            },
+            features=features,
+            cache_dir=self.generator_cache_dir(),
+            num_proc=min(4, len(filenames)),
+        )
+
+    def map_fn(self, example):
+        description = (example.get("description") or "").strip()
+        transcript = (example.get("transcript") or "").strip()
+        channel = (example.get("channel") or "").strip()
+        channel_id = (example.get("channel_id") or "").strip()
+        # The stable channel id is the author identity; retain the display
+        # name only as a fallback for rows where it is absent.
+        latent = channel_id or channel
+        keep = bool(
+            _is_english_language(example.get("transcription_language"))
+            and description
+            and transcript
+            and latent
+        )
+        return simple_format(description, transcript), latent, keep
+
+
+@register_handler
+class GeniusLyricsCleanedHandler(BaseHandler):
+
+    url = "theelderemo/genius-lyrics-cleaned"
+    subset = "default"
+    split = "train"
+
+    kind = "lyrics"
+
+    def map_fn(self, example):
+        title = (example.get("title") or "").strip()
+        lyrics = (example.get("lyrics") or "").strip()
+        artist = (example.get("artist") or "").strip()
+        keep = bool(title and lyrics and artist)
+        return simple_format(title, lyrics), artist, keep
+
+
+@register_handler
+class MediumArticlesEnglishHandler(BaseHandler):
+
+    url = "BEE-spoke-data/medium-articles-en"
+    subset = "default"
+    split = ["train", "validation", "test"]
+
+    kind = "blog"
+
+    @staticmethod
+    def _authors(value):
+        if isinstance(value, str):
+            value = _parse_jsonish(value)
+        if not isinstance(value, (list, tuple)):
+            return []
+
+        # Preserve source order while avoiding duplicate trajectories for a
+        # malformed row that names the same author more than once.
+        authors = []
+        seen = set()
+        for value in value:
+            if not isinstance(value, str):
+                continue
+            author = value.strip()
+            if author and author not in seen:
+                authors.append(author)
+                seen.add(author)
+        return authors
+
+    def map_fn(self, example):
+        title = (example.get("title") or "").strip()
+        article = (example.get("text") or "").strip()
+        authors = self._authors(example.get("authors"))
+        if not title or not article or not authors:
+            return [], [], []
+
+        conversation = simple_format(title, article)
+        return (
+            [conversation for _ in authors],
+            authors,
+            [True] * len(authors),
         )

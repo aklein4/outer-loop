@@ -52,7 +52,14 @@ def parse_args():
     )
     parser.add_argument("--lr-scale-start", type=float, default=1.0)
     parser.add_argument("--lr-scale-end", type=float, default=0.1)
-    parser.add_argument("--aux-weight", type=float, default=0.0, help="Weight for adaptation loss on non-assistant attended tokens")
+    parser.add_argument(
+        "--aux-loss-weight",
+        "--aux-weight",
+        dest="aux_weight",
+        type=float,
+        default=0.0,
+        help="Weight for non-assistant loss in adaptation gradients only (default: 0)",
+    )
     parser.add_argument("--eval-fn", default="exact_match", choices=["exact_match", "output_loss"])
     parser.add_argument("--save-name", default=None, help="Name for saving results (default: checkpoint name)")
     return parser.parse_args()

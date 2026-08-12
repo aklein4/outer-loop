@@ -47,6 +47,11 @@ class BaseHandler(ABC):
     # inferred from every independent map-worker shard.
     output_features = None
 
+    # A source row may fan out into many mapped rows. Such handlers can bound
+    # the input map batch independently without slowing the later row-wise
+    # filter stage, which should normally retain the caller's batch size.
+    map_batch_size = None
+
 
     def __init__(self, **kwargs):
         for key, value in kwargs.items():
@@ -200,7 +205,7 @@ class BaseHandler(ABC):
             self.full_map_batch_fn,
             num_proc=num_proc,
             batched=True,
-            batch_size=batch_size,
+            batch_size=self.map_batch_size or batch_size,
             remove_columns=ds.column_names,
             # A source may already use an output name with an incompatible
             # physical type (Toucan SFT stores ``messages`` as JSON text).

@@ -1,0 +1,64 @@
+
+[1/7] nvidia/Nemotron-SFT-Agentic-v2: SUCCESS (4_311 examples)
+[2/7] nvidia/Nemotron-Agentic-v1: SUCCESS (1_740 examples)
+[3/7] Lyun0912/LongABC: SUCCESS (301_058 examples)
+[4/7] sxiong/DHSA_Long-Data-Collections: FAIL during processing: TimeoutError: 
+Traceback (most recent call last):
+  File "/home/ubuntu/iTTT/src/.venv/lib/python3.10/site-packages/datasets/utils/py_utils.py", line 612, in iflatmap_unordered
+    yield queue.get(timeout=0.05)
+  File "<string>", line 2, in get
+  File "/home/ubuntu/iTTT/src/.venv/lib/python3.10/site-packages/multiprocess/managers.py", line 818, in _callmethod
+    kind, result = conn.recv()
+  File "/home/ubuntu/iTTT/src/.venv/lib/python3.10/site-packages/multiprocess/connection.py", line 253, in recv
+    buf = self._recv_bytes()
+  File "/home/ubuntu/iTTT/src/.venv/lib/python3.10/site-packages/multiprocess/connection.py", line 417, in _recv_bytes
+    buf = self._recv(4)
+  File "/home/ubuntu/iTTT/src/.venv/lib/python3.10/site-packages/multiprocess/connection.py", line 386, in _recv
+    raise EOFError
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/ubuntu/outer-loop/data_preparation/latent/compile.py", line 74, in main
+    ds = h.process(
+  File "/home/ubuntu/outer-loop/data_preparation/latent/base_handler.py", line 161, in process
+    return self.process_dataset(
+  File "/home/ubuntu/outer-loop/data_preparation/latent/base_handler.py", line 199, in process_dataset
+    ds = ds.map(
+  File "/home/ubuntu/iTTT/src/.venv/lib/python3.10/site-packages/datasets/arrow_dataset.py", line 562, in wrapper
+    out: Union["Dataset", "DatasetDict"] = func(self, *args, **kwargs)
+  File "/home/ubuntu/iTTT/src/.venv/lib/python3.10/site-packages/datasets/arrow_dataset.py", line 3332, in map
+    for rank, done, content in iflatmap_unordered(
+  File "/home/ubuntu/iTTT/src/.venv/lib/python3.10/site-packages/datasets/utils/py_utils.py", line 626, in iflatmap_unordered
+    [async_result.get(timeout=0.05) for async_result in async_results]
+  File "/home/ubuntu/iTTT/src/.venv/lib/python3.10/site-packages/datasets/utils/py_utils.py", line 626, in <listcomp>
+    [async_result.get(timeout=0.05) for async_result in async_results]
+  File "/home/ubuntu/iTTT/src/.venv/lib/python3.10/site-packages/multiprocess/pool.py", line 770, in get
+    raise TimeoutError
+multiprocess.context.TimeoutError
+
+[5/7] tasksource/tasksource-instruct-v0: SUCCESS (82_114 examples)
+[6/7] bigscience/P3: FAIL during processing: ValueError: Failed to concatenate on axis=1 because tables don't have the same number of rows
+Traceback (most recent call last):
+  File "/home/ubuntu/outer-loop/data_preparation/latent/compile.py", line 74, in main
+    ds = h.process(
+  File "/home/ubuntu/outer-loop/data_preparation/latent/handlers.py", line 1301, in process
+    mapped = self.process_dataset(
+  File "/home/ubuntu/outer-loop/data_preparation/latent/base_handler.py", line 230, in process_dataset
+    ds = ds.add_column("source", [self.source()] * len(ds))
+  File "/home/ubuntu/iTTT/src/.venv/lib/python3.10/site-packages/datasets/arrow_dataset.py", line 562, in wrapper
+    out: Union["Dataset", "DatasetDict"] = func(self, *args, **kwargs)
+  File "/home/ubuntu/iTTT/src/.venv/lib/python3.10/site-packages/datasets/fingerprint.py", line 442, in wrapper
+    out = func(dataset, *args, **kwargs)
+  File "/home/ubuntu/iTTT/src/.venv/lib/python3.10/site-packages/datasets/arrow_dataset.py", line 6120, in add_column
+    table = concat_tables([dataset._data, column_table], axis=1)
+  File "/home/ubuntu/iTTT/src/.venv/lib/python3.10/site-packages/datasets/table.py", line 1766, in concat_tables
+    return ConcatenationTable.from_tables(tables, axis=axis)
+  File "/home/ubuntu/iTTT/src/.venv/lib/python3.10/site-packages/datasets/table.py", line 1471, in from_tables
+    blocks = _extend_blocks(blocks, table_blocks, axis=axis)
+  File "/home/ubuntu/iTTT/src/.venv/lib/python3.10/site-packages/datasets/table.py", line 1463, in _extend_blocks
+    result, blocks = _split_both_like(result, blocks)
+  File "/home/ubuntu/iTTT/src/.venv/lib/python3.10/site-packages/datasets/table.py", line 1453, in _split_both_like
+    raise ValueError("Failed to concatenate on axis=1 because tables don't have the same number of rows")
+ValueError: Failed to concatenate on axis=1 because tables don't have the same number of rows
