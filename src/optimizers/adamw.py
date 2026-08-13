@@ -124,7 +124,7 @@ class AdamW(Optimizer):
                 finite = torch.isfinite(grad).all()
                 grad_nan = grad_nan | (~finite)
                 if group["fix_nan"]:
-                    grad = safe_finite(grad)
+                    grad = safe_finite(grad, True)
 
                 param_nan = param_nan | (~torch.isfinite(p)).any()
 
