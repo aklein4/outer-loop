@@ -6,9 +6,9 @@
 replicate_default: true
 
 # Main causal MLP matrices
-backbone_layers.layers.*.mlp.gate_proj.weight: [fsdp, null]
-backbone_layers.layers.*.mlp.up_proj.weight: [fsdp, null]
-backbone_layers.layers.*.mlp.down_proj.weight: [fsdp, null]
+# backbone_layers.layers.*.mlp.gate_proj.weight: [fsdp, null]
+# backbone_layers.layers.*.mlp.up_proj.weight: [fsdp, null]
+# backbone_layers.layers.*.mlp.down_proj.weight: [fsdp, null]
 
 output_layers.layers.*.mlp.gate_proj.weight: [fsdp, null]
 output_layers.layers.*.mlp.up_proj.weight: [fsdp, null]
