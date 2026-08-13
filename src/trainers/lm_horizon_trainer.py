@@ -4,21 +4,11 @@ import torch_xla
 import torch_xla.core.xla_model as xm
 
 from collections import defaultdict
-import numpy as np
 
 from models.llama import LlamaForCausalLM
 from trainers.base_trainer import BaseTrainer
 from utils.logging_utils import master_print
 from utils.sharding_utils import maybe_shard_with_gradients
-from utils.torch_utils import scale_gradient
-
-
-def split_given_size(n, size):
-    arr = np.array_split(
-        np.arange(n),
-        np.arange(size,n,size)
-    )
-    return [a.tolist() for a in arr]
 
 
 class LMHorizonTrainer(BaseTrainer):
@@ -44,7 +34,7 @@ class LMHorizonTrainer(BaseTrainer):
             dtype=torch.bfloat16,
             enabled=self.config.trainer.use_autocast,
         )
-    
+
 
     def get_trainable_parameters(self, model):
 
@@ -81,7 +71,6 @@ class LMHorizonTrainer(BaseTrainer):
         input_ids: torch.LongTensor,
         assistant_mask: torch.BoolTensor,
         valid_mask: torch.BoolTensor,
-        gradient_scale: float = 1.0,
     ):
         batch_size, seq_len, _ = lm_states.shape
         num_iter = self.config.trainer.num_logit_iterations
@@ -103,6 +92,26 @@ class LMHorizonTrainer(BaseTrainer):
             / batch_size
         )
 
+        if num_iter == 1:
+            lm_states_leaf = lm_states.detach().requires_grad_(True)
+
+            logits = self.model.lm_head(
+                lm_states_leaf
+            ).float()
+
+            raw_loss = F.cross_entropy(
+                logits.reshape(-1, logits.shape[-1]),
+                labels.reshape(-1).contiguous(),
+                reduction="none",
+            ).reshape(labels.shape)
+            assistant_loss = (raw_loss * assistant_weights).sum()
+            aux_loss = (raw_loss * aux_weights).sum()
+
+            loss = assistant_loss + self.config.trainer.aux_loss_weight * aux_loss
+            loss.backward()
+
+            return assistant_loss.detach(), aux_loss.detach(), lm_states_leaf.grad.detach().to(lm_states.dtype)
+
         lm_states_leaf = maybe_shard_with_gradients(
             lm_states.detach().reshape(
                 -1, num_iter, lm_states.shape[-1]
@@ -119,51 +128,32 @@ class LMHorizonTrainer(BaseTrainer):
             aux_weights.reshape(-1, num_iter)
         )
 
-        assistant_loss_parts = []
-        aux_loss_parts = []
+        assistant_losses = []
+        aux_losses = []
         for i in range(num_iter):
 
             logits = self.model.lm_head(
                 lm_states_leaf[:, i]
             ).float()
-            logits = scale_gradient(logits, gradient_scale)
 
             raw_loss = F.cross_entropy(
                 logits,
                 labels[:, i].contiguous(),
                 reduction="none",
             )
-            assistant_loss_part = raw_loss * assistant_weights[:, i]
-            aux_loss_part = raw_loss * aux_weights[:, i]
-
-            assistant_loss = assistant_loss_part.sum()
-            aux_loss = aux_loss_part.sum()
+            assistant_loss = (raw_loss * assistant_weights[:, i]).sum()
+            aux_loss = (raw_loss * aux_weights[:, i]).sum()
 
             loss = assistant_loss + self.config.trainer.aux_loss_weight * aux_loss
 
             loss.backward()
             xm.optimization_barrier_([lm_states_leaf.grad])
 
-            assistant_loss_parts.append(assistant_loss_part.detach())
-            aux_loss_parts.append(aux_loss_part.detach())
+            assistant_losses.append(assistant_loss.detach())
+            aux_losses.append(aux_loss.detach())
 
-        # Stacking the iteration columns reverses the reshape above and restores
-        # the original token order. The weights include 1 / batch_size for the
-        # backward reduction, so remove that factor to report one loss per input
-        # sequence. Keeping this dimension is what lets callers recover the
-        # individual episode losses after concatenating episodes along batch.
-        assistant_loss = (
-            torch.stack(assistant_loss_parts, dim=1)
-            .reshape(batch_size, seq_len)
-            .sum(dim=-1)
-            * batch_size
-        )
-        aux_loss = (
-            torch.stack(aux_loss_parts, dim=1)
-            .reshape(batch_size, seq_len)
-            .sum(dim=-1)
-            * batch_size
-        )
+        assistant_loss = torch.stack(assistant_losses).sum()
+        aux_loss = torch.stack(aux_losses).sum()
 
         lm_grad = lm_states_leaf.grad.reshape(
             lm_states.shape
@@ -172,12 +162,12 @@ class LMHorizonTrainer(BaseTrainer):
         return assistant_loss, aux_loss, lm_grad
 
 
+    @torch_xla.compile(full_graph=True)
     def inner_step(
         self,
         input_ids,
         assistant_mask,
         valid_mask,
-        n,
     ):
 
         with self._autocast():
@@ -191,8 +181,7 @@ class LMHorizonTrainer(BaseTrainer):
                 lm_states,
                 input_ids,
                 assistant_mask,
-                valid_mask,
-                gradient_scale=n,
+                valid_mask
             )
 
         torch.autograd.backward(
@@ -200,36 +189,6 @@ class LMHorizonTrainer(BaseTrainer):
         )
 
         return loss, aux_loss
-
-
-    @torch_xla.compile(full_graph=True)
-    def multi_inner_step(
-        self, *episodes
-    ):
-        input_ids, assistant_mask, valid_mask = zip(*episodes)
-        n = len(input_ids)
-
-        input_ids = maybe_shard_with_gradients(
-            torch.cat(input_ids, dim=0)
-        )
-        assistant_mask = maybe_shard_with_gradients(
-            torch.cat(assistant_mask, dim=0)
-        )
-        valid_mask = maybe_shard_with_gradients(
-            torch.cat(valid_mask, dim=0)
-        )
-
-        losses, aux_losses = self.inner_step(
-            input_ids,
-            assistant_mask,
-            valid_mask,
-            n,
-        )
-
-        losses = list(losses.reshape(n, -1).mean(dim=1).unbind())
-        aux_losses = list(aux_losses.reshape(n, -1).mean(dim=1).unbind())
-
-        return losses, aux_losses
 
 
     @torch_xla.compile(full_graph=True)
@@ -264,25 +223,21 @@ class LMHorizonTrainer(BaseTrainer):
         aux = {}
 
         # first loop
-        inds_list = split_given_size(
-            len(episodes), self.config.trainer.num_episodes_per_call
-        )
-        for inds in inds_list:
+        for i, episode in enumerate(episodes):
 
-            curr_losses, curr_aux_losses = self.multi_inner_step(
-                *[episodes[i] for i in inds]
+            loss, aux_loss = self.inner_step(
+                *episode
             )
             torch_xla.sync(wait=True)
 
-            for i in range(len((curr_losses))):
-                aux[f"lm_loss/episode_{inds[i]:02d}"] = curr_losses[i].detach()
-                aux[f"aux_loss/episode_{inds[i]:02d}"] = curr_aux_losses[i].detach()
+            aux[f"lm_loss/episode_{i:02d}"] = loss.detach()
+            aux[f"aux_loss/episode_{i:02d}"] = aux_loss.detach()
 
-                losses.append(curr_losses[i].detach())
-                aux_losses.append(curr_aux_losses[i].detach())
+            losses.append(loss.detach())
+            aux_losses.append(aux_loss.detach())
 
             master_print(
-                f"First  pass {inds[-1]:02d} completed."
+                f"Inner  pass {i:02d} completed."
             )
 
         # optimizer step
