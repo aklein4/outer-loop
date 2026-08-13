@@ -32,6 +32,9 @@ class AdamW(Optimizer):
             Whether to fix NaN values in gradients and updates by replacing them with zeros.
         state_dtype (:obj:`torch.dtype`, `optional`, defaults to "bfloat16"):
             The data type to use for the optimizer state (e.g., "float32", "bfloat16", "float16").
+        shard_state (:obj:`bool`, `optional`, defaults to `False`):
+            Whether to shard non-degenerate first and second moments along dimension
+            zero using the existing global mesh's ``fsdp`` axis.
     """
 
     def __init__(
@@ -45,6 +48,7 @@ class AdamW(Optimizer):
         update_clip: float = None,
         fix_nan: bool = True,
         state_dtype: torch.dtype = "float32",
+        shard_state: bool = False,
     ):
         if lr < 0.0:
             raise ValueError("Invalid learning rate: {} - should be >= 0.0".format(lr))
@@ -54,13 +58,37 @@ class AdamW(Optimizer):
             raise ValueError("Invalid beta parameter: {} - should be in [0.0, 1.0[".format(betas[1]))
         if not 0.0 <= eps:
             raise ValueError("Invalid epsilon value: {} - should be >= 0.0".format(eps))
-        
+
         defaults = dict(
             lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, correct_bias=correct_bias,
-            update_clip=update_clip, fix_nan=fix_nan, state_dtype=getattr(torch, state_dtype)
+            update_clip=update_clip, fix_nan=fix_nan, state_dtype=getattr(torch, state_dtype),
+            shard_state=shard_state
         )
-        
+
         super().__init__(params, defaults)
+
+
+    def _shard_state_tensor(self, tensor: torch.Tensor, enabled: bool):
+        """Shard a non-degenerate moment on dim 0 over the global FSDP axis."""
+        if (
+            not enabled or
+            sum(int(size > 1) for size in tensor.shape) < 2 or
+            tensor.device.type != "xla"
+        ):
+            return tensor
+
+        # Import lazily so the optimizer remains usable in non-XLA environments.
+        import torch_xla.distributed.spmd as xs
+
+        global_mesh = xs.get_global_mesh()
+        if global_mesh is None:
+            raise RuntimeError("shard_state requires an XLA global mesh")
+
+        return xs.mark_sharding_with_gradients(
+            tensor,
+            global_mesh,
+            ("fsdp",) + (None,) * (tensor.dim() - 1),
+        )
 
 
     @torch.no_grad()
@@ -107,13 +135,25 @@ class AdamW(Optimizer):
                 if len(state) == 0:
                     state["step"] = torch.zeros(1, device=grad.device, dtype=torch.long)
                     # Exponential moving average of gradient values
-                    state["exp_avg"] = torch.zeros_like(grad, dtype=state_dtype)
+                    state["exp_avg"] = self._shard_state_tensor(
+                        torch.zeros_like(grad, dtype=state_dtype),
+                        group["shard_state"],
+                    )
                     # Exponential moving average of squared gradient values
-                    state["exp_avg_sq"] = torch.zeros_like(grad, dtype=state_dtype)
+                    state["exp_avg_sq"] = self._shard_state_tensor(
+                        torch.zeros_like(grad, dtype=state_dtype),
+                        group["shard_state"]
+                    )
                 else:
                     state["step"] = state["step"].to(grad.device, dtype=torch.long)
-                    state["exp_avg"] = state["exp_avg"].to(grad.device, dtype=state_dtype)
-                    state["exp_avg_sq"] = state["exp_avg_sq"].to(grad.device, dtype=state_dtype)
+                    state["exp_avg"] = self._shard_state_tensor(
+                        state["exp_avg"].to(grad.device, dtype=state_dtype),
+                        group["shard_state"]
+                    )
+                    state["exp_avg_sq"] = self._shard_state_tensor(
+                        state["exp_avg_sq"].to(grad.device, dtype=state_dtype),
+                        group["shard_state"]
+                    )
 
                 exp_avg, exp_avg_sq = state["exp_avg"], state["exp_avg_sq"]
                 beta1, beta2 = group["betas"]
