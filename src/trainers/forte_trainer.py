@@ -115,10 +115,10 @@ class ForteTrainer(BaseTrainer):
             ).float()
 
             raw_loss = F.cross_entropy(
-                logits,
-                labels.contiguous(),
+                logits.reshape(-1, logits.shape[-1]),
+                labels.reshape(-1).contiguous(),
                 reduction="none",
-            )
+            ).reshape(labels.shape)
             assistant_loss = (raw_loss * assistant_weights).sum()
             aux_loss = (raw_loss * aux_weights).sum()
 
