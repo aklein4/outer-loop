@@ -162,13 +162,23 @@ class AdamW(Optimizer):
 
                 # Decay the first and second moment running average coefficient
                 # In-place operations to update the averages at the same time
-                exp_avg.lerp_(
-                    grad.to(exp_avg.dtype),
-                    (1.0 - beta1) * finite.to(exp_avg.dtype)
+                exp_avg.copy_(
+                    torch.where(
+                        finite,
+                        torch.lerp(
+                            exp_avg, grad.to(exp_avg.dtype), (1.0 - beta1)
+                        ),
+                        exp_avg,
+                    )
                 )
-                exp_avg_sq.lerp_(
-                    grad.to(exp_avg_sq.dtype).pow(2),
-                    (1.0 - beta2) * finite.to(exp_avg_sq.dtype)
+                exp_avg_sq.copy_(
+                    torch.where(
+                        finite,
+                        torch.lerp(
+                            exp_avg_sq, grad.to(exp_avg_sq.dtype).pow(2), (1.0 - beta2)
+                        ),
+                        exp_avg_sq,
+                    )
                 )
 
                 step_size = group["lr"]
@@ -179,7 +189,7 @@ class AdamW(Optimizer):
 
                 update = (
                     exp_avg.to(p.dtype) /
-                    exp_avg_sq.to(p.dtype).clamp_min(0.0).sqrt().clamp_min(group["eps"])
+                    exp_avg_sq.to(p.dtype).clamp_min(group["eps"]**2).sqrt()
                 )
                 if group["update_clip"] is not None:
                     update = torch.clamp(update, -group["update_clip"], group["update_clip"])
