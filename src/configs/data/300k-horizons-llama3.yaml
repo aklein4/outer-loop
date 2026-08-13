@@ -1,6 +1,6 @@
 dataset:
 
-    url: aklein4/horizons-10B
+    url: aklein4/300k-horizons
 
     kwargs:
 
@@ -20,4 +20,3 @@ collator:
         max_length: 1024
         cluster_length: 64
 
-        legacy: true

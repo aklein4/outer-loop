@@ -5,7 +5,7 @@ type: forte_trainer.ForteTrainer  # Used to import the trainer from this class
 # This config is similar to the hyperparameters of GPT-3 XL which had 1.3B parameters.
 
 # total batch size across all devices
-global_batch_size: 128
+global_batch_size: 64
 
 # run for N steps
 max_steps: 1000000
@@ -88,7 +88,7 @@ input_sharding_spec: [[data, fsdp], null, null]
 
 propagate_embedding_grads: true
 
-num_logit_iterations: 4
+num_logit_iterations: 1
 
 aux_loss_weight: 0.1
 future_loss_scale: 1.0

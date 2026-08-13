@@ -107,6 +107,26 @@ class ForteTrainer(BaseTrainer):
             / batch_size
         )
 
+        if num_iter == 1:
+            lm_states_leaf = lm_states.detach().requires_grad_(True)
+
+            logits = self.model.lm_head(
+                lm_states_leaf
+            ).float()
+
+            raw_loss = F.cross_entropy(
+                logits,
+                labels.contiguous(),
+                reduction="none",
+            )
+            assistant_loss = (raw_loss * assistant_weights).sum()
+            aux_loss = (raw_loss * aux_weights).sum()
+
+            loss = assistant_loss + self.config.trainer.aux_loss_weight * aux_loss
+            loss.backward()
+
+            return assistant_loss.detach(), aux_loss.detach(), lm_states_leaf.grad.detach().to(lm_states.dtype)
+
         lm_states_leaf = maybe_shard_with_gradients(
             lm_states.detach().reshape(
                 -1, num_iter, lm_states.shape[-1]

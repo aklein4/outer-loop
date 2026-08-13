@@ -118,6 +118,7 @@ class HorizonCollator:
         cluster_length: int,
         episode_prefix: str = "episode_",
         chat_template: str = ASSISTANT_MASK_CHAT_TEMPLATE,
+        legacy: bool = False,
     ):
         
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_url)
@@ -129,7 +130,7 @@ class HorizonCollator:
         self.max_length = max_length
         self.cluster_length = cluster_length
         self.episode_keys = [
-            f"{episode_prefix}{i + 1}"
+            f"{episode_prefix}{i + 1}" if legacy else f"{episode_prefix}{i:02d}"
             for i in range(cluster_length)
         ]
 
