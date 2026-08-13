@@ -111,7 +111,7 @@ class ScaledMuon(Optimizer):
 
         update_nan = (~torch.isfinite(update)).any()
         if group["fix_nan"]:
-            update = safe_finite(update)
+            update = safe_finite(update, True)
 
         if group["weight_decay"] > 0.0:
             p.add_(-group["lr"] * group["weight_decay"] * finite.to(p.dtype) * p)
@@ -151,7 +151,7 @@ class ScaledMuon(Optimizer):
 
         update_nan = (~torch.isfinite(update)).any()
         if group["fix_nan"]:
-            update = safe_finite(update)
+            update = safe_finite(update, True)
 
         step_size = group["lr"] * group["rms_scale"] * math.sqrt(
             max(grad.shape[0], grad.shape[1])
@@ -197,7 +197,7 @@ class ScaledMuon(Optimizer):
                 finite = torch.isfinite(grad).all()
                 grad_nan = grad_nan | (~torch.isfinite(grad)).any()
                 if group["fix_nan"]:
-                    grad = safe_finite(grad)
+                    grad = safe_finite(grad, True)
 
                 param_nan = param_nan | (~torch.isfinite(p)).any()
 

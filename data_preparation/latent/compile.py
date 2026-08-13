@@ -17,11 +17,11 @@ DS_NAME = "aklein4/latent-compilation"
 LOG_FILE = "compilation_log.txt"
 
 NAMES_TO_DO = [
-    "Lyun0912/LongABC",
+    # "Lyun0912/LongABC",
     # "blitt/SPoRC",
     # "PleIAs/YouTube-Commons",
     # "theelderemo/genius-lyrics-cleaned",
-    # "sxiong/DHSA_Long-Data-Collections",
+    "sxiong/DHSA_Long-Data-Collections",
     # "bigscience/P3",
     # "clips/mqa",
 ]

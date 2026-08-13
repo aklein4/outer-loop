@@ -146,7 +146,7 @@ class AdamW(Optimizer):
 
                 update_nan = update_nan | (~torch.isfinite(update)).any()
                 if group["fix_nan"]:
-                    update = safe_finite(update)
+                    update = safe_finite(update, True)
 
                 if group["weight_decay"] > 0.0:
                     p.add_(-group["lr"] * group["weight_decay"] * finite.to(p.dtype) * p)

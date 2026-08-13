@@ -1418,56 +1418,116 @@ class DhsaLongDataCollectionsHandler(LongAbcHandler):
     subset = ["32k_64k", "64k_128k", "gt_128k"]
     split = "pretrain"
 
+    chunk_size = 448
+
     @staticmethod
-    def _generate_examples(repo_id, filenames, max_counts, schema_version):
+    def _iter_file_examples(repo_id, filename, max_count=None):
+        """Yield source documents from one compressed JSONL shard."""
+        path = hf_hub_download(repo_id, filename, repo_type="dataset")
+        with pa.input_stream(path) as compressed:
+            with io.TextIOWrapper(compressed, encoding="utf-8") as source:
+                count = 0
+                for line_number, line in enumerate(source):
+                    if not line.strip():
+                        continue
+                    example = json.loads(line)
+                    yield {
+                        "content": example.get("text") or "",
+                        # DHSA does not publish a document identifier. A
+                        # repository path plus JSONL line number is stable
+                        # and keeps every document's chunks in one latent.
+                        "sequence": hashlib.sha256(
+                            f"{filename}:{line_number}".encode("utf-8")
+                        ).hexdigest(),
+                    }
+                    count += 1
+                    if max_count is not None and count >= max_count:
+                        return
+
+    @classmethod
+    def _generate_examples(cls, repo_id, filenames, max_counts, schema_version):
         del schema_version  # Included in gen_kwargs to invalidate old caches.
         for filename, max_count in zip(filenames, max_counts):
-            path = hf_hub_download(repo_id, filename, repo_type="dataset")
-            with pa.input_stream(path) as compressed:
-                with io.TextIOWrapper(compressed, encoding="utf-8") as source:
-                    count = 0
-                    for line_number, line in enumerate(source):
-                        if not line.strip():
-                            continue
-                        example = json.loads(line)
-                        yield {
-                            "content": example.get("text") or "",
-                            # DHSA does not publish a document identifier. A
-                            # repository path plus JSONL line number is stable
-                            # and keeps every document's chunks in one latent.
-                            "sequence": hashlib.sha256(
-                                f"{filename}:{line_number}".encode("utf-8")
-                            ).hexdigest(),
-                        }
-                        count += 1
-                        if max_count is not None and count >= max_count:
-                            break
+            yield from cls._iter_file_examples(repo_id, filename, max_count)
+
+    @classmethod
+    def _generate_balanced_examples(
+        cls,
+        repo_id,
+        bucket_filenames,
+        max_count,
+        schema_version,
+    ):
+        """Round-robin a single global row budget across length buckets.
+
+        Each bucket advances through its shards in filename order. Exhausted
+        buckets leave the rotation, so their unused share is automatically
+        redistributed among buckets that still contain rows.
+        """
+        del schema_version  # Included in gen_kwargs to invalidate old caches.
+
+        def iter_bucket(filenames):
+            for filename in filenames:
+                yield from cls._iter_file_examples(repo_id, filename)
+
+        active = [iter_bucket(filenames) for filenames in bucket_filenames]
+        emitted = 0
+        while active and emitted < max_count:
+            remaining = []
+            for source in active:
+                if emitted >= max_count:
+                    break
+                try:
+                    example = next(source)
+                except StopIteration:
+                    continue
+                yield example
+                emitted += 1
+                remaining.append(source)
+            active = remaining
 
     def load_dataset(self, max_count=None):
-        prefixes = tuple(f"pretrain/{bucket}/" for bucket in self.subset)
-        filenames = sorted(
+        repo_files = list_repo_files(self.url, repo_type="dataset")
+        bucket_filenames = [
+            sorted(
+                filename
+                for filename in repo_files
+                if filename.startswith(f"pretrain/{bucket}/")
+                and filename.endswith(".jsonl.zst")
+            )
+            for bucket in self.subset
+        ]
+        filenames = [
             filename
-            for filename in list_repo_files(self.url, repo_type="dataset")
-            if filename.startswith(prefixes) and filename.endswith(".jsonl.zst")
-        )
+            for bucket_files in bucket_filenames
+            for filename in bucket_files
+        ]
         if not filenames:
             raise FileNotFoundError(
                 f"No requested pretrain length buckets found in {self.url}."
             )
 
-        # A bounded smoke test should not download one multi-GiB file per
-        # source merely to take a handful of total rows.
-        if max_count is not None:
-            filenames = filenames[:1] if max_count > 0 else []
-        max_counts = [max_count] * len(filenames)
         features = datasets.Features({
             "content": datasets.Value("string"),
             "sequence": datasets.Value("string"),
         })
-        if not filenames:
+        if max_count == 0:
             return datasets.Dataset.from_dict(
                 {"content": [], "sequence": []},
                 features=features,
+            )
+
+        if max_count is not None:
+            return datasets.Dataset.from_generator(
+                self._generate_balanced_examples,
+                gen_kwargs={
+                    "repo_id": self.url,
+                    "bucket_filenames": bucket_filenames,
+                    "max_count": max_count,
+                    "schema_version": 2,
+                },
+                features=features,
+                cache_dir=self.generator_cache_dir(),
             )
 
         return datasets.Dataset.from_generator(
@@ -1475,8 +1535,8 @@ class DhsaLongDataCollectionsHandler(LongAbcHandler):
             gen_kwargs={
                 "repo_id": self.url,
                 "filenames": filenames,
-                "max_counts": max_counts,
-                "schema_version": 1,
+                "max_counts": [None] * len(filenames),
+                "schema_version": 2,
             },
             features=features,
             cache_dir=self.generator_cache_dir(),
