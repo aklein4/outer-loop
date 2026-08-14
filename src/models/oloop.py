@@ -169,7 +169,7 @@ class FastWeight(nn.Module):
 
 
     @torch.no_grad()
-    def update_state(self):
+    def update_state(self, lr_scale: float | torch.Tensor = 1.0):
 
         update = self.momentum.grad
 
@@ -201,7 +201,7 @@ class FastWeight(nn.Module):
             self.momentum_beta * prev_whitened_normed
         )
 
-        self.state.add_(-delta.to(self.state.dtype))
+        self.state.add_(-delta.to(self.state.dtype) * lr_scale)
 
         self.momentum.copy_(new_momentum.to(self.momentum.dtype))
         self.momentum.grad.zero_()
@@ -317,7 +317,7 @@ class OLoopModel(LlamaForCausalLM):
 
 
     @torch.no_grad()
-    def update_state(self):
+    def update_state(self, lr_scale: float | torch.Tensor = 1.0):
         # stacked FastWeight modules are updated in parallel for efficiency
 
         to_update = []
@@ -326,11 +326,15 @@ class OLoopModel(LlamaForCausalLM):
                 to_update.append(name)
 
         for name in to_update:
-            self.update_state_named(name)
+            self.update_state_named(name, lr_scale=lr_scale)
             
 
     @torch.no_grad()
-    def update_state_named(self, name: str):
+    def update_state_named(
+        self,
+        name: str,
+        lr_scale: float | torch.Tensor = 1.0,
+    ):
          # updates named module across all layers in parallel
         
         ref: FastWeight = self._layer_submodule(0, name)
@@ -389,7 +393,7 @@ class OLoopModel(LlamaForCausalLM):
         for i in range(len(self.model.layers)):
             module: FastWeight = self._layer_submodule(i, name)
 
-            module.state.add_(-deltas[:, i])
+            module.state.add_(-deltas[:, i] * lr_scale)
 
             module.momentum.copy_(new_momentums[:, i])
             module.momentum.grad.zero_()

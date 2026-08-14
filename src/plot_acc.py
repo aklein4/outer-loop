@@ -12,6 +12,8 @@ from utils import constants
 
 BASE_PATH = os.path.join(constants.LOCAL_DATA_PATH, "icl_acc_results")
 
+SAVE_PATH = "acc_plot_fresh_frozen.png"
+
 COLOR_MAP = plt.get_cmap("viridis_r")
 COLORBLIND_COLORS = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
@@ -42,14 +44,33 @@ def gradient():
     # },
 # }
 
+# RUNS = {
+#     "fresh/oloop-lora-llama3p2-1b-pre/base_lr_1e-04.json": {
+#         "label": "LoRA lr=1e-4", "color": "black"
+#     },
+#     "aklein4--Horizon-TPU_forte-v2-1b/000000000500.json": {
+#         "label": "learned", "color": "blue"
+#     },
+# }
+
 RUNS = {
-    "fresh/oloop-lora-llama3p2-1b-pre/base_lr_1e-04.json": {
-        "label": "LoRA lr=1e-4", "color": "black"
+    "fresh_frozen/oloop-lora-llama3p2-1b-pre/base_lr_1e-05.json": {
+        "label": "LoRA lr=1e-5", "color": gradient()
     },
-    "aklein4--Horizon-TPU_forte-v2-1b/000000000500.json": {
-        "label": "learned", "color": "blue"
+    "fresh_frozen/oloop-lora-llama3p2-1b-pre/base_lr_3e-05.json": {
+        "label": "LoRA lr=3e-5", "color": gradient()
+    },
+    "fresh_frozen/oloop-lora-llama3p2-1b-pre/base_lr_1e-04.json": {
+        "label": "LoRA lr=1e-4", "color": gradient()
+    },
+    "fresh_frozen/oloop-lora-llama3p2-1b-pre/base_lr_3e-04.json": {
+        "label": "LoRA lr=3e-4", "color": gradient()
+    },
+    "fresh_frozen/oloop-lora-llama3p2-1b-pre/base_lr_1e-03.json": {
+        "label": "LoRA lr=1e-3", "color": gradient()
     },
 }
+
 
 LORA_LABEL = "LoRA lr=1e-4"
 LORA_REFERENCE_EXAMPLES = (16, 64, 384)
@@ -268,7 +289,7 @@ def main(args):
     else:
         fig.suptitle("Supervised Learning Performance on Bitext Finetuning Datasets")
 
-    plt.savefig("icl_plot.png", dpi=args.dpi)
+    plt.savefig(SAVE_PATH, dpi=args.dpi)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,8 @@ from transformers import AutoTokenizer
 from collators.horizon import ASSISTANT_MASK_CHAT_TEMPLATE
 from models import load_checkpoint, load_checkpoint_state
 from models.forte import ForteMode, ForteModel
+from models.oloop import OLoopModel
+from models.piano import PianoMode, PianoModel
 from utils.import_utils import import_model
 import utils.constants as constants
 from utils.torch_modules import enable_gradient_checkpointing
@@ -205,6 +207,8 @@ def autocast(device: torch.device, dtype: str):
 
 def make_fns(model, args, device):
     is_forte = isinstance(model, ForteModel)
+    is_oloop = isinstance(model, OLoopModel)
+    is_piano = isinstance(model, PianoModel)
 
     def train_fn(input_ids, assistant_mask, attention_mask, lr_scale):
         with autocast(device, args.dtype):
@@ -221,12 +225,23 @@ def make_fns(model, args, device):
                     mode=ForteMode.TRAIN_FIRST,
                     logits_to_keep=slice(0, -1),
                 )
+            elif is_piano:
+                logits = model(
+                    input_ids,
+                    valid_mask=attention_mask,
+                    mode=PianoMode.TRAIN_FIRST,
+                    logits_to_keep=slice(0, -1),
+                )[0]
             else:
                 logits = model(input_ids, logits_to_keep=slice(0, -1))[0]
             loss = adaptation_loss(input_ids, assistant_mask, attention_mask, logits, args.aux_weight)
         loss.backward()
         if is_forte:
             model.update_state(embeddings, attention_mask, mode=ForteMode.TRAIN_FIRST, lr_scale=lr_scale)
+        elif is_oloop:
+            model.update_state(lr_scale=lr_scale)
+        elif is_piano:
+            model.update_state(PianoMode.TRAIN_FIRST, lr_scale=lr_scale)
         else:
             model.update_state()
 
