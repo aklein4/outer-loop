@@ -1,6 +1,12 @@
-defaults:
- - llama
- - _self_
+advanced:
 
-# Compile the sequence of decoder layers at `model.layers` using scan.
-scan_layers: 'model.layers.layers'
+  - name: backbone_layers
+    settings:
+      activation_checkpoint_layers:
+        - LlamaDecoderLayer
+      optimization_barrier_layers:
+        - LlamaDecoderLayer
+      scan_layers: layers
+      is_layer_pure: true
+      # offload_tensors: 
+      #   - decoder_input
