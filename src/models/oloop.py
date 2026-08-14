@@ -44,7 +44,7 @@ class FastWeightFunction(torch.autograd.Function):
         dtype: torch.dtype = ctx.dtype
 
         # [b, o, i]
-        update = grad.mT @ x
+        update = grad.bfloat16().mT @ x.bfloat16()
     
         return None, grad, update.to(dtype)
 
