@@ -13,9 +13,10 @@ from utils.torch_utils import safe_copy_state, select_newton_schulz
 
 
 def precondition(state, lr, p_l, p_r):
-    s = p_l[None] @ state @ p_r[None]
+    p_l, p_r = p_l[None], p_r[None]
+    s = p_l @ state @ p_r
     s = lr[None] * s
-    s = p_l[None].mT @ s @ p_r[None].mT
+    s = p_l.mT @ s @ p_r.mT
     return s
 
 
@@ -248,7 +249,7 @@ class FastWeightMLP(nn.Module):
             self.fast_weight_size, self.fast_weight_size, config
         )
         self.sig_fast = nn.Linear(
-            self.hidden_size, self.fast_weight_size, bias=False
+            self.hidden_size, self.fast_weight_size, bias=True
         )
         self.down_fast = nn.Linear(
             self.fast_weight_size, self.hidden_size, bias=False

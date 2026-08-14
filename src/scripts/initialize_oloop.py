@@ -88,14 +88,15 @@ def initialize_fast_input(
     mean, _, covariance, _ = masked_statistics(x, mask)
     whitening = cut_inv_sqrt(covariance, inv_quantile)
 
-    for projection in (module.up_fast, module.gate_fast):
+    for projection in (module.up_fast, module.gate_fast, module.sig_fast):
         weight = (
             random_orthogonal(x.shape[-1], x.device) @ whitening
         )[:module.fast_weight_size]
         projection.weight.copy_(weight.to(projection.weight.dtype))
-        projection.bias.copy_(
-            -fixed_linear(mean, projection.weight).to(projection.bias.dtype)
-        )
+        if projection.bias is not None:
+            projection.bias.copy_(
+                -fixed_linear(mean, projection.weight).to(projection.bias.dtype)
+            )
 
 
 @torch.no_grad()
@@ -120,7 +121,12 @@ def fast_modules(model: torch.nn.Module):
     for module in model.modules():
         if all(
             hasattr(module, name)
-            for name in ("up_fast", "gate_fast", "down_fast", "fast_weight_size")
+            for name in (
+                "up_fast",
+                "gate_fast",
+                "sig_fast",
+                "down_fast",
+            )
         ):
             yield module
 
