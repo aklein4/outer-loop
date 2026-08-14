@@ -12,6 +12,20 @@ from utils import constants
 
 BASE_PATH = os.path.join(constants.LOCAL_DATA_PATH, "icl_results")
 
+SAVE_PATH = "icl_plot_fresh_frozen.png"
+
+COLOR_MAP = plt.get_cmap("viridis_r")
+COLORBLIND_COLORS = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+
+NUM_GRADIENT_COLORS = 5
+_grad_index = 0
+def gradient():
+    global _grad_index
+    color = COLOR_MAP(min(0.1+0.9*(_grad_index / NUM_GRADIENT_COLORS), 1.0))
+    _grad_index += 1
+    return color
+
+
 # RUNS = {
 #     "LoRA (1e-4)": "fresh/oloop-lora-llama3p2-1b-pre/base_lr_1e-04.json",
 #     "Forte 100": "aklein4--Horizon-TPU_forte-v2-1b/000000000100.json",
@@ -24,15 +38,6 @@ BASE_PATH = os.path.join(constants.LOCAL_DATA_PATH, "icl_results")
 #     # "LoRA (1e-3)": "fresh/oloop-lora-llama3p2-1b-pre/base_lr_1e-03.json",
 # }
 
-COLOR_MAP = plt.get_cmap("viridis_r")
-COLORBLIND_COLORS = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-NUM_GRADIENT_COLORS = 8
-_grad_index = 0
-def gradient():
-    global _grad_index
-    color = COLOR_MAP(min(0.1+0.9*(_grad_index / NUM_GRADIENT_COLORS), 1.0))
-    _grad_index += 1
-    return color
 
 # RUNS = {
 #     "fresh/oloop-lora-llama3p2-1b-pre/base_lr_1e-04.json": {
@@ -136,35 +141,35 @@ def gradient():
 #     },
 # }
 
-RUNS = {
-    "aklein4--forte-init/000000000000.json": {
-        "label": "init", "color": "black"
-    },    
-    "aklein4--horizon-v2_alpha/000000000050.json": {
-        "label": "Learned (v2) step=050", "color": gradient()
-    },
-    "aklein4--horizon-v2_alpha/000000000100.json": {
-        "label": "Learned (v2) step=100", "color": gradient()
-    },
-    "aklein4--horizon-v2_alpha/000000000150.json": {
-        "label": "Learned (v2) step=150", "color": gradient()
-    },
-    "aklein4--horizon-v2_alpha/000000000200.json": {
-        "label": "Learned (v2) step=200", "color": gradient()
-    },
-    "aklein4--horizon-v2_alpha/000000000250.json": {
-        "label": "Learned (v2) step=250", "color": gradient()
-    },
-    "aklein4--horizon-v2_alpha/000000000300.json": {
-        "label": "Learned (v2) step=300", "color": gradient()
-    },
-    "aklein4--horizon-v2_alpha/000000000350.json": {
-        "label": "Learned (v2) step=350", "color": gradient()
-    },
-    "aklein4--horizon-v2_alpha/000000000400.json": {
-        "label": "Learned (v2) step=400", "color": gradient()
-    },
-}
+# RUNS = {
+#     "aklein4--forte-init/000000000000.json": {
+#         "label": "init", "color": "black"
+#     },    
+#     "aklein4--horizon-v2_alpha/000000000050.json": {
+#         "label": "Learned (v2) step=050", "color": gradient()
+#     },
+#     "aklein4--horizon-v2_alpha/000000000100.json": {
+#         "label": "Learned (v2) step=100", "color": gradient()
+#     },
+#     "aklein4--horizon-v2_alpha/000000000150.json": {
+#         "label": "Learned (v2) step=150", "color": gradient()
+#     },
+#     "aklein4--horizon-v2_alpha/000000000200.json": {
+#         "label": "Learned (v2) step=200", "color": gradient()
+#     },
+#     "aklein4--horizon-v2_alpha/000000000250.json": {
+#         "label": "Learned (v2) step=250", "color": gradient()
+#     },
+#     "aklein4--horizon-v2_alpha/000000000300.json": {
+#         "label": "Learned (v2) step=300", "color": gradient()
+#     },
+#     "aklein4--horizon-v2_alpha/000000000350.json": {
+#         "label": "Learned (v2) step=350", "color": gradient()
+#     },
+#     "aklein4--horizon-v2_alpha/000000000400.json": {
+#         "label": "Learned (v2) step=400", "color": gradient()
+#     },
+# }
 
 # RUNS = {
 #     "fresh/oloop-lora-llama3p2-1b-pre/base_lr_1e-04.json": {
@@ -185,8 +190,26 @@ RUNS = {
 #     },
 # }
 
+RUNS = {
+    "fresh_frozen/oloop-lora-llama3p2-1b-pre/base_lr_1e-05.json": {
+        "label": "LoRA lr=1e-5", "color": gradient()
+    },
+    "fresh_frozen/oloop-lora-llama3p2-1b-pre/base_lr_3e-05.json": {
+        "label": "LoRA lr=3e-5", "color": gradient()
+    },
+    "fresh_frozen/oloop-lora-llama3p2-1b-pre/base_lr_1e-04.json": {
+        "label": "LoRA lr=1e-4", "color": gradient()
+    },
+    "fresh_frozen/oloop-lora-llama3p2-1b-pre/base_lr_3e-04.json": {
+        "label": "LoRA lr=3e-4", "color": gradient()
+    },
+    "fresh_frozen/oloop-lora-llama3p2-1b-pre/base_lr_1e-03.json": {
+        "label": "LoRA lr=1e-3", "color": gradient()
+    },
+}
 
-LORA_LABEL = "Learned (v2) step=050"
+
+LORA_LABEL = "LoRA lr=1e-4"
 LORA_REFERENCE_EXAMPLES = (16, 64, 1024)
 CHECKPOINT_LABEL_RE = re.compile(r"^(?P<name>.+) step=(?P<step>\d+)$")
 
@@ -403,7 +426,7 @@ def main(args):
     else:
         fig.suptitle("Supervised Learning Performance on Bitext Finetuning Datasets")
 
-    plt.savefig("icl_plot.png", dpi=args.dpi)
+    plt.savefig(SAVE_PATH, dpi=args.dpi)
 
 
 if __name__ == "__main__":
