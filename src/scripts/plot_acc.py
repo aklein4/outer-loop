@@ -18,19 +18,19 @@ DATA_DIR = REPO_ROOT / "src/local_data/icl_acc_results"
 DEFAULT_OUTPUT = REPO_ROOT / "figures/acc_plot.png"
 
 REFERENCE_RUN = (
-    "fresh_frozen/oloop-lora-llama3p2-1b-pre/base_lr_3e-04.json",
-    "LoRA lr=3e-4",
+    "fresh_frozen/oloop-lora-llama3p2-1b-pre/base_lr_1e-04.json",
+    "LoRA lr=1e-4",
 )
 RUNS = [
     (
         "aklein4/horizon-v2_piano",
         "Piano",
-        [50],
+        [50, 100, 150, 200, 250, 300, 350],
     ),
     (
         "aklein4/horizon-v2_oloop",
         "OLoop",
-        [100],
+        [100, 200, 300, 400, 500, 600, 700, 800]
     ),
 ]
 
