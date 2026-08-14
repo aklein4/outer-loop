@@ -89,7 +89,7 @@ def _mode_to_tensor(
         num_elements = _MODE_NUM_ELEMENTS[mode]
     except KeyError:
         raise ValueError(f"unknown forte mode: {mode}") from None
-    return reference.new_zeros(num_elements).float()
+    return reference.new_zeros(num_elements)
 
 def _tensor_to_mode(mode_tensor: torch.Tensor) -> PianoMode:
     num_elements = mode_tensor.numel()
@@ -454,7 +454,7 @@ class PianoFastWeightMLP(nn.Module):
             lr, token_gate_logits = self.fast_dynamic_lr(
                 maybe_shard_with_gradients(x[1::2]), valid_mask
             )
-            
+
             output_gate = 2 * torch.sigmoid(self.sig_fast(x))
             gate_replay = maybe_shard_with_gradients(output_gate[::2])
             gate_prop = maybe_shard_with_gradients(output_gate[1::2])

@@ -62,6 +62,8 @@ class LayerStack(nn.Module):
                     device=reference.device,
                     dtype=dtype,
                 )
+            elif isinstance(value, torch.Tensor) and not value.is_floating_point():
+                return value.to(dtype=dtype)
             return value
 
         return tree_map(tensorize, kwargs)
