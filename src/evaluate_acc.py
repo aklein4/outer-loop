@@ -17,6 +17,7 @@ from models.forte import ForteMode, ForteModel
 from utils.import_utils import import_model
 import utils.constants as constants
 from utils.torch_modules import enable_gradient_checkpointing
+from evaluate_icl import load_fresh_model
 
 
 DEFAULT_CHECKPOINT = "aklein4/Horizon-TPU_forte-v2-1b"
@@ -74,42 +75,6 @@ def load_model(checkpoint: str, step: int, device: torch.device):
     )
 
     model.to(device=device, dtype=torch.float32)
-    model.train()
-    enable_gradient_checkpointing(model)
-    for param in model.parameters():
-        param.requires_grad_(False)
-    getattr(model, "model", model).embed_tokens.requires_grad_(True)
-    return model
-
-
-def load_fresh_model(config_path: str, base_lr: float | None, device: torch.device):
-    config = OmegaConf.load(constants.CONFIG_PATH(config_path))
-    if base_lr is not None:
-        config.base_lr = base_lr
-    config.attention_kernel = "gpu_flash_attention" if device.type == "cuda" else None
-
-    model_class = import_model(config.type)
-
-    print(f"Loading fresh {config.type} from {config_path}")
-    if base_lr is not None:
-        print(f"Using base_lr={base_lr:g}")
-    model = model_class(config)
-    # Loading a base LLaMA checkpoint into an OLoop-LoRA model performs its
-    # low-rank initialization in ``load_state_dict``.  Put the model on the
-    # requested device first so that this expensive decomposition is not
-    # inadvertently run on the host (and so fresh-config evaluation works on
-    # non-XLA CUDA machines).
-    model.to(device=device, dtype=torch.float32)
-
-    if config.pretrained_url is not None:
-        print(f"Loading {config.pretrained_url} at step {config.pretrained_step} with strict={config.pretrained_strict}")
-        model = load_checkpoint_state(
-            model,
-            config.pretrained_url,
-            config.pretrained_step,
-            strict=config.pretrained_strict,
-        )
-
     model.train()
     enable_gradient_checkpointing(model)
     for param in model.parameters():

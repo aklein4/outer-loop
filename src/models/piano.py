@@ -17,6 +17,7 @@ def _get_update(
     activations: torch.FloatTensor,
     output_grad: torch.FloatTensor,
     down_weight: torch.FloatTensor,
+    output_gate: torch.FloatTensor,
     token_gate_logits: torch.FloatTensor,
     lr: torch.FloatTensor,
     valid_mask: torch.BoolTensor,
@@ -30,13 +31,10 @@ def _get_update(
     activations = activations.float() * mask
     output_grad = output_grad.float() * mask
     down_weight = down_weight.float()
+    output_gate = output_gate.float()
     token_gate_logits = token_gate_logits.float()
-    
-    # output gradient of fast weights
-    g = fixed_linear(
-        output_grad, down_weight.T
-    )
 
+    g = fixed_linear(output_grad, down_weight.T) * output_gate
     G = torch.einsum("blo,bli->boi", g, activations)
 
     # normalize over sequence dimension
@@ -112,6 +110,7 @@ class PianoFastWeightFunction(torch.autograd.Function):
         activations: torch.FloatTensor,
         output: torch.FloatTensor,
         down_weight: torch.FloatTensor,
+        output_gate: torch.FloatTensor,
         token_gate_logits: torch.FloatTensor,
         valid_mask: torch.BoolTensor,
         grad_buffer: torch.FloatTensor,
@@ -124,6 +123,7 @@ class PianoFastWeightFunction(torch.autograd.Function):
         to_save = (
             activations,
             down_weight,
+            output_gate,
             token_gate_logits,
             valid_mask,
             lr,
@@ -150,6 +150,7 @@ class PianoFastWeightFunction(torch.autograd.Function):
             (
                 activations,
                 down_weight,
+                output_gate,
                 token_gate_logits,
                 valid_mask,
                 lr
@@ -159,6 +160,7 @@ class PianoFastWeightFunction(torch.autograd.Function):
                 activations,
                 output_grad,
                 down_weight,
+                output_gate,
                 token_gate_logits,
                 lr,
                 valid_mask,
@@ -169,6 +171,7 @@ class PianoFastWeightFunction(torch.autograd.Function):
                 None, # activations
                 output_grad, # output
                 None, # down_weight
+                None, # output_gate
                 None, # token_gate_logits
                 None, # valid_mask
                 G, # grad_buffer
@@ -184,6 +187,7 @@ class PianoFastWeightFunction(torch.autograd.Function):
         (
             activations,
             down_weight,
+            output_gate,
             token_gate_logits,
             valid_mask,
             lr,
@@ -193,6 +197,7 @@ class PianoFastWeightFunction(torch.autograd.Function):
         with torch.enable_grad():
             activations_leaf = _get_leaf(activations)
             down_weight_leaf = _get_leaf(down_weight)
+            output_gate_leaf = _get_leaf(output_gate)
             token_gate_logits_leaf = _get_leaf(token_gate_logits)
             lr_leaf = _get_leaf(lr)
 
@@ -200,6 +205,7 @@ class PianoFastWeightFunction(torch.autograd.Function):
                 activations_leaf,
                 output_grad,
                 down_weight_leaf,
+                output_gate_leaf,
                 token_gate_logits_leaf,
                 lr_leaf,
                 valid_mask,
@@ -222,6 +228,7 @@ class PianoFastWeightFunction(torch.autograd.Function):
             (
                 activation_grad,
                 down_weight_grad,
+                output_gate_grad,
                 token_gate_logits_grad,
                 lr_grad,
             ) = torch.autograd.grad(
@@ -229,6 +236,7 @@ class PianoFastWeightFunction(torch.autograd.Function):
                 (
                     activations_leaf,
                     down_weight_leaf,
+                    output_gate_leaf,
                     token_gate_logits_leaf,
                     lr_leaf,
                 ),
@@ -238,6 +246,7 @@ class PianoFastWeightFunction(torch.autograd.Function):
             activation_grad.to(activations.dtype),
             output_grad,
             down_weight_grad.to(down_weight.dtype),
+            output_gate_grad.to(output_gate.dtype),
             token_gate_logits_grad.to(token_gate_logits.dtype),
             None, # valid_mask
             G, # grad_buffer
@@ -401,8 +410,10 @@ class PianoFastWeightMLP(nn.Module):
             v = torch.einsum(
                 "boi,bli->blo", self.state.detach(), activations
             )
-            v = v * 2 * torch.sigmoid(self.sig_fast(x))
-            return y_base + self.down_fast(v)
+            output_gate = 2 * torch.sigmoid(self.sig_fast(x))
+            output = self.down_fast(v * output_gate)
+
+            return y_base + output
 
         if mode == PianoMode.TRAIN_FIRST:
 
@@ -411,10 +422,14 @@ class PianoFastWeightMLP(nn.Module):
             )
             lr, token_gate_logits = self.fast_dynamic_lr(x, valid_mask)
 
-            v = PianoFastWeightFunction.apply(
+            output_gate = 2 * torch.sigmoid(self.sig_fast(x))
+            output = self.down_fast(v * output_gate)
+
+            output = PianoFastWeightFunction.apply(
                 activations,
-                v,
+                output,
                 self.down_fast.weight,
+                output_gate,
                 token_gate_logits,
                 valid_mask,
                 self.grad_buffer,
@@ -424,8 +439,7 @@ class PianoFastWeightMLP(nn.Module):
                 mode,
             )
 
-            v = v * 2 * torch.sigmoid(self.sig_fast(x))
-            return y_base + self.down_fast(v)
+            return y_base + output
 
         if mode == PianoMode.TRAIN_SECOND:
             act_replay = maybe_shard_with_gradients(activations[::2])
@@ -440,11 +454,18 @@ class PianoFastWeightMLP(nn.Module):
             lr, token_gate_logits = self.fast_dynamic_lr(
                 maybe_shard_with_gradients(x[1::2]), valid_mask
             )
+            
+            output_gate = 2 * torch.sigmoid(self.sig_fast(x))
+            gate_replay = maybe_shard_with_gradients(output_gate[::2])
+            gate_prop = maybe_shard_with_gradients(output_gate[1::2])
+            output_replay = self.down_fast(v_replay * gate_replay)
+            output_prop = self.down_fast(v_prop * gate_prop)
 
-            v_replay = PianoFastWeightFunction.apply(
+            output_replay = PianoFastWeightFunction.apply(
                 act_prop,
-                v_replay,
+                output_replay,
                 self.down_fast.weight,
+                gate_prop,
                 token_gate_logits,
                 valid_mask,
                 self.grad_buffer,
@@ -454,14 +475,13 @@ class PianoFastWeightMLP(nn.Module):
                 mode,
             )
 
-            v = maybe_shard_with_gradients(
+            output = maybe_shard_with_gradients(
                 torch.stack(
-                    [v_replay, v_prop], dim=1
-                ).reshape(-1, v_replay.shape[1:])
+                    [output_replay, output_prop], dim=1
+                ).reshape(-1, *output_replay.shape[1:])
             )
 
-            v = v * 2 * torch.sigmoid(self.sig_fast(x))
-            return y_base + self.down_fast(v)
+            return y_base + output
 
         raise ValueError(f"invalid fast weight mode: {mode}")
 
@@ -620,4 +640,3 @@ class PianoModel(LlamaForCausalLM):
             mlp.relative_grad_error() for mlp in self.fast_modules()
         ]
         return torch.stack(errors).mean()
-    
