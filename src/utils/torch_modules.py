@@ -72,8 +72,10 @@ class LayerStack(nn.Module):
     def forward(self, carry, **kwargs):
 
         kwargs = self._tensorize_scalars(carry, kwargs)
-        for k, v in kwargs.items():
-            print(f"kwargs[{k}]: {v.dtype}")
+        def p(v):
+            print(f"kwargs{v.dtype}")
+            return v
+        tree_map(p, kwargs)
 
         if (
             self.gradient_checkpointing
