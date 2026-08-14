@@ -35,6 +35,9 @@ class LayerStack(nn.Module):
         self.gradient_checkpointing = False
 
 
+    def __len__(self):
+        return len(self.layers)
+
     def _iter_layers(self):
         for layer in self.layers:
             yield layer

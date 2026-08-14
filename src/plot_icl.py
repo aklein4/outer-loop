@@ -26,7 +26,7 @@ BASE_PATH = os.path.join(constants.LOCAL_DATA_PATH, "icl_results")
 
 COLOR_MAP = plt.get_cmap("viridis_r")
 COLORBLIND_COLORS = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-NUM_GRADIENT_COLORS = 5
+NUM_GRADIENT_COLORS = 7
 _grad_index = 0
 def gradient():
     global _grad_index
@@ -93,46 +93,73 @@ def gradient():
     #     "label": "Learned (old) step=500", "color": "red"
     # },
 
-RUNS = {
-    # "fresh_pretrained_adam/oloop-lora-llama3p2-1b-pre/base_lr_1e-05.json": {
-    #     "label": "LoRA lr=1e-5", "color": gradient()
-    # },
-    # "fresh_pretrained_adam/oloop-lora-llama3p2-1b-pre/base_lr_3e-05.json": {
-    #     "label": "LoRA lr=3e-5", "color": gradient()
-    # },
-    # "fresh_pretrained_adam/oloop-lora-llama3p2-1b-pre/base_lr_1e-04.json": {
-    #     "label": "LoRA lr=1e-4", "color": gradient()
-    # },
-    "fresh_pretrained_adam/oloop-lora-llama3p2-1b-pre/base_lr_3e-04.json": {
-        "label": "LoRA lr=3e-4", "color": "black"
-    },
-    # "fresh_pretrained_adam/oloop-lora-llama3p2-1b-pre/base_lr_1e-03.json": {
-    #     "label": "LoRA lr=1e-3", "color": gradient()
-    # },
-    "aklein4--Horizon-TPU_forte-v2-freeze-1b/000000000050.json": {
-        "label": "Learned (freeze) step=50", "color": gradient()
-    },
-    "aklein4--Horizon-TPU_forte-v2-freeze-1b/000000000100.json": {
-        "label": "Learned (freeze) step=100", "color": gradient()
-    },
-    "aklein4--Horizon-TPU_forte-v2-freeze-1b/000000000150.json": {
-        "label": "Learned (freeze) step=150", "color": gradient()
-    },
-    "aklein4--Horizon-TPU_forte-v2-freeze-1b/000000000200.json": {
-        "label": "Learned (freeze) step=200", "color": gradient()
-    },
-    "aklein4--Horizon-TPU_forte-v2-freeze-1b/000000000250.json": {
-        "label": "Learned (freeze) step=250", "color": gradient()
-    },
+# RUNS = {
+#     # "fresh_pretrained_adam/oloop-lora-llama3p2-1b-pre/base_lr_1e-05.json": {
+#     #     "label": "LoRA lr=1e-5", "color": gradient()
+#     # },
+#     # "fresh_pretrained_adam/oloop-lora-llama3p2-1b-pre/base_lr_3e-05.json": {
+#     #     "label": "LoRA lr=3e-5", "color": gradient()
+#     # },
+#     # "fresh_pretrained_adam/oloop-lora-llama3p2-1b-pre/base_lr_1e-04.json": {
+#     #     "label": "LoRA lr=1e-4", "color": gradient()
+#     # },
+#     "fresh_pretrained_adam/oloop-lora-llama3p2-1b-pre/base_lr_3e-04.json": {
+#         "label": "LoRA lr=3e-4", "color": "black"
+#     },
+#     # "fresh_pretrained_adam/oloop-lora-llama3p2-1b-pre/base_lr_1e-03.json": {
+#     #     "label": "LoRA lr=1e-3", "color": gradient()
+#     # },
+#     "aklein4--Horizon-TPU_forte-v2-freeze-1b/000000000050.json": {
+#         "label": "Learned (freeze) step=50", "color": gradient()
+#     },
+#     "aklein4--Horizon-TPU_forte-v2-freeze-1b/000000000100.json": {
+#         "label": "Learned (freeze) step=100", "color": gradient()
+#     },
+#     "aklein4--Horizon-TPU_forte-v2-freeze-1b/000000000150.json": {
+#         "label": "Learned (freeze) step=150", "color": gradient()
+#     },
+#     "aklein4--Horizon-TPU_forte-v2-freeze-1b/000000000200.json": {
+#         "label": "Learned (freeze) step=200", "color": gradient()
+#     },
+#     "aklein4--Horizon-TPU_forte-v2-freeze-1b/000000000250.json": {
+#         "label": "Learned (freeze) step=250", "color": gradient()
+#     },
 
-    "aklein4--Horizon-TPU_batch-test/000000000100.json": {
-        "label": "Learned (test) step=100", "color": "orange"
+#     "aklein4--Horizon-TPU_batch-test/000000000100.json": {
+#         "label": "Learned (test) step=100", "color": "orange"
+#     },
+#     "aklein4--Horizon-TPU_batch-test/000000000200.json": {
+#         "label": "Learned (test) step=200", "color": "red"
+#     },
+#     "aklein4--Horizon-TPU_batch-test/000000000400.json": {
+#         "label": "Learned (test) step=400", "color": "pink"
+#     },
+# }
+
+RUNS = {
+    "aklein4--forte-init/000000000000.json": {
+        "label": "init", "color": "black"
+    },    
+    "aklein4--horizon-v2_alpha/000000000050.json": {
+        "label": "Learned (v2) step=050", "color": gradient()
     },
-    "aklein4--Horizon-TPU_batch-test/000000000200.json": {
-        "label": "Learned (test) step=200", "color": "red"
+    "aklein4--horizon-v2_alpha/000000000100.json": {
+        "label": "Learned (v2) step=100", "color": gradient()
     },
-    "aklein4--Horizon-TPU_batch-test/000000000400.json": {
-        "label": "Learned (test) step=400", "color": "pink"
+    "aklein4--horizon-v2_alpha/000000000150.json": {
+        "label": "Learned (v2) step=150", "color": gradient()
+    },
+    "aklein4--horizon-v2_alpha/000000000200.json": {
+        "label": "Learned (v2) step=200", "color": gradient()
+    },
+    "aklein4--horizon-v2_alpha/000000000250.json": {
+        "label": "Learned (v2) step=250", "color": gradient()
+    },
+    "aklein4--horizon-v2_alpha/000000000300.json": {
+        "label": "Learned (v2) step=300", "color": gradient()
+    },
+    "aklein4--horizon-v2_alpha/000000000350.json": {
+        "label": "Learned (v2) step=350", "color": gradient()
     },
 }
 
@@ -156,7 +183,7 @@ RUNS = {
 # }
 
 
-LORA_LABEL = "LoRA lr=3e-4"
+LORA_LABEL = "init"
 LORA_REFERENCE_EXAMPLES = (16, 64, 1024)
 CHECKPOINT_LABEL_RE = re.compile(r"^(?P<name>.+) step=(?P<step>\d+)$")
 
