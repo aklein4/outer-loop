@@ -1,6 +1,6 @@
 advanced:
 
-  - name: backbone_layers
+  - name: model.layers
     settings:
       activation_checkpoint_layers:
         - LlamaDecoderLayer
