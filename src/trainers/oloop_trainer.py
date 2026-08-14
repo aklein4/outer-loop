@@ -202,7 +202,7 @@ class OLoopTrainer(BaseTrainer):
             lm_states, lm_grad
         )
 
-        self.model.update_state()
+        # self.model.update_state()
 
         return loss, aux_loss
 
