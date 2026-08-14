@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from models.llama import LlamaForCausalLM, LlamaDecoderLayer
 from utils.sharding_utils import maybe_shard_with_gradients
-from utils.loss_utils import lm_loss_fn
+from utils.torch_utils import fixed_linear
 
 
 
@@ -25,7 +25,7 @@ class FastWeightFunction(torch.autograd.Function):
     ) -> torch.FloatTensor:
         ctx.save_for_backward(x)
         ctx.dtype = buffer.dtype
-        return y.clone()
+        return y
 
 
     @staticmethod
@@ -37,13 +37,10 @@ class FastWeightFunction(torch.autograd.Function):
         x, = ctx.saved_tensors
         dtype: torch.dtype = ctx.dtype
 
-        # [b, r, i]
-        update = (
-            grad.to(dtype).transpose(-2, -1) @
-            x.to(dtype)
-        )
+        # [b, o, i]
+        update = grad.bfloat16().mT @ x.bfloat16()
     
-        return None, grad, update
+        return None, grad, update.to(dtype)
 
         
 class FastWeight(nn.Module):
@@ -147,6 +144,7 @@ class FastWeight(nn.Module):
         self.momentum.grad.zero_()
 
         self.second_moment.zero_()
+
         self.adam_step.zero_()
 
     
@@ -155,16 +153,18 @@ class FastWeight(nn.Module):
         
         update = self.momentum.grad
 
-        new_momentum = torch.lerp(self.momentum, update, 1 - self.momentum_beta)
+        new_momentum = torch.lerp(
+            self.momentum, update, 1 - self.momentum_beta
+        )
         new_second_moment = torch.lerp(
             self.second_moment, update.square(), 1 - self.second_moment_beta
         )
         self.adam_step.add_(1)
-        step = self.adam_step.item()
+
+        step = self.adam_step.to(new_momentum.dtype)
         first_moment = new_momentum / (1 - self.momentum_beta ** step)
         second_moment = new_second_moment / (1 - self.second_moment_beta ** step)
-        # Adam's normalized update has element-wise RMS of approximately one,
-        # matching the scaling previously applied to the Muon update.
+
         delta = first_moment / (second_moment.sqrt() + self.grad_eps)
         
         self.state.add_(-delta.to(self.state_dtype))
@@ -211,7 +211,7 @@ class FastWeightLoRALinear(nn.Module):
 
     def forward(self, x):
     
-        y_w = F.linear(x, self.weight, self.bias)
+        y_w = fixed_linear(x, self.weight, self.bias)
 
         z = self.base_down(x) + self.fast_down(x)
         y_fast = self.base_up(z) + self.fast_up(z)
@@ -225,15 +225,14 @@ class OLoopLoRAModel(LlamaForCausalLM):
     def __init__(self, config):
         super().__init__(config)
 
-        self.disable_fast_weights = config.get("disable_fast_weights", False)
-        if self.disable_fast_weights:
-            return
         self.fast_weight_rank = config.fast_weight_rank
 
         def replace_linear(mod: nn.Module):
             for name, child in mod.named_children():
                 if isinstance(child, nn.Linear):
-                    setattr(mod, name, FastWeightLoRALinear(child, config))
+                    mod.set_submodule(
+                        name, FastWeightLoRALinear(child, config), True
+                    )
                 else:
                     replace_linear(child)
 
@@ -250,7 +249,7 @@ class OLoopLoRAModel(LlamaForCausalLM):
         state_dict = sd
 
         # svd init if no fast weights in state dict (loading from pretrained LLM)
-        if not any(k.count("base_down") for k in state_dict.keys()) and not self.disable_fast_weights:
+        if not any(k.count("base_down") for k in state_dict.keys()):
             nn.Module.load_state_dict(self, state_dict, False, assign)
 
             with torch.no_grad():
@@ -278,26 +277,41 @@ class OLoopLoRAModel(LlamaForCausalLM):
             nn.Module.load_state_dict(self, state_dict, strict, assign)
 
 
+    def fast_modules(self):
+        for module in self.modules():
+            if isinstance(module, FastWeight):
+                yield module
+
+    def _layer_submodule(self, layer: LlamaDecoderLayer|int, name: str) -> nn.Module:
+        if isinstance(layer, int):
+            layer = list(self.model.layers._iter_layers())[layer]
+        try:
+            return layer.get_submodule(name)
+        except AttributeError:
+            return layer._orig_mod.get_submodule(name)
+
+    def _first_layer(self):
+        return list(self.model.layers._iter_layers())[0]
+
+
     @torch.no_grad()
     def init_state(self, bs: int, device: torch.device):
-        for m in self.modules():
-            if isinstance(m, FastWeight):
-                m.init_state(bs, device)
-
+        for module in self.fast_modules():
+            module.init_state(bs, device)
 
     @torch.no_grad()
     def empty_state(self):
-        for m in self.modules():
-            if isinstance(m, FastWeight):
-                m.empty_state()
-    
+        for module in self.fast_modules():
+            module.empty_state()
+
 
     @torch.no_grad()
     def update_state(self):
+        # stacked FastWeight modules are updated in parallel for efficiency
 
         to_update = []
-        for name, mod in self.model.layers.layers[0].named_modules():
-            if isinstance(mod, FastWeight):
+        for name, module in self._first_layer().named_modules():
+            if isinstance(module, FastWeight):
                 to_update.append(name)
 
         for name in to_update:
@@ -308,162 +322,55 @@ class OLoopLoRAModel(LlamaForCausalLM):
     def update_state_named(self, name: str):
         # updates named module across all layers in parallel
         
-        try:
-            ref: FastWeight = self.model.layers.layers[0].get_submodule(name)
-        except:
-            ref: FastWeight = self.model.layers.layers[0]._orig_mod.get_submodule(name)
+        ref: FastWeight = self._layer_submodule(0, name)
 
         updates = []
         momentums = []
         second_moments = []
-        for layer in self.model.layers._iter_layers():
-            layer: LlamaDecoderLayer
+        for i in range(len(self.model.layers)):
 
-            try:
-                m: FastWeight = layer.get_submodule(name)
-            except:
-                m: FastWeight = layer._orig_mod.get_submodule(name)
+            module: FastWeight = self._layer_submodule(i, name)
 
-            updates.append(m.momentum.grad)
-            momentums.append(m.momentum)
-            second_moments.append(m.second_moment)
+            updates.append(module.momentum.grad)
+            momentums.append(module.momentum)
+            second_moments.append(module.second_moment)
         
-        updates = torch.stack(updates, dim=1)
-        momentums = torch.stack(momentums, dim=1)
-        second_moments = torch.stack(second_moments, dim=1)
+        updates = maybe_shard_with_gradients(
+            torch.stack(updates, dim=1)
+        )
+        momentums = maybe_shard_with_gradients(
+            torch.stack(momentums, dim=1)
+        )
+        second_moments = maybe_shard_with_gradients(
+            torch.stack(second_moments, dim=1)
+        )
 
-        updates = maybe_shard_with_gradients(updates)
-        momentums = maybe_shard_with_gradients(momentums)
-        second_moments = maybe_shard_with_gradients(second_moments)
-
-        new_momentums = torch.lerp(momentums, updates, 1 - ref.momentum_beta)
+        new_momentums = torch.lerp(
+            momentums, updates, 1 - ref.momentum_beta
+        )
         new_second_moments = torch.lerp(
             second_moments, updates.square(), 1 - ref.second_moment_beta
         )
         ref.adam_step.add_(1)
+
         step = ref.adam_step.to(new_momentums.dtype)
-        first_moments = new_momentums / (1 - ref.momentum_beta ** step)
+        first_moments = (
+            new_momentums / (1 - ref.momentum_beta ** step)
+        )
         corrected_second_moments = (
             new_second_moments / (1 - ref.second_moment_beta ** step)
         )
-        deltas = first_moments / (corrected_second_moments.sqrt() + ref.grad_eps)
 
+        deltas = first_moments / (corrected_second_moments.sqrt() + ref.grad_eps)
         state_deltas = -deltas.to(ref.state_dtype)
 
-        for i, layer in enumerate(self.model.layers._iter_layers()):
-            layer: LlamaDecoderLayer
+        for i in range(len(self.model.layers)):
+            module: FastWeight = self._layer_submodule(i, name)
 
-            try:
-                m: FastWeight = layer.get_submodule(name)
-            except:
-                m: FastWeight = layer._orig_mod.get_submodule(name)
+            module.state.add_(state_deltas[:, i].detach())
 
-            m.state.add_(state_deltas[:, i].detach())
+            module.momentum.copy_(new_momentums[:, i].detach())
+            module.momentum.grad.zero_()
 
-            m.momentum.copy_(new_momentums[:, i].detach())
-            m.momentum.grad.zero_()
-
-            m.second_moment.copy_(new_second_moments[:, i].detach())
-            m.adam_step.copy_(ref.adam_step)
-
-
-    def get_logits(self, *args, **kwargs):
-        return self.compute_logits(*args, **kwargs)
-
-    def compute_logits(
-        self,
-        input_ids: torch.LongTensor,
-        output_ids: torch.LongTensor | None = None,
-        chunk_size: int | None = None,
-        cpu_logits: bool = False,
-        verbose: bool = False,
-        add_bos: bool = False,
-    ):
-        if output_ids is not None:
-            input_ids = torch.cat([input_ids, output_ids], dim=-1)
-        
-        if chunk_size is None:
-            chunk_size = self.config.chunk_size
-
-        chunks = torch.split(input_ids, chunk_size, dim=-1)
-
-        ac_kwargs = {
-            "device_type": str(input_ids.device),
-            "dtype": torch.bfloat16,
-        }
-
-        self.init_state(input_ids.shape[0], input_ids.device)
-
-        all_logits = []
-
-        # first chunk
-        with torch.enable_grad():
-            with torch.autocast(**ac_kwargs):
-
-                logits = self(
-                    chunks[0],
-                    logits_to_keep=slice(0, -1)
-                )[0]
-    
-                loss = lm_loss_fn(
-                    logits, chunks[0],
-                    shift_logits=False,
-                    ignore_index=self.config.pad_token_id,
-                )
-
-                if cpu_logits:
-                    logits = logits.cpu()
-                all_logits.append(logits.detach())
-
-            loss.backward()
-
-        # remaining chunks
-        for i in tqdm(range(1, len(chunks)), desc="Processing Chunks", leave=False, disable=(not verbose)):
-            
-            first_chunk = chunks[i-1]
-            second_chunk = chunks[i]
-            
-            if i > 1 and add_bos:
-                first_chunk = torch.cat(
-                    [
-                    torch.full_like(first_chunk[:, :1], self.config.bos_token_id),
-                    first_chunk
-                    ],
-                    dim=-1
-                )
-
-            all_chunk = torch.cat([first_chunk, second_chunk], dim=-1)
-
-            self.update_state()
-
-            with torch.enable_grad():
-                with torch.autocast(**ac_kwargs):
-
-                    logits = self(
-                        all_chunk,
-                        logits_to_keep=slice(first_chunk.shape[-1]-1, -1)
-                    )[0]
-
-                    loss = lm_loss_fn(
-                        logits,
-                        all_chunk[:, first_chunk.shape[-1]:],
-                        shift_logits=False,
-                        shift_labels=False,
-                        ignore_index=self.config.pad_token_id,
-                    )
-
-                    if cpu_logits:
-                        logits = logits.cpu()
-                    all_logits.append(logits.detach())
-
-                loss.backward()
-
-        self.zero_grad(True)
-        self.empty_state()
-            
-        logits = torch.cat(all_logits, dim=1).detach()
-
-        if output_ids is not None:
-            logits = logits[:, -output_ids.shape[-1]:, :]
-        
-        return logits
+            module.second_moment.copy_(new_second_moments[:, i].detach())
+            module.adam_step.copy_(ref.adam_step)

@@ -26,7 +26,7 @@ BASE_PATH = os.path.join(constants.LOCAL_DATA_PATH, "icl_results")
 
 COLOR_MAP = plt.get_cmap("viridis_r")
 COLORBLIND_COLORS = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-NUM_GRADIENT_COLORS = 7
+NUM_GRADIENT_COLORS = 8
 _grad_index = 0
 def gradient():
     global _grad_index
@@ -161,6 +161,9 @@ RUNS = {
     "aklein4--horizon-v2_alpha/000000000350.json": {
         "label": "Learned (v2) step=350", "color": gradient()
     },
+    "aklein4--horizon-v2_alpha/000000000400.json": {
+        "label": "Learned (v2) step=400", "color": gradient()
+    },
 }
 
 # RUNS = {
@@ -183,7 +186,7 @@ RUNS = {
 # }
 
 
-LORA_LABEL = "init"
+LORA_LABEL = "Learned (v2) step=050"
 LORA_REFERENCE_EXAMPLES = (16, 64, 1024)
 CHECKPOINT_LABEL_RE = re.compile(r"^(?P<name>.+) step=(?P<step>\d+)$")
 

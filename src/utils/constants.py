@@ -53,7 +53,7 @@ LOCAL_DATA_PATH = BASE_PATH / "local_data"
 CHECKPOINTS_PATH = LOCAL_DATA_PATH / "checkpoints"
 
 def CONFIG_PATH(name):
-    if name.endswith(".yaml"):
+    if isinstance(name, str) and name.endswith(".yaml"):
         return BASE_PATH / "configs" / name
     return BASE_PATH / "configs" / f"{name}.yaml"
 

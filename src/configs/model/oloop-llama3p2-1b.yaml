@@ -10,7 +10,7 @@ type: oloop.OLoopModel
 
 fast_weight_size: 1024
 
-base_lr: 1.0e-4
+base_lr: 1.0e-2
 momentum_beta: 0.9
 
 grad_rms_eps: 1e-12

@@ -82,8 +82,23 @@ def load_model(checkpoint: str, step: int, device: torch.device):
     return model
 
 
+def load_config_defaults(config_path, config):
+    # stupid
+    if 'defaults' in config:
+        for d in config.defaults:
+            if str(d)[0] != "{" and d != "_self_":
+                sub_config_path = constants.CONFIG_PATH(config_path).parent / f"{d}.yaml"
+                sub_config = OmegaConf.load(sub_config_path)
+                load_config_defaults(sub_config_path, sub_config)
+                for k, v in sub_config.items():
+                    if k not in config:
+                        config[k] = v
+
+
 def load_fresh_model(config_path: str, base_lr: float | None, device: torch.device):
     config = OmegaConf.load(constants.CONFIG_PATH(config_path))
+    load_config_defaults(config_path, config)
+
     if base_lr is not None:
         config.base_lr = base_lr
     config.attention_kernel = "gpu_flash_attention" if device.type == "cuda" else None
@@ -312,7 +327,7 @@ def evaluate_rows(model, train_fn, logits_fn, tokenizer, rows, args, device):
     totals = {n: {} for n in args.num_examples}
     counts = {n: {} for n in args.num_examples}
 
-    for start in tqdm(range(0, len(rows), args.batch_size), desc="evaluating", leave=True):
+    for start in tqdm(range(0, len(rows), args.batch_size), desc="batches", leave=True):
         batch = rows[start:start + args.batch_size]
         model.init_state(len(batch), device)
         model.empty_state()
