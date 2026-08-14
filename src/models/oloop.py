@@ -13,6 +13,7 @@ from utils.torch_utils import safe_copy_state, select_newton_schulz
 
 
 def precondition(state, lr, p_l, p_r):
+    return lr[None] * state
     p_l, p_r = p_l[None], p_r[None]
     s = p_l @ state @ p_r
     s = lr[None] * s
