@@ -3,9 +3,9 @@
 # sleep 4h
 
 oloop_steps=(800)
-piano_steps=(350)
+piano_steps=(350 400)
 
-for evaluator in evaluate_icl; do
+for evaluator in evaluate_acc; do
 
   # python "${evaluator}.py" \
   #   --checkpoint="aklein4/horizon-v2_oloop" \

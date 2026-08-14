@@ -90,6 +90,91 @@ def main():
         save_results(args, step, results)
 
 
+def get_results(model, train_fn, logits_fn, tokenizer, rows, args, device):
+    totals = {n: {} for n in args.num_examples}
+    counts = {n: {} for n in args.num_examples}
+
+    for start in tqdm(range(0, len(rows), args.batch_size), desc="batches", leave=True):
+        batch = rows[start:start + args.batch_size]
+        model.init_state(len(batch), device)
+
+        if 0 in totals:
+            add_scores(totals, counts, 0, batch, evaluate(model, logits_fn, tokenizer, batch, args, device))
+
+        total_adaptation_steps = max(args.num_examples)
+        for example_idx in tqdm(range(total_adaptation_steps), desc="adapting", leave=False):
+            
+            adapt(
+                train_fn,
+                tokenizer,
+                batch,
+                example_idx,
+                args,
+                device,
+                lr_scale=adaptation_lr_scale(args, example_idx, total_adaptation_steps),
+            )
+
+            n = example_idx + 1
+            if n in totals:
+                add_scores(totals, counts, n, batch, evaluate(model, logits_fn, tokenizer, batch, args, device))
+
+        model.empty_state()
+
+    results = []
+    for n in args.num_examples:
+        result = {"num_examples": n, "benchmarks": {}}
+        for subset, total in totals[n].items():
+            result["benchmarks"][subset] = total / counts[n][subset]
+        result["average"] = sum(result["benchmarks"].values()) / len(result["benchmarks"])
+        results.append(result)
+    return results
+
+
+@torch.no_grad()
+def evaluate(model, logits_fn, tokenizer, rows, args, device):
+
+    model.eval()
+    scores = torch.zeros(len(rows), dtype=torch.float64)
+
+    for test_idx in tqdm(range(args.num_eval), desc="evaluating", leave=False):
+
+        input_ids, assistant_mask, _ = encode(
+            tokenizer,
+            [row["test_data"][test_idx] for row in rows],
+            args.max_length,
+            device,
+        )
+        logits = logits_fn(input_ids)
+
+        if args.eval_fn == "output_loss":
+            score = output_loss(input_ids, assistant_mask, logits)
+        else:
+            raise ValueError(f"Unknown eval_fn: {args.eval_fn}")
+        scores += score.double().cpu()
+        
+    return (scores / args.num_eval).tolist()
+
+
+def get_logits(model, input_ids):
+    out = model(input_ids, logits_to_keep=slice(0, -1))
+    return out[0] if isinstance(out, tuple) else out
+
+
+def output_loss(input_ids, assistant_mask, logits, aux_weight: float):
+    labels = input_ids[:, 1:]
+    mask = assistant_mask[:, 1:].float()
+
+    losses = F.cross_entropy(
+        logits.reshape(-1, logits.shape[-1]),
+        labels.reshape(-1),
+        reduction="none",
+    ).view_as(labels)
+
+    output_loss = (losses * mask).sum(1).div(mask.sum(1).clamp(min=1)).mean()
+    return output_loss
+
+
+
 def load_model(checkpoint: str, step: int, device: torch.device):
     print(f"Loading {checkpoint} at step {step}")
     model = load_checkpoint(
@@ -210,90 +295,6 @@ def adaptation_lr_scale(args, example_idx: int, total_steps: int) -> float:
         return args.lr_scale_start
     fraction = example_idx / (total_steps - 1)
     return args.lr_scale_start + fraction * (args.lr_scale_end - args.lr_scale_start)
-
-
-def get_logits(model, input_ids):
-    out = model(input_ids, logits_to_keep=slice(0, -1))
-    return out[0] if isinstance(out, tuple) else out
-
-
-def output_loss(input_ids, assistant_mask, logits, aux_weight: float):
-    labels = input_ids[:, 1:]
-    mask = assistant_mask[:, 1:].float()
-
-    losses = F.cross_entropy(
-        logits.reshape(-1, logits.shape[-1]),
-        labels.reshape(-1),
-        reduction="none",
-    ).view_as(labels)
-
-    output_loss = (losses * mask).sum(1).div(mask.sum(1).clamp(min=1)).mean()
-    return output_loss
-
-
-
-def get_results(model, train_fn, logits_fn, tokenizer, rows, args, device):
-    totals = {n: {} for n in args.num_examples}
-    counts = {n: {} for n in args.num_examples}
-
-    for start in tqdm(range(0, len(rows), args.batch_size), desc="batches", leave=True):
-        batch = rows[start:start + args.batch_size]
-        model.init_state(len(batch), device)
-
-        if 0 in totals:
-            add_scores(totals, counts, 0, batch, evaluate(model, logits_fn, tokenizer, batch, args, device))
-
-        total_adaptation_steps = max(args.num_examples)
-        for example_idx in tqdm(range(total_adaptation_steps), desc="adapting", leave=False):
-            adapt(
-                train_fn,
-                tokenizer,
-                batch,
-                example_idx,
-                args,
-                device,
-                lr_scale=adaptation_lr_scale(args, example_idx, total_adaptation_steps),
-            )
-
-            n = example_idx + 1
-            if n in totals:
-                add_scores(totals, counts, n, batch, evaluate(model, logits_fn, tokenizer, batch, args, device))
-
-        model.empty_state()
-
-    results = []
-    for n in args.num_examples:
-        result = {"num_examples": n, "benchmarks": {}}
-        for subset, total in totals[n].items():
-            result["benchmarks"][subset] = total / counts[n][subset]
-        result["average"] = sum(result["benchmarks"].values()) / len(result["benchmarks"])
-        results.append(result)
-    return results
-
-
-@torch.no_grad()
-def evaluate(model, logits_fn, tokenizer, rows, args, device):
-
-    model.eval()
-    scores = torch.zeros(len(rows), dtype=torch.float64)
-
-    for test_idx in tqdm(range(args.num_eval), desc="evaluating", leave=False):
-
-        input_ids, assistant_mask, _ = encode(
-            tokenizer,
-            [row["test_data"][test_idx] for row in rows],
-            args.max_length,
-            device,
-        )
-        logits = logits_fn(input_ids)
-
-        if args.eval_fn == "output_loss":
-            score = output_loss(input_ids, assistant_mask, logits)
-        else:
-            raise ValueError(f"Unknown eval_fn: {args.eval_fn}")
-        scores += score.double().cpu()
-        
-    return (scores / args.num_eval).tolist()
 
 
 def add_scores(totals, counts, n, batch, scores):

@@ -25,7 +25,7 @@ RUNS = [
     (
         "aklein4/horizon-v2_piano",
         "Piano",
-        [50, 100, 150, 200, 250, 300, 350],
+        [50, 100, 150, 200, 250, 300, 350, 400],
     ),
     (
         "aklein4/horizon-v2_oloop",
