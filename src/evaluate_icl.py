@@ -64,17 +64,6 @@ def parse_args():
     )
     parser.add_argument("--eval-fn", default="output_loss", choices=["exact_match", "output_loss"])
     parser.add_argument("--save-name", default=None, help="Name for saving results (default: checkpoint name)")
-    parser.add_argument(
-        "--only-lora-fast-weights",
-        choices=["q_proj", "k_proj", "v_proj", "o_proj", "up_proj", "down_proj", "gate_proj"],
-        default=None,
-        help="Keep dynamic LoRA weights enabled only for one projection family",
-    )
-    parser.add_argument(
-        "--result-path",
-        default=None,
-        help="Write the result directly to this JSON path (requires one rollout)",
-    )
     return parser.parse_args()
 
 
@@ -108,12 +97,7 @@ def load_config_defaults(config_path, config):
                         config[k] = v
 
 
-def load_fresh_model(
-    config_path: str,
-    base_lr: float | None,
-    device: torch.device,
-    only_lora_fast_weights: str | None = None,
-):
+def load_fresh_model(config_path: str, base_lr: float | None, device: torch.device):
     config = OmegaConf.load(constants.CONFIG_PATH(config_path))
     load_config_defaults(config_path, config)
 
@@ -142,15 +126,6 @@ def load_fresh_model(
             config.pretrained_step,
             strict=config.pretrained_strict,
         )
-
-    if only_lora_fast_weights is not None:
-        enable_only = getattr(model, "enable_fast_weights_only_for_projection", None)
-        if enable_only is None:
-            raise ValueError("--only-lora-fast-weights requires an OLoop LoRA model")
-        count = enable_only(only_lora_fast_weights)
-        if count == 0:
-            raise ValueError(f"No LoRA modules matched projection {only_lora_fast_weights!r}")
-        print(f"Enabled LoRA fast weights only for {count} {only_lora_fast_weights} modules")
 
     model.train()
     enable_gradient_checkpointing(model)
@@ -404,9 +379,7 @@ def evaluate_rows(model, train_fn, logits_fn, tokenizer, rows, args, device):
 
 
 def save_results(args, label: int | str, results):
-    if args.result_path is not None:
-        path = Path(args.result_path)
-    elif args.fresh_config is None:
+    if args.fresh_config is None:
         path = Path(constants.LOCAL_DATA_PATH) / "icl_results" / ((args.save_name+"/"+args.checkpoint.replace("/", "--")) if args.save_name is not None else args.checkpoint.replace("/", "--")) / f"{label:012d}.json"
     else:
         path = Path(constants.LOCAL_DATA_PATH) / "icl_results" / (args.save_name if args.save_name is not None else "fresh") / Path(args.fresh_config).stem / f"{label}.json"
@@ -424,9 +397,6 @@ def main():
     args = parse_args()
     if args.fresh_config is None and args.checkpoint_steps is None:
         raise ValueError("--checkpoint-steps is required unless --fresh-config is set")
-    rollout_count = len(args.base_lrs or [None]) if args.fresh_config is not None else len(args.checkpoint_steps)
-    if args.result_path is not None and rollout_count != 1:
-        raise ValueError("--result-path requires exactly one base LR or checkpoint step")
 
     args.num_examples = sorted(set(args.num_examples))
     if args.lr_scale_decay:
@@ -441,12 +411,7 @@ def main():
 
     if args.fresh_config is not None:
         for base_lr in args.base_lrs or [None]:
-            model = load_fresh_model(
-                args.fresh_config,
-                base_lr,
-                device,
-                only_lora_fast_weights=args.only_lora_fast_weights,
-            )
+            model = load_fresh_model(args.fresh_config, base_lr, device)
             tokenizer = load_tokenizer(args.tokenizer)
             train_fn, logits_fn = make_fns(model, args, device)
             results = evaluate_rows(model, train_fn, logits_fn, tokenizer, rows, args, device)

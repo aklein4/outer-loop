@@ -207,19 +207,14 @@ class FastWeightLoRALinear(nn.Module):
             base_linear.out_features,
             config,
         )
-        self.fast_weights_enabled = True
 
 
     def forward(self, x):
     
         y_w = fixed_linear(x, self.weight, self.bias)
 
-        z = self.base_down(x)
-        if self.fast_weights_enabled:
-            z = z + self.fast_down(x)
-            y_fast = self.base_up(z) + self.fast_up(z)
-        else:
-            y_fast = self.base_up(z)
+        z = self.base_down(x) + self.fast_down(x)
+        y_fast = self.base_up(z) + self.fast_up(z)
 
         return y_w + y_fast
 
@@ -286,16 +281,6 @@ class OLoopLoRAModel(LlamaForCausalLM):
         for module in self.modules():
             if isinstance(module, FastWeight):
                 yield module
-
-    def enable_fast_weights_only_for_projection(self, projection: str) -> int:
-        """Keep dynamic LoRA weights enabled for only one projection family."""
-        count = 0
-        for name, module in self.named_modules():
-            if isinstance(module, FastWeightLoRALinear):
-                enabled = name.endswith(f".{projection}")
-                module.fast_weights_enabled = enabled
-                count += int(enabled)
-        return count
 
     def _layer_submodule(self, layer: LlamaDecoderLayer|int, name: str) -> nn.Module:
         if isinstance(layer, int):
