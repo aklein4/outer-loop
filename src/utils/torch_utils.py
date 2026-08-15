@@ -443,6 +443,10 @@ def unit_softplus(x: torch.Tensor | float) -> torch.Tensor:
     return math.log(1 + math.exp(x)) / math.log(2)
 
 
+def nudge(x: torch.FloatTensor, d: torch.FloatTensor) -> torch.FloatTensor:
+    return x + torch.tanh(torch.abs(x)) * torch.tanh(d)
+
+
 def slerp(
     v0: torch.Tensor,
     v1: torch.Tensor,

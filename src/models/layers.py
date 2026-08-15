@@ -13,53 +13,10 @@ from models.llama import (
     LlamaRotaryEmbedding,
     apply_rotary_pos_emb,
 )
-from utils.torch_modules import LayerStack
+from utils.torch_modules import LayerStack, ResidualConvMixer
 from utils import constants
 if constants.XLA_AVAILABLE:
     from torchprime.torch_xla_models import offloading
-
-
-class ResidualConvMixer(nn.Module):
-
-    no_muon_patterns = [
-        "conv"
-    ]
-
-
-    def __init__(
-        self,
-        hidden_size: int,
-        kernel_size: int,
-        init_scale: float = 0.1,
-    ):
-        super().__init__()
-        assert kernel_size % 2 == 1, "kernel_size must be odd"
-
-        self.hidden_size = hidden_size
-        self.kernel_size = kernel_size
-        self.init_scale = init_scale
-
-        self.weight_scale = math.sqrt(self.hidden_size)
-
-        self.conv = nn.Conv1d(
-            in_channels=hidden_size,
-            out_channels=hidden_size,
-            kernel_size=kernel_size,
-            padding=kernel_size // 2,
-            groups=hidden_size,
-            bias=False,
-        )
-        self.conv.weight.data.normal_(
-            std=init_scale/(self.weight_scale*math.sqrt(kernel_size))
-        )
-
-
-    def forward(self, x: torch.Tensor, mask=None) -> torch.Tensor:
-        x_mask = x * mask[..., None] if mask is not None else x
-        return (
-            x +
-            self.conv(x_mask.mT).mT * self.weight_scale
-        )
     
 
 class BidirectionalAttention(nn.Module):

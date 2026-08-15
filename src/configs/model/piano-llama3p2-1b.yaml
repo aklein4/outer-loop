@@ -11,6 +11,7 @@ type: piano.PianoModel
 fast_weight_size: 1024
 base_lr: 1e-3
 
-pool_size: 256
+pool_size: 1024
+mixer_size: 5
 
 grad_rms_eps: 1.0e-12

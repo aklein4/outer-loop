@@ -101,7 +101,10 @@ def initialize_fast_input(
     mean, _, covariance, _ = masked_statistics(x, mask)
     whitening = cut_inv_sqrt(covariance, inv_quantile)
 
-    for projection in (module.up_fast, module.gate_fast, module.sig_fast):
+    for projection in (
+        module.up_fast, module.gate_fast, module.sig_fast,
+        module.fast_dynamic_lr.q_offset_proj, module.fast_dynamic_lr.v_offset_proj
+    ):
         weight = (
             random_orthogonal(x.shape[-1], x.device) @ whitening
         )[:module.fast_weight_size]
@@ -109,6 +112,24 @@ def initialize_fast_input(
         projection.bias.copy_(
             -fixed_linear(mean, projection.weight).to(projection.bias.dtype)
         )
+
+    for projection in (
+        module.fast_dynamic_lr.token_gate_proj,
+        module.fast_dynamic_lr.token_gate_next_proj,
+    ):
+        scale_gate_input(
+            projection,
+            inputs,
+            mask=mask,
+            inv_quantile=inv_quantile,
+        )
+
+    initialize_pooler_input(
+        module.fast_dynamic_lr.passer,
+        inputs,
+        mask=mask,
+        inv_quantile=inv_quantile,
+    )
 
 
 @torch.no_grad()
@@ -151,14 +172,17 @@ def initialize_pooler_input(
     """Whiten and independently rotate a soft pooler's input projections."""
 
     x = inputs[0].float()
-    _, _, covariance, _ = masked_statistics(x, mask)
+    mean, _, covariance, _ = masked_statistics(x, mask)
     whitening = cut_inv_sqrt(covariance, inv_quantile)
 
-    for projection in (module.w_proj, module.v_proj):
+    for projection in (module.w_proj, module.v_proj, module.g_proj):
         weight = (
             random_orthogonal(x.shape[-1], x.device) @ whitening
         )[:projection.out_features]
         projection.weight.copy_(weight.to(projection.weight.dtype))
+        projection.bias.copy_(
+            -fixed_linear(mean, projection.weight).to(projection.bias.dtype)
+        )
 
 
 def main() -> None:
@@ -229,28 +253,6 @@ def main() -> None:
         handles.append(
             module.register_forward_hook(
                 partial(initialize_fast_output, mask=init_mask)
-            )
-        )
-        for projection in (
-            module.fast_dynamic_lr.token_gate_proj,
-            module.fast_dynamic_lr.next_token_gate_proj,
-        ):
-            handles.append(
-                projection.register_forward_pre_hook(
-                    partial(
-                        scale_gate_input,
-                        mask=init_mask,
-                        inv_quantile=args.inv_quantile,
-                    )
-                )
-            )
-        handles.append(
-            module.fast_dynamic_lr.sequence_token_gate.register_forward_pre_hook(
-                partial(
-                    initialize_pooler_input,
-                    mask=init_mask,
-                    inv_quantile=args.inv_quantile,
-                )
             )
         )
 

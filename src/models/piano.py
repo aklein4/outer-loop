@@ -10,47 +10,54 @@ from transformers.activations import ACT2FN
 
 from models.llama import LlamaDecoderLayer, LlamaForCausalLM
 from utils.sharding_utils import maybe_shard_with_gradients
-from utils.torch_utils import fixed_linear, unit_softplus, safe_copy_state, shift
-from utils.torch_modules import SoftPool
+from utils.torch_utils import fixed_linear, unit_softplus, safe_copy_state, shift, nudge
+from utils.torch_modules import SoftPass, ResidualConvMixer
 
 
 def _get_update(
     activations: torch.FloatTensor,
     output_grad: torch.FloatTensor,
+    gate: torch.FloatTensor,
+    mask: torch.Tensor,
     down_weight: torch.FloatTensor,
-    output_gate: torch.FloatTensor,
-    update_output_gate_logits: torch.FloatTensor,
-    token_gate_logits: torch.FloatTensor,
-    lr: torch.FloatTensor,
-    valid_mask: torch.BoolTensor,
     eps: float,
+    lr: torch.FloatTensor,
+    token_gate_logits: torch.FloatTensor,
+    q_offset: torch.FloatTensor,
+    v_offset: torch.FloatTensor,
 ) -> torch.FloatTensor:
 
     # use float32 to avoid gradient accumulation drift
-    mask = valid_mask[..., None].float()
+    mask = mask[..., None].float()
     valid_count = mask.sum(dim=-2, keepdim=True).clamp_min(1.0)
     
     activations = activations.float() * mask
     output_grad = output_grad.float() * mask
+    gate = gate.float() * mask
     down_weight = down_weight.float()
-    output_gate = output_gate.float()
-    update_output_gate_logits = update_output_gate_logits.float()
-    token_gate_logits = token_gate_logits.float()
+    lr = lr.float()
+    token_gate_logits = token_gate_logits.float() * mask
+    q_offset = q_offset.float() * mask
+    v_offset = v_offset.float() * mask
 
-    projected_grad = fixed_linear(output_grad, down_weight.T)
-    forward_g = projected_grad * output_gate
-    update_g = projected_grad * _sigmoid_rms(update_output_gate_logits, eps)
+    g = fixed_linear(output_grad, down_weight.T) * gate
 
-    G = torch.einsum("blo,bli->boi", forward_g, activations)
+    # raw gradient
+    G = torch.einsum("blo,bli->boi", g, activations)
 
     # normalize over sequence dimension
     a_norm = _sequence_rms(activations, valid_count, eps)
-    g_norm = _sequence_rms(update_g, valid_count, eps)
+    g_norm = _sequence_rms(g, valid_count, eps)
+
+    # nudge using the offstes
+    a_nudge = nudge(a_norm, q_offset)
+    g_nudge = nudge(g_norm, v_offset)
 
     # learned token gate
-    a_gated = a_norm * unit_softplus(token_gate_logits)
+    a_gated = a_nudge * unit_softplus(token_gate_logits)
 
-    update = torch.einsum("blo,bli->boi", g_norm, a_gated)
+    # learned update
+    update = torch.einsum("blo,bli->boi", g_nudge, a_gated)
     update = -update * lr
 
     return G, update
@@ -65,14 +72,6 @@ def _sequence_rms(
         x.square().sum(dim=-2, keepdim=True) / valid_count
         + eps**2
     )
-
-
-def _sigmoid_rms(
-    logits: torch.FloatTensor,
-    eps: float,
-):
-    x = 2 * torch.sigmoid(logits)
-    return F.rms_norm(x, x.shape[-1:], eps=eps)
 
 
 def _get_leaf(x: torch.FloatTensor) -> torch.FloatTensor:
@@ -123,31 +122,25 @@ class PianoFastWeightFunction(torch.autograd.Function):
         ctx,
         activations: torch.FloatTensor,
         output: torch.FloatTensor,
+        gate: torch.FloatTensor,
+        valid_mask: torch.Tensor,
         down_weight: torch.FloatTensor,
-        output_gate: torch.FloatTensor,
-        update_output_gate_logits: torch.FloatTensor,
-        token_gate_logits: torch.FloatTensor,
-        valid_mask: torch.BoolTensor,
         grad_buffer: torch.FloatTensor,
         state_buffer: torch.FloatTensor,
-        lr: torch.FloatTensor | None,
         grad_eps: float,
         mode: str,
+        *updaters,
     ) -> torch.FloatTensor:
 
-        to_save = (
+        ctx.save_for_backward(
             activations,
-            down_weight,
-            output_gate,
-            update_output_gate_logits,
-            token_gate_logits,
+            gate,
             valid_mask,
-            lr,
+            down_weight,
+            grad_buffer,
+            *updaters,
         )
-        if mode == PianoMode.TRAIN_SECOND:
-            to_save += (grad_buffer,)
 
-        ctx.save_for_backward(*to_save)
         ctx.grad_eps = grad_eps
         ctx.mode = mode
 
@@ -162,120 +155,89 @@ class PianoFastWeightFunction(torch.autograd.Function):
         grad_eps = ctx.grad_eps
         mode = ctx.mode
 
+        (
+            activations,
+            gate,
+            valid_mask,
+            down_weight,
+            grad_buffer,
+            *updaters
+        ) = ctx.saved_tensors
+
         if mode == PianoMode.TRAIN_FIRST:
-            (
-                activations,
-                down_weight,
-                output_gate,
-                update_output_gate_logits,
-                token_gate_logits,
-                valid_mask,
-                lr
-            ) = ctx.saved_tensors
 
             G, update = _get_update(
                 activations,
                 output_grad,
-                down_weight,
-                output_gate,
-                update_output_gate_logits,
-                token_gate_logits,
-                lr,
+                gate,
                 valid_mask,
+                down_weight,
                 grad_eps,
+                *updaters
             )
 
             return ( 
                 None, # activations
                 output_grad, # output
-                None, # down_weight
-                None, # output_gate
-                None, # update_output_gate_logits
-                None, # token_gate_logits
+                None, # gate
                 None, # valid_mask
+                None, # down_weight
                 G, # grad_buffer
                 update, # state_buffer
-                None, # lr
                 None, # grad_eps
                 None, # mode
+                *[None for _ in updaters]
             )
 
         elif mode != PianoMode.TRAIN_SECOND:
             raise RuntimeError(f"invalid fast-weight mode in backward: {mode}")
 
-        (
-            activations,
-            down_weight,
-            output_gate,
-            update_output_gate_logits,
-            token_gate_logits,
-            valid_mask,
-            lr,
-            grad_buffer,
-        ) = ctx.saved_tensors
-
         with torch.enable_grad():
             activations_leaf = _get_leaf(activations)
+            gate_leaf = _get_leaf(gate)
             down_weight_leaf = _get_leaf(down_weight)
-            update_output_gate_logits_leaf = _get_leaf(update_output_gate_logits)
-            token_gate_logits_leaf = _get_leaf(token_gate_logits)
-            lr_leaf = _get_leaf(lr)
+            update_leafs = [_get_leaf(updater) for updater in updaters]
 
             G, update = _get_update(
                 activations_leaf,
                 output_grad,
-                down_weight_leaf,
-                output_gate,
-                update_output_gate_logits_leaf,
-                token_gate_logits_leaf,
-                lr_leaf,
+                gate_leaf,
                 valid_mask,
+                down_weight_leaf,
                 grad_eps,
+                *update_leafs
             )
 
-            future_grad = (
-                grad_buffer - G
-            ).detach()
-
-            with torch.autocast(
-                str(future_grad.device.type),
-                dtype=torch.bfloat16,
-            ):
-
-                local_loss = (
-                    future_grad * update
-                ).sum()
+            local_loss = (
+                update * (grad_buffer - G).detach()
+            ).sum()
 
             (
                 activation_grad,
+                gate_grad,
                 down_weight_grad,
-                update_output_gate_logits_grad,
-                token_gate_logits_grad,
-                lr_grad,
-            ) = torch.autograd.grad(
+                *updater_grads
+            )  = torch.autograd.grad(
                 local_loss,
                 (
                     activations_leaf,
+                    gate_leaf,
                     down_weight_leaf,
-                    update_output_gate_logits_leaf,
-                    token_gate_logits_leaf,
-                    lr_leaf,
+                    *update_leafs
                 ),
             )
 
         return (
             activation_grad.to(activations.dtype),
             output_grad,
-            down_weight_grad.to(down_weight.dtype),
-            None, # output_gate; G is not part of the surrogate gradient
-            update_output_gate_logits_grad.to(update_output_gate_logits.dtype),
-            token_gate_logits_grad.to(token_gate_logits.dtype),
+            gate_grad.to(gate.dtype),
             None, # valid_mask
+            down_weight_grad.to(down_weight.dtype),
             G, # grad_buffer
-            update, # state (already scaled by -lr)
-            lr_grad.to(lr.dtype),
+            update, # state_buffer
             None, # grad_eps
             None, # mode
+            *[g.to(u.dtype) for g, u in zip(updater_grads, updaters)]
         )
     
 
@@ -301,21 +263,58 @@ class DynamicLR(nn.Module):
             torch.zeros(self.fast_weight_size, self.fast_weight_size)
         )
 
+        # sequence message passer
+        self.passer = SoftPass(
+            config.hidden_size,
+            config.pool_size
+        )
+
+        # offset projections
+        self.q_offset_proj = nn.Linear(
+            config.hidden_size,
+            config.fast_weight_size,
+            bias=True
+        )
+        self.q_offset_mixer = ResidualConvMixer(
+            config.fast_weight_size,
+            config.mixer_size,
+        )
+        self.v_offset_proj = nn.Linear(
+            config.hidden_size,
+            config.fast_weight_size,
+            bias=True
+        )
+        self.v_offset_mixer = ResidualConvMixer(
+            config.fast_weight_size,
+            config.mixer_size,
+        )
+
+        self.q_offset_pass_proj = nn.Linear(
+            config.pool_size,
+            config.fast_weight_size,
+            bias=False
+        )
+        self.v_offset_pass_proj = nn.Linear(
+            config.pool_size,
+            config.fast_weight_size,
+            bias=False
+        )
+
+        # token gate parameters
         self.token_gate_proj = nn.Linear(
             config.hidden_size,
             1,
             bias=False,
         )
-        self.next_token_gate_proj = nn.Linear(
+        self.token_gate_next_proj = nn.Linear(
             config.hidden_size,
             1,
             bias=False,
         )
-        self.sequence_token_gate = SoftPool(
-            config.hidden_size,
+        self.token_gate_pass_proj = nn.Linear(
             config.pool_size,
-            output_size=1,
-            do_norm=True,
+            1,
+            bias=False,
         )
 
 
@@ -332,15 +331,28 @@ class DynamicLR(nn.Module):
             - math.log(self.fast_weight_size)
         )
 
+        messages = self.passer(hidden_states, valid_mask)
+
         token_gate_logits = (
             self.token_gate_proj(hidden_states) +
-            self.next_token_gate_proj(
-                shift(hidden_states, 1, 1, "left", True)
-            ) +
-            self.sequence_token_gate(hidden_states, valid_mask).unsqueeze(-2)
+            self.token_gate_next_proj(shift(hidden_states, 1, 1, "left", True)) +
+            self.token_gate_pass_proj(messages)
         ) / math.sqrt(3)
 
-        return lr, token_gate_logits
+        q_offset = (
+            self.q_offset_mixer(
+                self.q_offset_proj(hidden_states), valid_mask
+            ) +
+            self.q_offset_pass_proj(messages)
+        ) / math.sqrt(2)
+        v_offset = (
+            self.v_offset_mixer(
+                self.v_offset_proj(hidden_states), valid_mask
+            ) +
+            self.v_offset_pass_proj(messages)
+        ) / math.sqrt(2)
+
+        return lr, token_gate_logits, q_offset, v_offset
 
 
 class UnitGLU(nn.Module):
@@ -401,17 +413,6 @@ class PianoFastWeightMLP(nn.Module):
             bias=False,
         )
 
-        self.sig_offset_mixer = nn.Parameter(
-            torch.zeros(self.fast_weight_size)
-        )
-        self.sig_fast_offset = nn.Linear(
-            config.hidden_size,
-            self.fast_weight_size,
-            bias=False
-        )
-        self.sig_fast_offset.weight.data.zero_()
-        self.sig_fast_offset.weight.inited = True
-
         self.fast_dynamic_lr = DynamicLR(config)
 
         # ephemeral state
@@ -438,9 +439,6 @@ class PianoFastWeightMLP(nn.Module):
         if fast_weight_mode is not None:
             mode = _tensor_to_mode(fast_weight_mode)
 
-        if valid_mask is None:
-            valid_mask = torch.ones_like(x[..., 0], dtype=torch.bool)
-
         # fast mlp
         activations = self.fast_act_fn(self.up_fast(x), self.gate_fast(x))
 
@@ -448,40 +446,35 @@ class PianoFastWeightMLP(nn.Module):
             v = torch.einsum(
                 "boi,bli->blo", self.state.detach(), activations
             )
-            output_gate = 2 * torch.sigmoid(self.sig_fast(x))
-            output = self.down_fast(v * output_gate)
+            gate = 2 * torch.sigmoid(self.sig_fast(x))
+            output = self.down_fast(v * gate)
 
             return y_base + output
+
+        if valid_mask is None:
+            valid_mask = torch.ones_like(x[..., 0], dtype=torch.bool)
 
         if mode == PianoMode.TRAIN_FIRST:
 
             v = torch.einsum(
                 "boi,bli->blo", self.state.detach(), activations
             )
-            lr, token_gate_logits = self.fast_dynamic_lr(x, valid_mask)
+            updaters = self.fast_dynamic_lr(x, valid_mask)
 
-            output_gate_logits = self.sig_fast(x)
-            output_gate = 2 * torch.sigmoid(output_gate_logits)
-            output = self.down_fast(v * output_gate)
-
-            offset_gate_logits = (
-                output_gate_logits * (1.0 + self.sig_offset_mixer[None, None])
-                + self.sig_fast_offset(x)
-            )
+            gate = 2 * torch.sigmoid(self.sig_fast(x))
+            output = self.down_fast(v * gate)
 
             output = PianoFastWeightFunction.apply(
                 activations,
                 output,
-                self.down_fast.weight,
-                output_gate,
-                offset_gate_logits,
-                token_gate_logits,
+                gate,
                 valid_mask,
+                self.down_fast.weight,
                 self.grad_buffer,
                 self.state,
-                lr,
                 self.grad_eps,
                 mode,
+                *updaters,
             )
 
             return y_base + output
@@ -497,38 +490,26 @@ class PianoFastWeightMLP(nn.Module):
             v_prop = torch.einsum(
                 "boi,bli->blo", self.state.detach(), act_prop
             )
-            lr, token_gate_logits = self.fast_dynamic_lr(
-                x_prop, valid_mask
-            )
+            updaters = self.fast_dynamic_lr(x_prop, valid_mask)
 
-            output_gate_logits = self.sig_fast(x)
-            gate_logits_replay = maybe_shard_with_gradients(output_gate_logits[::2])
-            gate_logits_prop = maybe_shard_with_gradients(output_gate_logits[1::2])
-
-            gate_replay = 2 * torch.sigmoid(gate_logits_replay)
-            gate_prop = 2 * torch.sigmoid(gate_logits_prop)
+            gate = 2 * torch.sigmoid(self.sig_fast(x))
+            gate_replay = maybe_shard_with_gradients(gate[::2])
+            gate_prop = maybe_shard_with_gradients(gate[1::2])
 
             output_replay = self.down_fast(v_replay * gate_replay)
             output_prop = self.down_fast(v_prop * gate_prop)
 
-            offset_gate_logits = (
-                gate_logits_prop * (1.0 + self.sig_offset_mixer[None, None])
-                + self.sig_fast_offset(x_prop)
-            )
-
             output_replay = PianoFastWeightFunction.apply(
                 act_prop,
                 output_replay,
-                self.down_fast.weight,
                 gate_prop,
-                offset_gate_logits,
-                token_gate_logits,
                 valid_mask,
+                self.down_fast.weight,
                 self.grad_buffer,
                 self.state,
-                lr,
                 self.grad_eps,
                 mode,
+                *updaters,
             )
 
             output = maybe_shard_with_gradients(
