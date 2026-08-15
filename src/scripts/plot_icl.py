@@ -18,8 +18,8 @@ DATA_DIR = REPO_ROOT / "src/local_data/icl_results"
 DEFAULT_OUTPUT = REPO_ROOT / "figures/icl_plot.png"
 
 REFERENCE_RUN = (
-    "fresh_pretrained/oloop-lora-llama3p2-1b-pre/base_lr_1e-04.json",
-    "LoRA lr=1e-4",
+    "fresh_frozen/oloop-lora-llama3p2-1b-pre/base_lr_3e-04.json",
+    "LoRA lr=3e-4",
 )
 RUNS = [
     (
@@ -30,7 +30,7 @@ RUNS = [
     (
         "aklein4/horizon-v2_oloop",
         "OLoop",
-        [100, 200, 300, 400, 500, 600, 700],
+        [100, 200, 300, 400, 500, 600, 700, 1500, 1900],
     ),
 ]
 
