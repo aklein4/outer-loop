@@ -26,7 +26,7 @@ multiple_optimizers:
   slow:
 
     optimizer:
-      type: adamw.AdamW
+      type: muon.ScaledMuon
 
       kwargs:
         lr: 3.0e-5
