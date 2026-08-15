@@ -84,6 +84,6 @@ max_grad_value: null
 
 input_sharding_spec: [[data, fsdp], null, null]
 
-num_logit_iterations: 1
+num_logit_iterations: 4
 
-aux_loss_weight: 0.0
+aux_loss_weight: 0.1
