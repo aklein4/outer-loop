@@ -6,9 +6,9 @@
 replicate_default: true
 
 # Main causal MLP matrices
-# model.layers.layers.*.mlp.gate_proj.weight: [fsdp, null]
-# model.layers.layers.*.mlp.up_proj.weight: [fsdp, null]
-# model.layers.layers.*.mlp.down_proj.weight: [fsdp, null]
+model.layers.layers.*.mlp.gate_proj.weight: [fsdp, null]
+model.layers.layers.*.mlp.up_proj.weight: [fsdp, null]
+model.layers.layers.*.mlp.down_proj.weight: [fsdp, null]
 
 # Activations
 model.layers.layers.*: [[data, fsdp], null, null]
