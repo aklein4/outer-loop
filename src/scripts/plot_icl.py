@@ -20,7 +20,11 @@ DEFAULT_OUTPUT = REPO_ROOT / "figures/icl_plot.png"
 REFERENCE_RUN = (
     "fresh_frozen/oloop-lora-llama3p2-1b-pre/base_lr_3e-04.json",
     "LoRA lr=3e-4",
+
+    # "aklein4--horizon-v2_alpha/000000000050.json",
+    # "Reference"
 )
+
 RUNS = [
     (
         "aklein4/horizon-v2_piano",
@@ -32,9 +36,16 @@ RUNS = [
         "OLoop",
         [100, 200, 300, 400, 500, 600, 700, 1500, 1900],
     ),
+
+    # (
+    #     "aklein4/horizon-v2_alpha",
+    #     "Alpha",
+    #     [50, 100, 150, 200, 250, 300, 350, 400, 450],
+    # ),
 ]
 
-REFERENCE_EXAMPLES = (16, 64, 1024)
+REFERENCE_STEP = 50
+REFERENCE_EXAMPLES = (8, 16, 32, 64, 256, 1024)
 
 
 def resolve_run_path(path: str, step: int | None) -> Path:
@@ -122,7 +133,7 @@ def checkpoint_summaries(runs):
 
 
 def make_figure(metric: str, max_examples: int | None, ylabel: str, title: str):
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10), constrained_layout=True)
+    fig, axes = plt.subplots(3, 3, figsize=(18, 15), constrained_layout=True)
     fig.set_constrained_layout_pads(h_pad=0.08, hspace=0.08)
     axes = axes.flatten()
     axes[1].sharey(axes[0])
