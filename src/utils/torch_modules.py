@@ -111,3 +111,47 @@ class ScaledEmbedding(nn.Module):
 
     def forward(self, x):
         return F.embedding(x, self.weight) * self.scale
+
+
+class SoftPool(nn.Module):
+
+    def __init__(
+        self,
+        hidden_size: int,
+        pool_size: int,
+        output_size: int | None = None,
+        do_norm: bool = True,
+    ):
+        super().__init__()
+
+        self.w_proj = nn.Linear(hidden_size, pool_size, bias=False)
+        self.v_proj = nn.Linear(hidden_size, pool_size, bias=False)
+
+        self.do_norm = do_norm
+
+        if output_size is None:
+            self.o_proj = nn.Identity()
+        else:
+            self.o_proj = nn.Linear(pool_size, output_size, bias=False)
+
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+ 
+        w = self.w_proj(x)
+        if mask is not None:
+            w = w.masked_fill(~mask.bool().unsqueeze(-1), -100.0)
+        w = F.softmax(w, dim=-2)
+
+        v = self.v_proj(x)
+        pooled = (w * v).sum(dim=-2)
+
+        if self.do_norm:
+            pooled = F.rms_norm(
+                pooled.float(), pooled.shape[-1:], eps=1e-7
+            ).to(pooled.dtype)
+
+        return self.o_proj(pooled)

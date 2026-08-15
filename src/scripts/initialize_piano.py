@@ -64,6 +64,19 @@ def cut_inv_sqrt(
         return u @ (torch.rsqrt(singular_values)[:, None] * vh)
 
 
+def cut_reciprocal(
+    x: torch.Tensor,
+    quantile: float,
+) -> torch.Tensor:
+    """Return quantile-clipped reciprocals of nonnegative values."""
+
+    x = x.float()
+    sorted_values = torch.sort(x).values
+    rank = round(quantile * (x.shape[-1] - 1))
+    cutoff = sorted_values[rank]
+    return torch.reciprocal(torch.maximum(x, cutoff))
+
+
 def random_orthogonal(size: int, device: torch.device) -> torch.Tensor:
     """Generate a Haar-distributed orthogonal matrix."""
 
@@ -112,6 +125,40 @@ def initialize_fast_output(
         torch.randn_like(module.down_fast.weight)
         * (global_std / math.sqrt(module.fast_weight_size))
     )
+
+
+@torch.no_grad()
+def scale_gate_input(
+    module: torch.nn.Module,
+    inputs: tuple[torch.Tensor, ...],
+    mask: torch.Tensor,
+    inv_quantile: float,
+) -> None:
+    """Scale a scalar gate by clipped inverse input-channel stds."""
+
+    _, std, _, _ = masked_statistics(inputs[0], mask)
+    inverse_std = cut_reciprocal(std, inv_quantile)
+    module.weight.mul_(inverse_std.to(module.weight.dtype)[None])
+
+
+@torch.no_grad()
+def initialize_pooler_input(
+    module: torch.nn.Module,
+    inputs: tuple[torch.Tensor, ...],
+    mask: torch.Tensor,
+    inv_quantile: float,
+) -> None:
+    """Whiten and independently rotate a soft pooler's input projections."""
+
+    x = inputs[0].float()
+    _, _, covariance, _ = masked_statistics(x, mask)
+    whitening = cut_inv_sqrt(covariance, inv_quantile)
+
+    for projection in (module.w_proj, module.v_proj):
+        weight = (
+            random_orthogonal(x.shape[-1], x.device) @ whitening
+        )[:projection.out_features]
+        projection.weight.copy_(weight.to(projection.weight.dtype))
 
 
 def main() -> None:
@@ -182,6 +229,28 @@ def main() -> None:
         handles.append(
             module.register_forward_hook(
                 partial(initialize_fast_output, mask=init_mask)
+            )
+        )
+        for projection in (
+            module.fast_dynamic_lr.token_gate_proj,
+            module.fast_dynamic_lr.next_token_gate_proj,
+        ):
+            handles.append(
+                projection.register_forward_pre_hook(
+                    partial(
+                        scale_gate_input,
+                        mask=init_mask,
+                        inv_quantile=args.inv_quantile,
+                    )
+                )
+            )
+        handles.append(
+            module.fast_dynamic_lr.sequence_token_gate.register_forward_pre_hook(
+                partial(
+                    initialize_pooler_input,
+                    mask=init_mask,
+                    inv_quantile=args.inv_quantile,
+                )
             )
         )
 

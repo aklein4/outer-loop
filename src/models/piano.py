@@ -11,6 +11,7 @@ from transformers.activations import ACT2FN
 from models.llama import LlamaDecoderLayer, LlamaForCausalLM
 from utils.sharding_utils import maybe_shard_with_gradients
 from utils.torch_utils import fixed_linear, unit_softplus, safe_copy_state, shift
+from utils.torch_modules import SoftPool
 
 
 def _get_update(
@@ -261,8 +262,6 @@ class DynamicLR(nn.Module):
 
     no_muon_patterns = (
         "log_lr",
-        "token_gate_proj",
-        "next_token_gate_proj",
     )
 
 
@@ -291,6 +290,12 @@ class DynamicLR(nn.Module):
             1,
             bias=False,
         )
+        self.sequence_token_gate = SoftPool(
+            config.hidden_size,
+            config.pool_size,
+            output_size=1,
+            do_norm=True,
+        )
 
 
     def forward(
@@ -310,8 +315,9 @@ class DynamicLR(nn.Module):
             self.token_gate_proj(hidden_states) +
             self.next_token_gate_proj(
                 shift(hidden_states, 1, 1, "left", True)
-            )
-        ) / math.sqrt(2)
+            ) +
+            self.sequence_token_gate(hidden_states, valid_mask).unsqueeze(-2)
+        ) / math.sqrt(3)
 
         return lr, token_gate_logits
 
@@ -374,6 +380,14 @@ class PianoFastWeightMLP(nn.Module):
             bias=False,
         )
 
+        self.sig_fast_offset = nn.Linear(
+            config.hidden_size,
+            self.fast_weight_size,
+            bias=False
+        )
+        self.sig_fast_offset.weight.data.zero_()
+        self.sig_fast_offset.weight.inited = True
+
         self.fast_dynamic_lr = DynamicLR(config)
 
         # ephemeral state
@@ -425,11 +439,13 @@ class PianoFastWeightMLP(nn.Module):
             output_gate = 2 * torch.sigmoid(self.sig_fast(x))
             output = self.down_fast(v * output_gate)
 
+            offset_output_gate = output_gate + self.sig_fast_offset(x)
+
             output = PianoFastWeightFunction.apply(
                 activations,
                 output,
                 self.down_fast.weight,
-                output_gate,
+                offset_output_gate,
                 token_gate_logits,
                 valid_mask,
                 self.grad_buffer,
@@ -444,6 +460,7 @@ class PianoFastWeightMLP(nn.Module):
         if mode == PianoMode.TRAIN_SECOND:
             act_replay = maybe_shard_with_gradients(activations[::2])
             act_prop = maybe_shard_with_gradients(activations[1::2])
+            x_prop = maybe_shard_with_gradients(x[1::2])
 
             v_replay = torch.einsum(
                 "boi,bli->blo", self.state.detach(), act_replay
@@ -452,7 +469,7 @@ class PianoFastWeightMLP(nn.Module):
                 "boi,bli->blo", self.state.detach(), act_prop
             )
             lr, token_gate_logits = self.fast_dynamic_lr(
-                maybe_shard_with_gradients(x[1::2]), valid_mask
+                x_prop, valid_mask
             )
 
             output_gate = 2 * torch.sigmoid(self.sig_fast(x))
@@ -461,11 +478,13 @@ class PianoFastWeightMLP(nn.Module):
             output_replay = self.down_fast(v_replay * gate_replay)
             output_prop = self.down_fast(v_prop * gate_prop)
 
+            offset_gate_prop = gate_prop + self.sig_fast_offset(x_prop)
+
             output_replay = PianoFastWeightFunction.apply(
                 act_prop,
                 output_replay,
                 self.down_fast.weight,
-                gate_prop,
+                offset_gate_prop,
                 token_gate_logits,
                 valid_mask,
                 self.grad_buffer,
