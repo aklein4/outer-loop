@@ -169,8 +169,8 @@ class SoftPass(nn.Module):
 
         self.w_proj = nn.Linear(hidden_size, pool_size, bias=True)
         self.v_proj = nn.Linear(hidden_size, pool_size, bias=True)
-        self.r_proj = nn.Linear(hidden_size, pool_size, bias=False)
 
+        self.r_proj = nn.Linear(pool_size, pool_size, bias=False)
         self.do_norm = do_norm
 
         self.g_proj = nn.Linear(hidden_size, pool_size, bias=True)
