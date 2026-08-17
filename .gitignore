@@ -3,6 +3,7 @@
 *.so
 
 local_data/
+local_figures/
 
 outputs/
 

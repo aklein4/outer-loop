@@ -1,0 +1,52 @@
+defaults:
+  - model: old-piano-melted-step350
+  - _self_
+
+seed: 42
+
+# Output filename stem. Override with, for example, name=my_gate_run.
+name: default
+
+# Non-XLA GPU-safe default. This remains CLI-overridable.
+model:
+  attention_kernel: null
+
+sampling:
+  # "episodes": one evenly positioned episode from each selected trajectory,
+  # in one HTML. "trajectories": every episode, one HTML per trajectory.
+  mode: episodes
+  n: 1
+  # Hydra list of latent-compilation config names; null discovers all configs.
+  subsets: null
+  # Optional exact latent names. When set, these replace random sampling and
+  # automatically select complete trajectories, one per listed latent.
+  latents: null
+  trajectory_pool_size: 1000
+
+adaptation:
+  aux_loss_weight: 0.1
+  # Preserve the per-example gradient scale used by this checkpoint's trainer.
+  reference_batch_size: 128
+
+runtime:
+  device: cuda
+  compute_dtype: bfloat16
+  batch_size: 16
+  gradient_checkpointing: true
+  diagnostic_token_block_size: 256
+  loss_sequence_block_size: 128
+
+data:
+  dataset: aklein4/latent-compilation
+  tokenizer_url: meta-llama/Llama-3.2-1B-Instruct
+  max_length: 1024
+  episode_count: 64
+
+output:
+  # Relative paths are resolved from utils.constants.BASE_PATH (the src folder).
+  directory: local_figures/scale_viz
+  note: null
+
+hydra:
+  job:
+    chdir: false

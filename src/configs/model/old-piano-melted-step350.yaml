@@ -1,0 +1,10 @@
+defaults:
+  - piano-llama3p2-1b
+  - _self_
+
+# Checkpoint-compatible implementation from git revision eeb442c.
+type: old_piano.PianoModel
+pretrained_url: aklein4/horizon-v2_piano-melted
+pretrained_step: 350
+pretrained_strict: true
+attention_kernel: null
