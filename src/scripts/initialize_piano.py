@@ -21,7 +21,7 @@ sys.path.insert(0, str(SRC))
 from collators.horizon import HorizonCollator
 from models import load_checkpoint_state
 from utils.import_utils import import_model
-from utils.torch_utils import fixed_linear
+from utils.torch_utils import fixed_linear, shift
 
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -46,6 +46,18 @@ def masked_statistics(
     global_std = torch.sqrt(variance.mean())
 
     return mean, torch.sqrt(variance), covariance, global_std
+
+
+def masked_cross_correlation(
+    x: torch.Tensor,
+    mask: torch.Tensor,
+) -> torch.Tensor:
+    """Return the uncentered cross-correlation over unmasked tokens."""
+
+    x = x.float()
+    mask = mask.to(device=x.device, dtype=x.dtype)[..., None]
+    count = mask.sum().clamp_min(1.0)
+    return torch.einsum("bsi,bsj->ij", x * mask, x) / count
 
 
 def cut_inv_sqrt(
@@ -100,10 +112,20 @@ def initialize_fast_input(
     x = inputs[0].float()
     mean, _, covariance, _ = masked_statistics(x, mask)
     whitening = cut_inv_sqrt(covariance, inv_quantile)
+    cross_correlation = masked_cross_correlation(x, mask)
+    cross_whitening = cut_inv_sqrt(cross_correlation, inv_quantile)
 
     for projection in (
-        module.up_fast, module.gate_fast, module.sig_fast,
-        module.fast_dynamic_lr.q_offset_proj, module.fast_dynamic_lr.v_offset_proj
+        module.up_fast,
+    ):
+        weight = (
+            random_orthogonal(x.shape[-1], x.device) @ cross_whitening
+        )[:module.fast_weight_size]
+        projection.weight.copy_(weight.to(module.up_fast.weight.dtype))
+
+    for projection in (
+        module.gate_fast, module.sig_fast,
+        module.fast_dynamic_lr.a_scale_proj, module.fast_dynamic_lr.g_scale_proj
     ):
         weight = (
             random_orthogonal(x.shape[-1], x.device) @ whitening
@@ -113,16 +135,19 @@ def initialize_fast_input(
             -fixed_linear(mean, projection.weight).to(projection.bias.dtype)
         )
 
-    for projection in (
+    scale_gate_input(
         module.fast_dynamic_lr.token_gate_proj,
+        inputs,
+        mask=mask,
+        inv_quantile=inv_quantile,
+    )
+    scale_gate_input(
         module.fast_dynamic_lr.token_gate_next_proj,
-    ):
-        scale_gate_input(
-            projection,
-            inputs,
-            mask=mask,
-            inv_quantile=inv_quantile,
-        )
+        inputs,
+        mask=mask,
+        inv_quantile=inv_quantile,
+        shift_input=True,
+    )
 
     initialize_pooler_input(
         module.fast_dynamic_lr.passer,
@@ -154,12 +179,26 @@ def scale_gate_input(
     inputs: tuple[torch.Tensor, ...],
     mask: torch.Tensor,
     inv_quantile: float,
+    shift_input: bool = False,
 ) -> None:
-    """Scale a scalar gate by clipped inverse input-channel stds."""
+    """Scale and center a scalar gate using empirical input statistics."""
 
-    _, std, _, _ = masked_statistics(inputs[0], mask)
+    x = inputs[0]
+    if shift_input:
+        x = shift(
+            x * mask[..., None].to(x.dtype),
+            1,
+            1,
+            "left",
+            True,
+        )
+
+    mean, std, _, _ = masked_statistics(x, mask)
     inverse_std = cut_reciprocal(std, inv_quantile)
     module.weight.mul_(inverse_std.to(module.weight.dtype)[None])
+    module.bias.copy_(
+        -fixed_linear(mean, module.weight).to(module.bias.dtype)
+    )
 
 
 @torch.no_grad()

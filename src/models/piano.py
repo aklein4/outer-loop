@@ -10,7 +10,7 @@ from transformers.activations import ACT2FN
 
 from models.llama import LlamaDecoderLayer, LlamaForCausalLM
 from utils.sharding_utils import maybe_shard_with_gradients
-from utils.torch_utils import fixed_linear, unit_softplus, safe_copy_state, shift, nudge
+from utils.torch_utils import gaussian_init, fixed_linear, unit_softplus, safe_copy_state, shift
 from utils.torch_modules import SoftPass, ResidualConvMixer
 
 
@@ -23,9 +23,12 @@ def _get_update(
     eps: float,
     lr: torch.FloatTensor,
     token_gate_logits: torch.FloatTensor,
-    q_offset: torch.FloatTensor,
-    v_offset: torch.FloatTensor,
+    a_scale_logits: torch.FloatTensor,
+    g_scale_logits: torch.FloatTensor,
 ) -> torch.FloatTensor:
+
+    def _vnorm(x):
+        return F.rms_norm(x, x.shape[-1:], eps=eps)
 
     # use float32 to avoid gradient accumulation drift
     mask = mask[..., None].float()
@@ -37,27 +40,30 @@ def _get_update(
     down_weight = down_weight.float()
     lr = lr.float()
     token_gate_logits = token_gate_logits.float() * mask
-    q_offset = q_offset.float() * mask
-    v_offset = v_offset.float() * mask
-
-    g = fixed_linear(output_grad, down_weight.T) * gate
+    a_scale_logits = a_scale_logits.float() * mask
+    g_scale_logits = g_scale_logits.float() * mask
 
     # raw gradient
-    G = torch.einsum("blo,bli->boi", g, activations)
+    g_raw = fixed_linear(output_grad, down_weight.T)
+
+    G = torch.einsum("blo,bli->boi", g_raw * gate, activations)
 
     # normalize over sequence dimension
     a_norm = _sequence_rms(activations, valid_count, eps)
-    g_norm = _sequence_rms(g, valid_count, eps)
+    g_norm = _sequence_rms(g_raw, valid_count, eps)
 
-    # nudge using the offstes
-    a_nudge = nudge(a_norm, q_offset)
-    g_nudge = nudge(g_norm, v_offset)
+    # apply the gates to g
+    g_gated = g_norm * _vnorm(gate)
+
+    # apply the scales
+    a_scaled = a_norm * _vnorm(unit_softplus(a_scale_logits))
+    g_scaled = g_gated * _vnorm(unit_softplus(g_scale_logits))
 
     # learned token gate
-    a_gated = a_nudge * unit_softplus(token_gate_logits)
+    a_token = a_scaled * unit_softplus(token_gate_logits)
 
     # learned update
-    update = torch.einsum("blo,bli->boi", g_nudge, a_gated)
+    update = torch.einsum("blo,bli->boi", g_scaled, a_token)
     update = -update * lr
 
     return G, update
@@ -269,32 +275,32 @@ class DynamicLR(nn.Module):
             config.pool_size
         )
 
-        # offset projections
-        self.q_offset_proj = nn.Linear(
+        # scale projections
+        self.a_scale_proj = nn.Linear(
             config.hidden_size,
             config.fast_weight_size,
             bias=True
         )
-        self.q_offset_mixer = ResidualConvMixer(
+        self.a_scale_mixer = ResidualConvMixer(
             config.fast_weight_size,
             config.mixer_size,
         )
-        self.v_offset_proj = nn.Linear(
+        self.g_scale_proj = nn.Linear(
             config.hidden_size,
             config.fast_weight_size,
             bias=True
         )
-        self.v_offset_mixer = ResidualConvMixer(
+        self.g_scale_mixer = ResidualConvMixer(
             config.fast_weight_size,
             config.mixer_size,
         )
 
-        self.q_offset_pass_proj = nn.Linear(
+        self.a_scale_pass_proj = nn.Linear(
             config.pool_size,
             config.fast_weight_size,
             bias=False
         )
-        self.v_offset_pass_proj = nn.Linear(
+        self.g_scale_pass_proj = nn.Linear(
             config.pool_size,
             config.fast_weight_size,
             bias=False
@@ -304,12 +310,12 @@ class DynamicLR(nn.Module):
         self.token_gate_proj = nn.Linear(
             config.hidden_size,
             1,
-            bias=False,
+            bias=True,
         )
         self.token_gate_next_proj = nn.Linear(
             config.hidden_size,
             1,
-            bias=False,
+            bias=True,
         )
         self.token_gate_pass_proj = nn.Linear(
             config.pool_size,
@@ -339,20 +345,20 @@ class DynamicLR(nn.Module):
             self.token_gate_pass_proj(messages)
         ) / math.sqrt(3)
 
-        q_offset = (
-            self.q_offset_mixer(
-                self.q_offset_proj(hidden_states), valid_mask
+        a_scale_logits = (
+            self.a_scale_mixer(
+                self.a_scale_proj(hidden_states), valid_mask
             ) +
-            self.q_offset_pass_proj(messages)
+            self.a_scale_pass_proj(messages)
         ) / math.sqrt(2)
-        v_offset = (
-            self.v_offset_mixer(
-                self.v_offset_proj(hidden_states), valid_mask
+        g_scale_logits = (
+            self.g_scale_mixer(
+                self.g_scale_proj(hidden_states), valid_mask
             ) +
-            self.v_offset_pass_proj(messages)
+            self.g_scale_pass_proj(messages)
         ) / math.sqrt(2)
 
-        return lr, token_gate_logits, q_offset, v_offset
+        return lr, token_gate_logits, a_scale_logits, g_scale_logits
 
 
 class UnitGLU(nn.Module):
@@ -395,7 +401,7 @@ class PianoFastWeightMLP(nn.Module):
         self.up_fast = nn.Linear(
             config.hidden_size,
             self.fast_weight_size,
-            bias=True,
+            bias=False,
         )
         self.gate_fast = nn.Linear(
             config.hidden_size,
@@ -615,6 +621,8 @@ class PianoModel(LlamaForCausalLM):
             layer: LlamaDecoderLayer
 
             mlp = PianoFastWeightMLP(config)
+            gaussian_init(mlp)
+
             safe_copy_state(layer.mlp, mlp, strict=False)
             layer.mlp = mlp
 
