@@ -12,7 +12,7 @@ from utils import constants
 
 BASE_PATH = os.path.join(constants.LOCAL_DATA_PATH, "icl_results")
 
-SAVE_PATH = "icl_plot_fresh_frozen.png"
+SAVE_PATH = "icl_plot.png"
 
 COLOR_MAP = plt.get_cmap("viridis_r")
 COLORBLIND_COLORS = plt.rcParams["axes.prop_cycle"].by_key()["color"]
@@ -191,19 +191,19 @@ def gradient():
 # }
 
 RUNS = {
-    "fresh_frozen/oloop-lora-llama3p2-1b-pre/base_lr_1e-05.json": {
+    "fresh/oloop-lora-llama3p2-1b-pre/base_lr_1e-05.json": {
         "label": "LoRA lr=1e-5", "color": gradient()
     },
-    "fresh_frozen/oloop-lora-llama3p2-1b-pre/base_lr_3e-05.json": {
+    "fresh/oloop-lora-llama3p2-1b-pre/base_lr_3e-05.json": {
         "label": "LoRA lr=3e-5", "color": gradient()
     },
-    "fresh_frozen/oloop-lora-llama3p2-1b-pre/base_lr_1e-04.json": {
+    "fresh/oloop-lora-llama3p2-1b-pre/base_lr_1e-04.json": {
         "label": "LoRA lr=1e-4", "color": gradient()
     },
-    "fresh_frozen/oloop-lora-llama3p2-1b-pre/base_lr_3e-04.json": {
+    "fresh/oloop-lora-llama3p2-1b-pre/base_lr_3e-04.json": {
         "label": "LoRA lr=3e-4", "color": gradient()
     },
-    "fresh_frozen/oloop-lora-llama3p2-1b-pre/base_lr_1e-03.json": {
+    "fresh/oloop-lora-llama3p2-1b-pre/base_lr_1e-03.json": {
         "label": "LoRA lr=1e-3", "color": gradient()
     },
 }

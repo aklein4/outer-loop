@@ -18,7 +18,7 @@ DATA_DIR = REPO_ROOT / "src/local_data/icl_results"
 DEFAULT_OUTPUT = REPO_ROOT / "figures/icl_plot.png"
 
 REFERENCE_RUN = (
-    "fresh_frozen/oloop-lora-llama3p2-1b-pre/base_lr_3e-04.json",
+    "fresh/oloop-lora-llama3p2-1b-pre/base_lr_3e-04.json",
     "LoRA lr=3e-4",
 
     # "aklein4--horizon-v2_alpha/000000000050.json",
@@ -31,17 +31,16 @@ RUNS = [
         "Piano",
         [50, 100, 150, 200, 250, 300, 350, 400],
     ),
-    (
-        "aklein4/horizon-v2_oloop",
-        "OLoop",
-        [100, 200, 300, 400, 500, 600, 700, 1500, 1900],
-    ),
-
     # (
-    #     "aklein4/horizon-v2_alpha",
-    #     "Alpha",
-    #     [50, 100, 150, 200, 250, 300, 350, 400, 450],
+    #     "aklein4/horizon-v2_oloop",
+    #     "OLoop",
+    #     [100, 200, 300, 400, 500, 600, 700, 1500, 1900],
     # ),
+    (
+        "aklein4/horizon-v2_alpha",
+        "Alpha",
+        [50, 100, 150, 200, 250, 300, 350, 400, 450],
+    ),
 ]
 
 REFERENCE_STEP = 50

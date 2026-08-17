@@ -97,12 +97,14 @@ def load_config_defaults(config_path, config):
                         config[k] = v
 
 
-def load_fresh_model(config_path: str, base_lr: float | None, device: torch.device):
+def load_fresh_model(config_path: str, base_lr: float | None, step, device: torch.device):
     config = OmegaConf.load(constants.CONFIG_PATH(config_path))
     load_config_defaults(config_path, config)
 
     if base_lr is not None:
         config.base_lr = base_lr
+    if step is not None:
+        config.pretrained_step = step
     config.attention_kernel = "gpu_flash_attention" if device.type == "cuda" else None
 
     model_class = import_model(config.type)
@@ -388,7 +390,9 @@ def save_results(args, label: int | str, results):
     print(f"Wrote {path}")
 
 
-def lr_label(base_lr: float | None, model) -> str:
+def lr_label(base_lr: float | None, model, step) -> str:
+    if step is not None:
+        return f"{step:012d}"
     lr = model.config.base_lr if base_lr is None else base_lr
     return f"base_lr_{lr:.0e}".replace("+", "")
 
@@ -411,11 +415,12 @@ def main():
 
     if args.fresh_config is not None:
         for base_lr in args.base_lrs or [None]:
-            model = load_fresh_model(args.fresh_config, base_lr, device)
-            tokenizer = load_tokenizer(args.tokenizer)
-            train_fn, logits_fn = make_fns(model, args, device)
-            results = evaluate_rows(model, train_fn, logits_fn, tokenizer, rows, args, device)
-            save_results(args, lr_label(base_lr, model), results)
+            for step in args.checkpoint_steps or [None]:
+                model = load_fresh_model(args.fresh_config, base_lr, step, device)
+                tokenizer = load_tokenizer(args.tokenizer)
+                train_fn, logits_fn = make_fns(model, args, device)
+                results = evaluate_rows(model, train_fn, logits_fn, tokenizer, rows, args, device)
+                save_results(args, lr_label(base_lr, model, step), results)
         return
 
     for step in args.checkpoint_steps:
