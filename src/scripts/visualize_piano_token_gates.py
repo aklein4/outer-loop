@@ -684,8 +684,14 @@ def quantile(values: np.ndarray, q: float, default: float) -> float:
 def load_html_example(output_root: Path, entry: dict[str, Any]) -> dict[str, Any]:
     logged = np.load(output_root / entry["data_file"])
     gates = logged["gates"].astype(np.float64)
-    means = np.maximum(gates.mean(axis=1), 1e-30)
-    p95 = np.maximum(np.quantile(gates, 0.95, axis=1), 1e-30)
+    if gates.shape[0]:
+        means = np.maximum(gates.mean(axis=1), 1e-30)
+        p95 = np.maximum(np.quantile(gates, 0.95, axis=1), 1e-30)
+        normalized_gates = (gates / means[:, None]).tolist()
+        gate_colors = (gates / p95[:, None]).tolist()
+    else:
+        normalized_gates = []
+        gate_colors = []
     logp_updated = logged["logp_updated"].astype(np.float64)
     logp_empty = logged["logp_empty"].astype(np.float64)
     delta = logp_updated - logp_empty
@@ -699,8 +705,8 @@ def load_html_example(output_root: Path, entry: dict[str, Any]) -> dict[str, Any
         "targetTokens": [token_label(piece) for piece in logged["target_pieces"]],
         "fullTextPieces": logged["target_pieces"].astype(str).tolist(),
         "assistant": logged["target_assistant"].astype(bool).tolist(),
-        "normalizedGates": (gates / means[:, None]).tolist(),
-        "gateColors": (gates / p95[:, None]).tolist(),
+        "normalizedGates": normalized_gates,
+        "gateColors": gate_colors,
         "kl": kl.tolist(),
         "logpUpdated": logp_updated.tolist(),
         "logpEmpty": logp_empty.tolist(),
@@ -725,6 +731,7 @@ def build_viewer(
     note: str | None,
 ) -> None:
     examples = [load_html_example(output_root, entry) for entry in entries]
+    has_gates = any(example["normalizedGates"] for example in examples)
     examples.sort(
         key=lambda example: (
             example["source"].casefold(),
@@ -735,23 +742,61 @@ def build_viewer(
     )
     payload = json.dumps(examples, ensure_ascii=False).replace("</", "<\\/")
     note_payload = json.dumps(note or "", ensure_ascii=False).replace("</", "<\\/")
+    page_title = (
+        "Per-token Adaptive Learning Rate Scales"
+        if has_gates else "Per-token Prediction Effects"
+    )
+    introduction = (
+        "<p>This visualization shows the adaptive learning rate scales of the fast "
+        "weight updates at each layer and token.</p>"
+        if has_gates else
+        "<p>This visualization shows how the recurrently updated fast weights change "
+        "next-token predictions.</p>"
+    )
+    gate_explanation = (
+        "<p>The gate color gradient is linear, ranging from 0 (white) to each layer's "
+        "95th percentile (red), with larger values clipped. KL uses white-to-dark-green; "
+        "p updated and p base map probability directly from 0 (white) to 1 (dark green); "
+        "Δ log p vs base uses blue-to-white-to-dark-green.</p>"
+        if has_gates else
+        "<p>KL uses white-to-dark-green; p updated and p base map probability directly "
+        "from 0 (white) to 1 (dark green); Δ log p vs base uses "
+        "blue-to-white-to-dark-green.</p>"
+    )
+    interaction_explanation = (
+        "<p>Hovering a gate shows its value normalized by its layer's mean. Hovering "
+        "a prediction cell shows the updated and empty-fast-weight log likelihoods "
+        "and label ranks.</p>"
+        if has_gates else
+        "<p>Hovering a prediction cell shows the updated and empty-fast-weight "
+        "probabilities, log likelihoods, KL, and label ranks.</p>"
+    )
+    legend_explanation = (
+        "<p>Click a prediction or layer label in the left legend to apply that row's "
+        "color gradient to the context. Orange and pinkish-purple token perimeters "
+        "continue to indicate assistant and non-assistant targets.</p>"
+        if has_gates else
+        "<p>Click a prediction label in the left legend to apply that row's color "
+        "gradient to the context. Orange and pinkish-purple token perimeters continue "
+        "to indicate assistant and non-assistant targets.</p>"
+    )
     document = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Per-token Adaptive Learning Rate Scales</title>
+<title>__PAGE_TITLE__</title>
 <style>
 :root{color-scheme:light;font-family:Inter,ui-sans-serif,system-ui,sans-serif}body{margin:0;background:#f6f7fb;color:#172033}header{padding:20px 24px 15px;background:white;border-bottom:1px solid #dfe3eb}h1{margin:0 0 5px;font-size:24px}.controls{display:flex;align-items:center;gap:10px;margin:10px 0 7px}.controls label{color:#465268;font-size:13px;font-weight:600}select{min-width:720px;max-width:94vw;padding:7px 30px 7px 9px;border:1px solid #b9c1ce;border-radius:6px;background:white;color:#172033;font:13px ui-monospace,monospace}.subtitle{color:#667085;font:12px ui-monospace,monospace;margin-bottom:13px}.preamble{max-width:1100px;color:#465268;font-size:14px;line-height:1.48}.preamble p{margin:7px 0}.note{display:none;max-width:1100px;margin:12px 0 0;padding:10px 12px;border-left:4px solid #7863b6;background:#f4f0ff;white-space:pre-wrap;font-size:13px}.roles{display:flex;gap:14px;margin-top:11px;font-size:12px;color:#667085}.role:before{content:"";display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px}.role.a:before{background:#e28a20}.role.n:before{background:#b13aa3}.fulltext{margin-top:13px;padding:11px 13px;max-height:150px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:#f8fafc;border:1px solid #d8dde7;border-radius:7px;font:13px/1.48 ui-monospace,monospace}.fulltext span{cursor:pointer;border-radius:2px;transition:background-color .08s,box-shadow .08s;box-decoration-break:clone;-webkit-box-decoration-break:clone}.fulltext .a{--role-color:#e28a20;background:#fff0d8}.fulltext .n{--role-color:#b13aa3;background:#f8e8f5}.fulltext.heatmap-active span{background:var(--token-heat)!important;color:var(--token-ink);box-shadow:inset 0 0 0 2px var(--role-color)}.fulltext .visible-token{outline:1px solid #8b5cf6;outline-offset:-1px}.fulltext .linked-hover{outline:2px solid #d97706;outline-offset:-2px}.fulltext .linked-selected{outline:2px solid #2563eb;outline-offset:-2px}.viewport{overflow:auto;padding:16px 18px 24px;min-height:400px}.matrix{display:flex;width:max-content;align-items:flex-start;background:white;border:1px solid #d8dde7;box-shadow:0 4px 18px #29344d14}.labels{width:116px;flex:none;position:sticky;left:0;z-index:5;background:#f8fafc;border-right:2px solid #aeb7c7}.label-top,.label-bottom{height:76px;box-sizing:border-box;display:flex;align-items:center;justify-content:center;text-align:center;padding:6px;font-size:11px;color:#667085}.row-label{height:24px;display:flex;align-items:center;justify-content:center;border-top:1px solid #e5e8ee;font:10px ui-monospace,monospace;text-align:center;padding:0 4px;cursor:pointer;user-select:none}.row-label:hover,.row-label:focus-visible{background:#ede9fe;outline:2px solid #8b5cf6;outline-offset:-2px}.row-label.context-selected{background:#ddd6fe;color:#4c1d95;font-weight:700;box-shadow:inset 3px 0 #7c3aed}.row-label.diag{height:28px;font-weight:600}.label-bottom{border-top:2px solid #aeb7c7}.token-col{width:72px;flex:none;border-right:1px solid #e6e9ef}.token-box{height:76px;box-sizing:border-box;padding:5px 3px;display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden;background:#fbfcfe;cursor:pointer}.target{border-top:4px solid #b13aa3}.target.a{border-top-color:#e28a20;background:#fffbf5}.input{border-top:2px solid #aeb7c7;background:#f8fafc}.token-box:hover,.token-box.linked-hover{background:#fef3c7;box-shadow:inset 0 0 0 2px #d97706}.token-box.linked-selected{background:#dbeafe;box-shadow:inset 0 0 0 2px #2563eb}.token{white-space:normal;overflow:hidden;overflow-wrap:anywhere;max-height:50px;line-height:1.15;text-align:center;font:12px ui-monospace,monospace}.index{font:9px ui-monospace,monospace;color:#7b8494;margin-top:3px}.cell{height:24px;box-sizing:border-box;border-top:1px solid #ffffff73;cursor:crosshair}.cell.diag{height:28px}.cell:hover{outline:2px solid #111827;outline-offset:-2px}.tip{position:fixed;pointer-events:none;display:none;z-index:20;background:#111827;color:white;padding:7px 9px;border-radius:6px;white-space:pre;font:12px/1.45 ui-monospace,monospace;box-shadow:0 4px 14px #0005}
 </style></head><body><header>
-<h1>Per-token Adaptive Learning Rate Scales</h1>
+<h1>__PAGE_TITLE__</h1>
 <div class="controls"><label for="example">Example</label><select id="example"></select></div>
 <div class="subtitle" id="subtitle"></div>
 <div class="preamble">
-<p>This visualization shows the adaptive learning rate scales of the fast weight updates at each layer and token.</p>
+__INTRODUCTION__
 <p>The columns are aligned such that the corresponding hidden states take in the bottom token and predict the top token.</p>
-<p>The gate color gradient is linear, ranging from 0 (white) to each layer's 95th percentile (red), with larger values clipped. KL uses white-to-dark-green; p updated and p base map probability directly from 0 (white) to 1 (blue); Δ log p vs base uses blue-to-white-to-dark-green.</p>
-<p>Hovering a gate shows its value normalized by its layer's mean. Hovering a prediction cell shows the updated and empty-fast-weight log likelihoods and label ranks.</p>
+__GATE_EXPLANATION__
+__INTERACTION_EXPLANATION__
 <p>Click or hover a token to locate its counterpart in the context or table. Tokens currently visible in the table are boxed in the context.</p>
-<p>Click a prediction or layer label in the left legend to apply that row's color gradient to the context. Orange and pinkish-purple token perimeters continue to indicate assistant and non-assistant targets.</p>
+__LEGEND_EXPLANATION__
 </div><div class="note" id="note"></div>
 <div class="roles"><span class="role a">assistant target</span><span class="role n">non-assistant target</span></div>
 <div class="fulltext" id="fulltext"></div></header>
@@ -766,12 +811,12 @@ EXAMPLES.forEach((d,i)=>{if(!groups.has(d.source)){const g=document.createElemen
 function blend(lo,hi,t){t=Math.max(0,Math.min(1,t));return `rgb(${lo.map((x,i)=>Math.round(x+(hi[i]-x)*t)).join(',')})`}
 const gateColor=v=>blend([255,255,255],[160,24,37],v);
 const positiveRowColor=t=>blend([255,255,255],[20,105,75],t);
-const probabilityColor=p=>blend([255,255,255],[49,130,189],p);
+const probabilityColor=p=>positiveRowColor(p);
 function topRowColor(t){t=Math.max(0,Math.min(1,t));return t<.5?blend([49,130,189],[255,255,255],t*2):blend([255,255,255],[20,105,75],(t-.5)*2)}
 const klColor=v=>positiveRowColor(v);
 function deltaColor(v,scale){return topRowColor(.5+.5*Math.max(-1,Math.min(1,v/scale)))}
 function readableInk(color){const rgb=(color.match(/\d+/g)||[255,255,255]).map(Number),luma=.2126*rgb[0]+.7152*rgb[1]+.0722*rgb[2];return luma<145?'#fff':'#172033'}
-function diagnosticTip(D,j){return `KL(updated ‖ base): ${D.kl[j].toFixed(6)}\nΔ log p vs base:   ${D.deltaLogp[j].toFixed(4)}\np updated:         ${Math.exp(D.logpUpdated[j]).toPrecision(6)}\np base:            ${Math.exp(D.logpEmpty[j]).toPrecision(6)}\nlog p updated:     ${D.logpUpdated[j].toFixed(4)}\nlog p base (empty): ${D.logpEmpty[j].toFixed(4)}\nrank updated:      ${D.rankUpdated[j].toLocaleString()}\nrank base (empty): ${D.rankEmpty[j].toLocaleString()}`}
+function diagnosticTip(D,j){return `KL(updated ‖ base): ${D.kl[j].toFixed(6)}\nΔ log p vs base:   ${D.deltaLogp[j].toFixed(4)}\np updated:         ${Math.exp(D.logpUpdated[j]).toPrecision(6)}\np base:            ${Math.exp(D.logpEmpty[j]).toPrecision(6)}\nlog p updated:     ${D.logpUpdated[j].toFixed(4)}\nlog p base: ${D.logpEmpty[j].toFixed(4)}\nrank updated:      ${D.rankUpdated[j].toLocaleString()}\nrank base: ${D.rankEmpty[j].toLocaleString()}`}
 function attachTip(cell,text){cell.onmouseenter=()=>{tip.style.display='block';tip.textContent=text};cell.onmousemove=e=>{tip.style.left=(e.clientX+12)+'px';tip.style.top=(e.clientY+12)+'px'};cell.onmouseleave=()=>tip.style.display='none'}
 let selectedToken=-1,selectedContextRow=-1,visibleFrame=0;
 const contextTokens=()=>Array.from(fulltext.querySelectorAll('[data-token-index]')),tableColumns=()=>Array.from(matrix.querySelectorAll('.token-col')),tableTarget=index=>tableColumns()[index]?.querySelector('.target');
@@ -780,14 +825,14 @@ function scrollTableTo(index){const col=tableColumns()[index];if(!col)return;vie
 function scrollContextTo(index){const span=contextTokens()[index];if(!span)return;fulltext.scrollTo({top:Math.max(0,span.offsetTop-fulltext.clientHeight/2+span.offsetHeight/2),behavior:'smooth'})}
 function selectLinked(index,origin){const spans=contextTokens();if(selectedToken>=0){spans[selectedToken]?.classList.remove('linked-selected');tableTarget(selectedToken)?.classList.remove('linked-selected')}selectedToken=index;spans[index]?.classList.add('linked-selected');tableTarget(index)?.classList.add('linked-selected');if(origin==='context')scrollTableTo(index);else scrollContextTo(index)}
 function linkToken(element,index,origin){element.addEventListener('mouseenter',()=>mirrorHover(index,true));element.addEventListener('mouseleave',()=>mirrorHover(index,false));element.addEventListener('click',()=>selectLinked(index,origin))}
-function contextRowColor(D,row,index){if(row===0)return klColor(D.kl[index]/D.scales.kl);if(row===1)return probabilityColor(Math.exp(D.logpUpdated[index]));if(row===2)return probabilityColor(Math.exp(D.logpEmpty[index]));if(row===3)return deltaColor(D.deltaLogp[index],D.scales.delta);return gateColor(D.gateColors[row-4][index])}
+function contextRowColor(D,row,index){if(row===0)return klColor(D.kl[index]/D.scales.kl);if(row===1)return probabilityColor(Math.exp(D.logpUpdated[index]));if(row===2)return probabilityColor(Math.exp(D.logpEmpty[index]));if(row===3)return deltaColor(D.deltaLogp[index],D.scales.delta);const layer=D.normalizedGates.length-1-(row-4);return gateColor(D.gateColors[layer][index])}
 function selectContextRow(D,labels,row){const rowLabels=Array.from(labels.querySelectorAll('.row-label'));if(selectedContextRow===row){selectedContextRow=-1;fulltext.classList.remove('heatmap-active');rowLabels[row]?.classList.remove('context-selected');contextTokens().forEach(span=>{span.style.removeProperty('--token-heat');span.style.removeProperty('--token-ink')});return}if(selectedContextRow>=0)rowLabels[selectedContextRow]?.classList.remove('context-selected');selectedContextRow=row;rowLabels[row]?.classList.add('context-selected');fulltext.classList.add('heatmap-active');contextTokens().forEach((span,index)=>{const color=contextRowColor(D,row,index);span.style.setProperty('--token-heat',color);span.style.setProperty('--token-ink',readableInk(color))})}
 function activateRowLabels(D,labels){Array.from(labels.querySelectorAll('.row-label')).forEach((label,row)=>{label.tabIndex=0;label.setAttribute('role','button');label.title='Apply this row color scale to the context';label.addEventListener('click',()=>selectContextRow(D,labels,row));label.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();selectContextRow(D,labels,row)}})})}
 function updateVisibleTokens(){visibleFrame=0;const spans=contextTokens(),cols=tableColumns(),labels=matrix.querySelector('.labels'),viewportRect=viewport.getBoundingClientRect(),left=Math.max(viewportRect.left,labels?labels.getBoundingClientRect().right:viewportRect.left),right=viewportRect.right;spans.forEach(span=>span.classList.remove('visible-token'));cols.forEach((col,index)=>{const rect=col.getBoundingClientRect();if(rect.right>left&&rect.left<right)spans[index]?.classList.add('visible-token')})}
 function scheduleVisibleUpdate(){if(!visibleFrame)visibleFrame=requestAnimationFrame(updateVisibleTokens)}
-function render(index){const D=EXAMPLES[index];selectedToken=-1;selectedContextRow=-1;tip.style.display='none';matrix.replaceChildren();fulltext.replaceChildren();fulltext.classList.remove('heatmap-active');fulltext.scrollTop=0;viewport.scrollLeft=0;subtitle.textContent=`Episode ${D.episode} · Source: ${D.source} · Repository: ${D.latent} · Trajectory ${D.dataset_index}`;D.fullTextPieces.forEach((piece,j)=>{const s=document.createElement('span');s.className=D.assistant[j]?'a':'n';s.dataset.tokenIndex=j;s.textContent=piece;linkToken(s,j,'context');attachTip(s,diagnosticTip(D,j));fulltext.appendChild(s)});const labels=document.createElement('div');labels.className='labels';labels.innerHTML='<div class="label-top">token predicted<br>at top</div><div class="row-label diag">KL(updated ‖ base)</div><div class="row-label diag">p updated</div><div class="row-label diag">p base</div><div class="row-label diag">Δ log p vs base</div>'+Array.from({length:D.normalizedGates.length},(_,l)=>`<div class="row-label">layer ${l}</div>`).join('')+'<div class="label-bottom">token taken in<br>at bottom</div>';matrix.appendChild(labels);activateRowLabels(D,labels);D.targetTokens.forEach((target,j)=>{const col=document.createElement('div');col.className='token-col';col.dataset.tokenIndex=j;const top=document.createElement('div');top.className='token-box target'+(D.assistant[j]?' a':'');top.innerHTML='<div class="token"></div><div class="index">'+(j+1)+'</div>';top.querySelector('.token').textContent=target;linkToken(top,j,'table');col.appendChild(top);const colors=[klColor(D.kl[j]/D.scales.kl),probabilityColor(Math.exp(D.logpUpdated[j])),probabilityColor(Math.exp(D.logpEmpty[j])),deltaColor(D.deltaLogp[j],D.scales.delta)];colors.forEach(c=>{const cell=document.createElement('div');cell.className='cell diag';cell.style.background=c;attachTip(cell,diagnosticTip(D,j));col.appendChild(cell)});for(let l=0;l<D.normalizedGates.length;l++){const cell=document.createElement('div');cell.className='cell';cell.style.background=gateColor(D.gateColors[l][j]);attachTip(cell,D.normalizedGates[l][j].toFixed(3));col.appendChild(cell)}const bottom=document.createElement('div');bottom.className='token-box input';bottom.innerHTML='<div class="token"></div><div class="index">'+j+'</div>';bottom.querySelector('.token').textContent=D.inputTokens[j];if(j>0)linkToken(bottom,j-1,'table');else bottom.style.cursor='default';col.appendChild(bottom);matrix.appendChild(col)});scheduleVisibleUpdate()}
+function render(index){const D=EXAMPLES[index];selectedToken=-1;selectedContextRow=-1;tip.style.display='none';matrix.replaceChildren();fulltext.replaceChildren();fulltext.classList.remove('heatmap-active');fulltext.scrollTop=0;viewport.scrollLeft=0;subtitle.textContent=`Episode ${D.episode} · Source: ${D.source} · Repository: ${D.latent} · Trajectory ${D.dataset_index}`;D.fullTextPieces.forEach((piece,j)=>{const s=document.createElement('span');s.className=D.assistant[j]?'a':'n';s.dataset.tokenIndex=j;s.textContent=piece;linkToken(s,j,'context');attachTip(s,diagnosticTip(D,j));fulltext.appendChild(s)});const labels=document.createElement('div');labels.className='labels';labels.innerHTML='<div class="label-top">token predicted<br>at top</div><div class="row-label diag">KL(updated ‖ base)</div><div class="row-label diag">p updated</div><div class="row-label diag">p base</div><div class="row-label diag">Δ log p vs base</div>'+Array.from({length:D.normalizedGates.length},(_,l)=>`<div class="row-label">layer ${D.normalizedGates.length-1-l}</div>`).join('')+'<div class="label-bottom">token taken in<br>at bottom</div>';matrix.appendChild(labels);activateRowLabels(D,labels);D.targetTokens.forEach((target,j)=>{const col=document.createElement('div');col.className='token-col';col.dataset.tokenIndex=j;const top=document.createElement('div');top.className='token-box target'+(D.assistant[j]?' a':'');top.innerHTML='<div class="token"></div><div class="index">'+(j+1)+'</div>';top.querySelector('.token').textContent=target;linkToken(top,j,'table');col.appendChild(top);const colors=[klColor(D.kl[j]/D.scales.kl),probabilityColor(Math.exp(D.logpUpdated[j])),probabilityColor(Math.exp(D.logpEmpty[j])),deltaColor(D.deltaLogp[j],D.scales.delta)];colors.forEach(c=>{const cell=document.createElement('div');cell.className='cell diag';cell.style.background=c;attachTip(cell,diagnosticTip(D,j));col.appendChild(cell)});for(let l=D.normalizedGates.length-1;l>=0;l--){const cell=document.createElement('div');cell.className='cell';cell.style.background=gateColor(D.gateColors[l][j]);attachTip(cell,D.normalizedGates[l][j].toFixed(3));col.appendChild(cell)}const bottom=document.createElement('div');bottom.className='token-box input';bottom.innerHTML='<div class="token"></div><div class="index">'+j+'</div>';bottom.querySelector('.token').textContent=D.inputTokens[j];if(j>0)linkToken(bottom,j-1,'table');else bottom.style.cursor='default';col.appendChild(bottom);matrix.appendChild(col)});scheduleVisibleUpdate()}
 viewport.addEventListener('scroll',scheduleVisibleUpdate,{passive:true});window.addEventListener('resize',scheduleVisibleUpdate,{passive:true});picker.addEventListener('change',()=>render(Number(picker.value)));render(0);
-</script></body></html>'''.replace("__PAYLOAD__", payload).replace("__NOTE__", note_payload)
+</script></body></html>'''.replace("__PAYLOAD__", payload).replace("__NOTE__", note_payload).replace("__PAGE_TITLE__", page_title).replace("__INTRODUCTION__", introduction).replace("__GATE_EXPLANATION__", gate_explanation).replace("__INTERACTION_EXPLANATION__", interaction_explanation).replace("__LEGEND_EXPLANATION__", legend_explanation)
     output_path.write_text(document)
 
 

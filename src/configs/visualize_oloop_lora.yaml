@@ -1,0 +1,47 @@
+defaults:
+  - model: oloop-lora-llama3p2-1b
+  - _self_
+
+seed: 42
+name: default
+
+# These are applied after Hydra composes the fresh model config. Null leaves
+# the corresponding value from config.model unchanged.
+base_lr: null
+checkpoint_url: null
+checkpoint_step: null
+
+model:
+  attention_kernel: null
+
+sampling:
+  mode: episodes
+  n: 1
+  subsets: null
+  latents: null
+  trajectory_pool_size: 1000
+
+adaptation:
+  aux_loss_weight: 0.0
+
+runtime:
+  device: cuda
+  compute_dtype: bfloat16
+  batch_size: 16
+  gradient_checkpointing: true
+  diagnostic_token_block_size: 256
+  loss_sequence_block_size: 128
+
+data:
+  dataset: aklein4/latent-compilation
+  tokenizer_url: meta-llama/Llama-3.2-1B-Instruct
+  max_length: 1024
+  episode_count: 64
+
+output:
+  directory: local_figures/lora_scale_viz
+  note: null
+
+hydra:
+  job:
+    chdir: false
