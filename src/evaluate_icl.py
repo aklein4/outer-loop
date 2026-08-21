@@ -148,12 +148,12 @@ def load_tokenizer(tokenizer_url: str):
     return tokenizer
 
 
-def encode(tokenizer, messages, max_length: int, device: torch.device):
+def encode(tokenizer, messages, max_length: int, device: torch.device, padding=True):
     encoded = tokenizer.apply_chat_template(
         messages,
         tokenize=True,
         add_generation_prompt=False,
-        padding=True,
+        padding=padding,
         truncation=True,
         max_length=max_length,
         return_tensors="pt",
@@ -188,7 +188,7 @@ def adaptation_loss(input_ids, assistant_mask, attention_mask, logits, aux_weigh
     loss = output_loss.mean() + aux_weight * aux_loss.mean()
 
     if return_aux:
-        return loss, output_losss, aux_loss
+        return loss, output_loss, aux_loss
     return loss
 
 

@@ -282,6 +282,12 @@ class OLoopLoRAModel(LlamaForCausalLM):
             if isinstance(module, FastWeight):
                 yield module
 
+    def state_containers(self):
+        for name in ("state",):
+            for module in self.fast_modules():
+                yield getattr(module, name)
+    
+
     def _layer_submodule(self, layer: LlamaDecoderLayer|int, name: str) -> nn.Module:
         if isinstance(layer, int):
             layer = list(self.model.layers._iter_layers())[layer]

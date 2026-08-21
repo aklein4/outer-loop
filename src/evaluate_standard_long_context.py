@@ -39,14 +39,16 @@ QUALITY_DS = {
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--fresh-config", required=True)
-    p.add_argument("--tokenizer", default=icl.DEFAULT_TOKENIZER)
-    p.add_argument("--save-name", default=None)
     p.add_argument("--benchmark", choices=["quality", "ruler"], required=True)
     p.add_argument("--aux-weight", type=float, required=True)
+    p.add_argument("--tokenizer", default=icl.DEFAULT_TOKENIZER)
+    p.add_argument("--save-name", default=None)
     p.add_argument("--max-articles", type=int, default=None)
     p.add_argument("--batch-size", type=int, default=4)
+    p.add_argument("--max-length", type=int, default=1024)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--dtype", default="bfloat16")
+    p.add_argument("--compile", action="store_true")
     p.add_argument("--ruler-manifests", nargs="*", default=[])
     p.add_argument(
         "--ruler-num-samples", type=int, default=500,
@@ -60,7 +62,7 @@ def masked_update(model, mask, *args, **kwargs):
     model.update_state(*args, **kwargs)
     for frozen_tensor, current_tensor in zip(frozen, model.state_containers()):
         current_tensor.data.copy_(
-            torch.where(mask, current_tensor, frozen_tensor)
+            torch.where(mask[:, None, None], current_tensor, frozen_tensor)
         )
 
 
@@ -148,7 +150,7 @@ def encode_horizons(tokenizer, conversations, max_length):
 
     horizons = [
         [
-            icl.encode(tokenizer, c, max_length, device=DEVICE)
+            tuple(x[0] for x in icl.encode(tokenizer, c, max_length, device=DEVICE, padding="max_length"))
             for c in conv
         ] for conv in conversations
     ]
@@ -157,7 +159,7 @@ def encode_horizons(tokenizer, conversations, max_length):
     for i, h in enumerate(horizons):
         mask[:len(h), i] = True
 
-    default_episode = (
+    default_episode = tuple(
         torch.zeros_like(x) for x in horizons[0][0]
     )
     for h in horizons:
@@ -192,19 +194,15 @@ def adapt_documents_padded(
     assistant_loss_accumulator, aux_loss_accumulator,
 ):
     bs = len(documents)
-
-    if len(next(model.state_containers())) != bs:
-        model.init_state(bs, DEVICE)
-    else:
-        model.empty_state()
+    model.init_state(bs, DEVICE)
 
     conversations = chunker(documents)
     horizon_length = max(len(c) for c in conversations)
 
-    packed, mask = encode_horizons(tokenizer, conversations, max_length=2 * args.chunk_tokens + 64)
+    packed, mask = encode_horizons(tokenizer, conversations, max_length=args.max_length)
     cpu_mask = mask.cpu()
 
-    for t in range(horizon_length):
+    for t in tqdm(range(horizon_length), "adapting", leave=False):
 
         assistant_loss, aux_loss = train_fn(
             packed[0][t], packed[1][t], packed[2][t],
@@ -239,8 +237,8 @@ class Chunker:
         chunks = self._chunker(text.strip())
 
         turns = [
-            single_turn(chunks[i].strip(), chunks[i + 1].strip())
-            for i in range(0, len(chunks), 2)
+            single_turn(chunks[i-1].strip(), chunks[i].strip())
+            for i in range(1, len(chunks), 2)
         ]
 
         if len(chunks) % 2 == 0:
@@ -265,7 +263,7 @@ def quality_prompt(row):
 def quality_options(row):
     n = len(row["options"])
     return (
-        tuple(range(1,n+1)),
+        tuple(str(i) for i in range(1,n+1)),
         tuple(f"{i+1}. {option.strip()}" for i, option in enumerate(row["options"]))
     )
 
@@ -275,7 +273,7 @@ def get_quality_results(model, logits_fn, tokenizer: PreTrainedTokenizer, row, a
     single_options, full_options = quality_options(row)
 
     prompt_tokens = tokenizer.apply_chat_template(
-        prompt,
+        [{"role": "user", "content": prompt}],
         tokenize=True,
         add_generation_prompt=True,
         padding=False,
@@ -286,16 +284,16 @@ def get_quality_results(model, logits_fn, tokenizer: PreTrainedTokenizer, row, a
 
     single_tokens = tokenizer(
         single_options, add_special_tokens=False
-    )
+    ).input_ids
     assert all(len(t)==1 for t in single_tokens)
 
     full_tokens = tokenizer(
         full_options, add_special_tokens=False
-    )
+    ).input_ids
     assert all(len(t)>=1 for t in full_tokens)
 
     full_input_ids = [
-        torch.tensor(prompt_tokens + [t], device=DEVICE, dtype=torch.long())
+        torch.tensor(prompt_tokens + t, device=DEVICE, dtype=torch.long)
         for t in full_tokens
     ]
 
@@ -308,19 +306,20 @@ def get_quality_results(model, logits_fn, tokenizer: PreTrainedTokenizer, row, a
         batch_first=True,
         padding_value=-1,
     )
-    mask = (input_ids != -1).float()
+    mask = (input_ids != -1)
     input_ids = torch.where(mask, input_ids, 0)
+    mask = mask.float()
 
-    logits = logits_fn(model, input_ids, slice(n_prompt-1,-1))
+    logits = logits_fn(input_ids, slice(n_prompt-1,-1))
 
     single_logits = logits[0, 0]
-    single_acc = float(single_logits[single_tokens].argmax(-1).item() == row["answer"])
+    single_acc = float(single_logits[[t[0] for t in single_tokens]].argmax(-1).item() == row["answer"])
 
     logp = -F.cross_entropy(
         logits.reshape(-1, logits.shape[-1]),
-        full_input_ids[n_prompt:].reshape(-1),
+        input_ids[:, n_prompt:].reshape(-1),
         reduction='none'
-    ).reshape(full_input_ids[n_prompt:].shape)
+    ).reshape(input_ids[:, n_prompt:].shape)
 
     logp = (logp * mask[:, n_prompt:]).sum(-1)
     logp_norm = logp / mask[:, n_prompt:].sum(-1).clamp_min(1)
@@ -345,22 +344,24 @@ def evaluate_quality(
     ds = datasets.load_dataset(**QUALITY_DS)
     ds = [row for row in ds]
 
-    hashes = []
+    hashes = set()
     rows = defaultdict(list)
     articles = defaultdict(list)
     for row in ds:
         k = hash(row["article"])
-        hashes.append(k)
+        hashes.add(k)
         rows[k].append(row)
-        articles[k] = row["article"]
+        articles[k] = row["article"].strip()
 
+    hashes = list(hashes)
     if args.max_articles is not None:
         hashes = np.random.choice(
             hashes,
             size=min(args.max_articles, len(hashes)),
             replace=False
         )
-    rows = {k: [k] for k in hashes}
+    hashes = sorted(hashes, key=lambda x: len(articles[x]), reverse=True)
+    rows = {k: rows[k] for k in hashes}
     articles = {k: articles[k] for k in hashes}
 
     assistant_loss_accumulator = defaultdict(list)
@@ -390,16 +391,16 @@ def evaluate_quality(
             s.detach().clone() for s in model.state_containers()
         ]
 
-        for i in tqdm(len(curr_hashes), "Questions", leave=False):
+        for i in tqdm(range(len(curr_hashes)), "answering", leave=False):
 
             for l, m in enumerate(model.fast_modules()):
-                m.state = frozen_state_containers[l][i]
+                m.state = frozen_state_containers[l][i][None]
 
             for row in rows[curr_hashes[i]]:
                 row_result = get_quality_results(model, logits_fn, tokenizer, row, args)
 
                 if row_result is not None:
-                    hard = row_result["hard"]
+                    hard = row["hard"]
 
                     for k in row_result:
                         if hard:
@@ -412,16 +413,19 @@ def evaluate_quality(
                     else:
                         easy_count += 1
 
-        progress.update(1)
+        progress.update(len(curr_hashes))
                 
-    horizon_losses = format_horizon_losses(hard_results, easy_results)
+    horizon_losses = format_horizon_losses(
+        assistant_loss_accumulator,
+        aux_loss_accumulator,
+    )
 
     all_results = {}
     if set(easy_results.keys()) == set(hard_results.keys()):
-        all_results = {k: torch.stack(easy_results[k] + hard_results[k]).mean() for k in easy_results.keys()}
+        all_results = {k: np.mean(easy_results[k] + hard_results[k]) for k in easy_results.keys()}
 
-    easy_results = {k: torch.stack(v).mean() for k, v in easy_results.items()}
-    hard_results = {k: torch.stack(v).mean() for k, v in hard_results.items()}
+    easy_results = {k: np.mean(v) for k, v in easy_results.items()}
+    hard_results = {k: np.mean(v) for k, v in hard_results.items()}
 
     results = {
         "total_evaluation_time": time.time() - started,
@@ -443,6 +447,8 @@ def evaluate_quality(
     with open(save_path / file_name, "w") as f:
         json.dump(results, f, indent=4)
 
+    print(f"\nresults written to: {save_path / file_name}\n")
+
 
 @torch.no_grad()
 def main():
@@ -459,7 +465,7 @@ def main():
     }
 
     tokenizer = icl.load_tokenizer(args.tokenizer)
-    chunker = Chunker(args.tokenizer_url)
+    chunker = Chunker(args.tokenizer)
 
     train_fn, logits_fn = make_compiled_fns(
         model, args
