@@ -37,7 +37,7 @@ def parse_args():
     parser.add_argument("--fresh-config", default=None)
     parser.add_argument("--tokenizer", default=DEFAULT_TOKENIZER)
     parser.add_argument("--base-lrs", type=float, nargs="+", default=None)
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=12)
     parser.add_argument("--num-examples", type=int, nargs="+", default=DEFAULT_NUM_EXAMPLES)
     parser.add_argument("--num-eval", type=int, default=DEFAULT_NUM_TEST)
     parser.add_argument("--dataset", default=DEFAULT_DATASET)

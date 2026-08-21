@@ -10,7 +10,7 @@ type: oloop_lora.OLoopLoRAModel
 
 fast_weight_rank: 24
 
-base_lr: 1.0e-4
+base_lr: 3.0e-4
 momentum_beta: 0.95
 
 grad_rms_eps: 1.0e-12

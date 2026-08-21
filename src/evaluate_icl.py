@@ -97,7 +97,7 @@ def load_config_defaults(config_path, config):
                         config[k] = v
 
 
-def load_fresh_model(config_path: str, base_lr: float | None, step, device: torch.device):
+def load_fresh_model(config_path: str, base_lr: float | None, step, device: torch.device, return_info=False):
     config = OmegaConf.load(constants.CONFIG_PATH(config_path))
     load_config_defaults(config_path, config)
 
@@ -134,6 +134,8 @@ def load_fresh_model(config_path: str, base_lr: float | None, step, device: torc
     for param in model.parameters():
         param.requires_grad_(False)
     getattr(model, "model", model).embed_tokens.requires_grad_(True)
+    if return_info:
+        return model, config.pretrained_url, config.pretrained_step
     return model
 
 
@@ -168,19 +170,26 @@ def encode(tokenizer, messages, max_length: int, device: torch.device):
     )
 
 
-def adaptation_loss(input_ids, assistant_mask, attention_mask, logits, aux_weight: float):
+def adaptation_loss(input_ids, assistant_mask, attention_mask, logits, aux_weight: float, return_aux=False):
     labels = input_ids[:, 1:]
     mask = assistant_mask[:, 1:].float()
     attn = attention_mask[:, 1:].float()
     aux_mask = (1.0 - mask) * attn
+
     losses = F.cross_entropy(
         logits.reshape(-1, logits.shape[-1]),
         labels.reshape(-1),
         reduction="none",
     ).view_as(labels)
-    output_loss = (losses * mask).sum(1).div(mask.sum(1).clamp(min=1)).mean()
-    aux_loss = (losses * aux_mask).sum(1).div(aux_mask.sum(1).clamp(min=1)).mean()
-    return output_loss + aux_weight * aux_loss
+
+    output_loss = (losses * mask).sum(1).div(mask.sum(1).clamp(min=1))
+    aux_loss = (losses * aux_mask).sum(1).div(aux_mask.sum(1).clamp(min=1))
+
+    loss = output_loss.mean() + aux_weight * aux_loss.mean()
+
+    if return_aux:
+        return loss, output_losss, aux_loss
+    return loss
 
 
 def exact_match(input_ids, assistant_mask, logits):

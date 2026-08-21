@@ -449,8 +449,11 @@ class PianoFastWeightMLP(nn.Module):
         activations = self.fast_act_fn(self.up_fast(x), self.gate_fast(x))
 
         if mode == PianoMode.INFERENCE:
+            s = self.state.detach()
+            if s.ndim == 2:
+                s = s[None]
             v = torch.einsum(
-                "boi,bli->blo", self.state.detach(), activations
+                "boi,bli->blo", s, activations
             )
             gate = 2 * torch.sigmoid(self.sig_fast(x))
             output = self.down_fast(v * gate)
@@ -652,6 +655,11 @@ class PianoModel(LlamaForCausalLM):
         ] + [
             mlp.state for mlp in self.fast_modules()
         ]
+
+    def state_containers(self):
+        for name in ("state",):
+            for module in self.fast_modules():
+                yield getattr(module, name)
     
 
     @torch.no_grad()

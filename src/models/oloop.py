@@ -105,8 +105,11 @@ class FastWeight(nn.Module):
         )
 
     def get_s(self):
+        s = self.state.detach()
+        if s.ndim == 2:
+            s = s[None]
         return precondition(
-            self.state.detach(), self.get_lr(), self.p_l, self.p_r
+            s, self.get_lr(), self.p_l, self.p_r
         )
 
 
@@ -292,6 +295,12 @@ class OLoopModel(LlamaForCausalLM):
         for module in self.modules():
             if isinstance(module, FastWeight):
                 yield module
+
+    def state_containers(self):
+        for name in ("state",):
+            for module in self.fast_modules():
+                yield getattr(module, name)
+
 
     def _layer_submodule(self, layer: LlamaDecoderLayer|int, name: str) -> nn.Module:
         if isinstance(layer, int):

@@ -26,11 +26,11 @@ REFERENCE_RUN = (
 )
 
 RUNS = [
-    (
-        "aklein4/horizon-v2_piano",
-        "Piano",
-        [50, 100, 150, 200, 250, 300, 350, 400],
-    ),
+    # (
+    #     "aklein4/horizon-v2_piano",
+    #     "Piano",
+    #     [50, 100, 150, 200, 250, 300, 350, 400],
+    # ),
     # (
     #     "aklein4/horizon-v2_oloop",
     #     "OLoop",
@@ -40,6 +40,11 @@ RUNS = [
         "aklein4/horizon-v2_alpha",
         "Alpha",
         [50, 100, 150, 200, 250, 300, 350, 400, 450],
+    ),
+    (
+        "aklein4/horizon-v2_piano-scaled",
+        "Piano",
+        [50, 100, 200, 300, 400, 500]
     ),
 ]
 
