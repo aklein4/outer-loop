@@ -7,9 +7,16 @@
 set -u
 set -o pipefail
 
+# /home/ubuntu/iTTT/src/.venv/bin/python evaluate_standard_long_context.py \
+#     --fresh-config "model/piano-llama3p2-1b-pre.yaml" \
+#     --aux-weight 0.1 \
+#     --benchmark ruler \
+#     --batch-size 16 \
+#     --compile
+
 /home/ubuntu/iTTT/src/.venv/bin/python evaluate_standard_long_context.py \
     --fresh-config "model/oloop-lora-llama3p2-1b-pre.yaml" \
     --aux-weight 1.0 \
-    --benchmark quality \
+    --benchmark ruler \
     --batch-size 16 \
     --compile

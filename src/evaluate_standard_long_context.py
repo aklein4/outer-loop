@@ -11,9 +11,13 @@ import torch.nn.functional as F
 
 import argparse
 import json
+import runpy
+import subprocess
+import sys
 import time
 from collections import defaultdict
 import os
+from pathlib import Path
 from tqdm import tqdm
 import hashlib
 import numpy as np
@@ -35,6 +39,38 @@ QUALITY_DS = {
     "split": "validation"
 }
 
+RULER_REPO = "https://github.com/NVIDIA/RULER.git"
+# RULERv1 generator from before RULERv2, at the commit that removed its
+# incidental NeMo dependency. Pinning it makes cached sample sets reproducible.
+RULER_REVISION = "6c1e0a0b5c0c046ffd8f0f4766701bde2e96507e"
+
+RULER_NIAH_TASKS = (
+    "niah_single_1",
+    "niah_single_2",
+    "niah_single_3",
+    "niah_multikey_1",
+    "niah_multikey_2",
+    "niah_multikey_3",
+    "niah_multivalue",
+    "niah_multiquery",
+)
+RULER_ESSAY_TASKS = {
+    "niah_single_2", "niah_single_3", "niah_multikey_1",
+    "niah_multivalue", "niah_multiquery",
+}
+
+E2E_RULER_TASKS = (
+    "niah_single_1",
+    "niah_single_2",
+    "niah_single_3",
+)
+E2E_RULER_CONTEXT_LENGTHS = (8192, 16384, 32768, 65536, 131072)
+E2E_RULER_LABELS = {
+    "niah_single_1": "S-NIAH-1",
+    "niah_single_2": "S-NIAH-2",
+    "niah_single_3": "S-NIAH-3",
+}
+
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -49,10 +85,17 @@ def parse_args():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--dtype", default="bfloat16")
     p.add_argument("--compile", action="store_true")
-    p.add_argument("--ruler-manifests", nargs="*", default=[])
+    p.add_argument(
+        "--ruler-context-lengths", type=int, nargs="+",
+        default=list(E2E_RULER_CONTEXT_LENGTHS),
+    )
+    p.add_argument(
+        "--ruler-tasks", nargs="+", choices=RULER_NIAH_TASKS,
+        default=list(E2E_RULER_TASKS)
+    )
     p.add_argument(
         "--ruler-num-samples", type=int, default=500,
-        help="Samples per RULER task/length manifest (official default: 500).",
+        help="Samples per RULER task and context length (official default: 500).",
     )
     return p.parse_args()
 
@@ -129,7 +172,7 @@ def format_horizon_losses(
     for i in range(n):
         assert len(assistant_loss_accumulator[i]) > 0, f"Assistant loss accumulator for index {i} is empty"
         assert len(assistant_loss_accumulator[i]) == len(aux_loss_accumulator[i]), f"Mismatch in lengths for index {i}"
-    
+
     assistant_losses = [
         torch.stack(assistant_loss_accumulator[i]).mean().item() for i in range(n)
     ]
@@ -450,6 +493,334 @@ def evaluate_quality(
     print(f"\nresults written to: {save_path / file_name}\n")
 
 
+
+def split_ruler_prompt(row):
+    """Split a RULER sample into the state-filling text and terminal prompt."""
+    marker = "\nWhat "
+    split = row["input"].rfind(marker)
+    if split < 0:
+        raise ValueError("Could not locate the terminal RULER question")
+    return (
+        row["input"][:split].strip(),
+        row["input"][split + 1:].strip()
+    )
+
+
+def _ruler_checkout():
+
+    repo = Path(constants.LOCAL_DATA_PATH) / "ruler_cache" / RULER_REVISION[:12] / "repo"
+    if not repo.exists():
+        repo.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "clone", RULER_REPO, str(repo)], check=True,
+        )
+        subprocess.run(
+            ["git", "checkout", "--detach", RULER_REVISION], cwd=repo, check=True,
+        )
+
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+
+    dirty = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo, check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+
+    # if revision != RULER_REVISION or dirty:
+    #     raise ValueError(
+    #         f"Cached NVIDIA/RULER checkout is not the clean pinned revision: {repo}"
+    #     )
+
+    return repo
+
+
+def _load_ruler_rows(args, task, context_length):
+    """Generate with pinned NVIDIA/RULER code, caching only matching JSONL."""
+    repo = _ruler_checkout()
+    data_root = repo / "scripts/data"
+
+    if task in RULER_ESSAY_TASKS:
+        essay_dir = data_root / "synthetic/json"
+        essay_file = essay_dir / "PaulGrahamEssays.json"
+
+        if not essay_file.exists():
+            subprocess.run(
+                [sys.executable, "download_paulgraham_essay.py"],
+                cwd=essay_dir, check=True,
+            )
+
+        subprocess.run(
+            [
+                sys.executable, "-c",
+                "import nltk; nltk.download('punkt', quiet=True); "
+                "nltk.download('punkt_tab', quiet=True)",
+            ],
+            check=True,
+        )
+
+    tokenizer_key = hashlib.sha256(args.tokenizer.encode()).hexdigest()[:12]
+    generated_root = (
+        Path(constants.LOCAL_DATA_PATH) / "ruler_cache" / RULER_REVISION[:12]
+        / "generated" / tokenizer_key / f"seed={args.seed}"
+        / f"length={context_length}" / f"samples={args.ruler_num_samples}"
+    )
+
+    manifest = generated_root / task / "validation.jsonl"
+    if not manifest.exists():
+        task_config = omegaconf.OmegaConf.to_container(
+            omegaconf.OmegaConf.load(repo / "scripts/synthetic.yaml")[task],
+            resolve=True,
+        )
+        niah_config = runpy.run_path(
+            str(data_root / "synthetic/constants.py")
+        )["TASKS"]["niah"]
+        template = niah_config["template"] + niah_config["answer_prefix"]
+        command = [
+            sys.executable, str(data_root / "synthetic/niah.py"),
+            "--save_dir", str(generated_root),
+            "--save_name", task,
+            "--subset", "validation",
+            "--tokenizer_path", args.tokenizer,
+            "--tokenizer_type", "hf",
+            "--max_seq_length", str(context_length),
+            "--tokens_to_generate", str(niah_config["tokens_to_generate"]),
+            "--num_samples", str(args.ruler_num_samples),
+            "--random_seed", str(args.seed),
+            "--template", template,
+        ]
+        for key, value in task_config["args"].items():
+            command.extend([f"--{key}", str(value)])
+        subprocess.run(
+            command,
+            cwd=data_root, check=True,
+        )
+
+    if not manifest.is_file():
+        raise RuntimeError(f"RULER generator did not create its manifest: {manifest}")
+
+    rows = [json.loads(line) for line in manifest.read_text().splitlines()]
+    if len(rows) != args.ruler_num_samples:
+        raise ValueError(
+            f"Cached RULER data has {len(rows)} samples, expected "
+            f"{args.ruler_num_samples}: {manifest}"
+        )
+
+    return rows
+
+
+def get_ruler_results(logits_fn, tokenizer: PreTrainedTokenizer, prompt, answer_prefix, answer: str, args):
+    """Score the gold needle tokens with teacher-forced next-token logits."""
+
+    if answer_prefix is None:
+        prompt_tokens = tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=True,
+            add_generation_prompt=True,
+            padding=False,
+            truncation=False,
+            return_dict=False,
+        )
+    else:
+        prompt_tokens = tokenizer.apply_chat_template(
+            [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": answer_prefix},
+            ],
+            tokenize=True,
+            add_generation_prompt=False,
+            padding=False,
+            truncation=False,
+            return_dict=False,
+        )
+        if prompt_tokens[-1] == tokenizer.eos_token_id:
+            prompt_tokens = prompt_tokens[:-1]
+
+        space_tokens = tokenizer(
+            " ", add_special_tokens=False
+        ).input_ids
+        bare_answer_tokens = tokenizer(
+            answer, add_special_tokens=False
+        ).input_ids
+        spaced_answer_tokens = tokenizer(
+            " " + answer, add_special_tokens=False
+        ).input_ids
+
+        if spaced_answer_tokens == space_tokens + bare_answer_tokens:
+            prompt_tokens += space_tokens
+            answer_tokens = bare_answer_tokens
+        else:
+            answer_tokens = spaced_answer_tokens
+            
+    answer_tokens = tokenizer(answer, add_special_tokens=False).input_ids
+
+    if not answer_tokens:
+        raise ValueError("RULER answer tokenized to an empty sequence")
+    if len(prompt_tokens) + len(answer_tokens) > args.max_length:
+        raise ValueError(
+            "RULER question and answer exceed --max-length: "
+            f"{len(prompt_tokens)} + {len(answer_tokens)} > {args.max_length}"
+        )
+
+    input_ids = torch.tensor(
+        [prompt_tokens + answer_tokens], device=DEVICE, dtype=torch.long
+    )
+
+    logits = logits_fn(input_ids, slice(len(prompt_tokens) - 1, -1)).float()
+
+    targets = input_ids[:, len(prompt_tokens):]
+    token_losses = F.cross_entropy(
+        logits.flatten(0, 1), targets.flatten(), reduction="none"
+    )
+    correct = logits.argmax(-1).eq(targets).flatten()
+
+    return {
+        "exact_acc": float(correct.all().item()),
+        "correct_tokens": int(correct.sum().item()),
+        "answer_tokens": int(correct.numel()),
+        "token_loss_sum": float(token_losses.sum().item()),
+    }
+
+
+def _aggregate_ruler_results(records):
+    count = len(records)
+    answer_tokens = sum(row["answer_tokens"] for row in records)
+
+    if count == 0 or answer_tokens == 0:
+        return {
+            "exact_acc": 0.0,
+            "token_acc": 0.0,
+            "token_loss": 0.0,
+            "count": count,
+            "answer_tokens": answer_tokens,
+        }
+
+    return {
+        "exact_acc": sum(row["exact_acc"] for row in records) / count,
+        "token_acc": sum(row["correct_tokens"] for row in records) / answer_tokens,
+        "token_loss": sum(row["token_loss_sum"] for row in records) / answer_tokens,
+        "count": count,
+        "answer_tokens": answer_tokens,
+    }
+
+
+def _format_e2e_ruler_table(by_task, tasks, context_lengths):
+    table = {}
+    for task in tasks:
+        if task not in E2E_RULER_LABELS:
+            continue
+        table[E2E_RULER_LABELS[task]] = {
+            f"{context_length // 1024}K": by_task[task][str(context_length)]["exact_acc"]
+            for context_length in context_lengths
+        }
+    return table
+
+
+def evaluate_ruler(
+    model, train_fn, logits_fn, tokenizer, chunker, args, info
+):
+
+    assistant_loss_accumulator = defaultdict(list)
+    aux_loss_accumulator = defaultdict(list)
+    records = []
+    started = time.time()
+
+    total = len(args.ruler_context_lengths) * len(args.ruler_tasks) * args.ruler_num_samples
+
+    progress = tqdm(total=total, desc="RULER")
+    for context_length in args.ruler_context_lengths:
+
+        for task in args.ruler_tasks:
+            rows = _load_ruler_rows(args, task, context_length)
+
+            for index_start in range(0, len(rows), args.batch_size):
+                batch_rows = rows[index_start:index_start + args.batch_size]
+                parsed = [split_ruler_prompt(row) for row in batch_rows]
+
+                adapt_documents_padded(
+                    train_fn, model, tokenizer, chunker,
+                    [document for document, _ in parsed],
+                    args,
+                    assistant_loss_accumulator,
+                    aux_loss_accumulator,
+                )
+                frozen_states = [
+                    state.detach().clone() for state in model.state_containers()
+                ]
+
+                for batch_index, (row, (_, question)) in enumerate(zip(batch_rows, parsed)):
+                    for module_index, module in enumerate(model.fast_modules()):
+                        module.state = frozen_states[module_index][batch_index][None]
+
+                    references = [str(value) for value in row["outputs"]]
+                    answer = ", ".join(references)
+                    score = get_ruler_results(
+                        logits_fn, tokenizer,
+                        question, row.get("answer_prefix", None),
+                        answer, args
+                    )
+
+                    records.append({
+                        "task": task,
+                        "context_length": context_length,
+                        **score,
+                    })
+
+                by_task = defaultdict(dict)
+                for task in args.ruler_tasks:
+                    for context_length in args.ruler_context_lengths:
+
+                        selected = [
+                            row for row in records
+                            if row["task"] == task and row["context_length"] == context_length
+                        ]
+
+                        by_task[task][str(context_length)] = _aggregate_ruler_results(selected)
+
+                results = {
+                    "evaluation_protocol": {
+                        "paper_table": "E2E Table 2",
+                        "data_generator": f"NVIDIA/RULER@{RULER_REVISION}",
+                        "decoding": "teacher_forced_gold_prefix_top1",
+                        "sequential_sampling_rollouts": False,
+                        "primary_metric": "exact_acc",
+                        "comparison_note": (
+                            "exact_acc requires every gold answer token to be top-1 under its "
+                            "gold prefix; the paper reports RULER accuracy from decoded strings"
+                        ),
+                    },
+                    "total_evaluation_time": time.time() - started,
+                    "overall": _aggregate_ruler_results(records),
+                    "by_task": by_task,
+                    "e2e_table": _format_e2e_ruler_table(
+                        by_task, args.ruler_tasks, args.ruler_context_lengths
+                    ),
+                    "horizon": format_horizon_losses(
+                        assistant_loss_accumulator, aux_loss_accumulator
+                    ),
+                    "args": vars(args),
+                    "model_config": omegaconf.OmegaConf.to_container(model.config, resolve=True),
+                }
+
+                save_path = constants.LOCAL_DATA_PATH / "ruler_results"
+                if args.save_name is not None:
+                    save_path = save_path / args.save_name
+                save_path = save_path / info["checkpoint_url"].replace("/", "--")
+                os.makedirs(save_path, exist_ok=True)
+                file_name = (
+                    f"aux={str(round(args.aux_weight, 2)).replace('.', 'p')}_"
+                    f"{info['checkpoint_step']:012d}.json"
+                )
+                with open(save_path / file_name, "w") as f:
+                    json.dump(results, f, indent=4)
+
+                print(f"\nresults written to: {save_path / file_name}\n")
+
+                progress.update(len(batch_rows))
+    progress.close()
+
+
 @torch.no_grad()
 def main():
     args = parse_args()
@@ -478,11 +849,9 @@ def main():
         )
 
     else:
-        raise NotImplementedError(f"RULER is not implemented yet!")
-        if not args.ruler_manifests:
-            raise ValueError("--ruler-manifests is required for RULER")
-        result = evaluate_ruler(
-            model, train_fn, answer_states_fn, tokenizer, args
+        evaluate_ruler(
+            model, train_fn, logits_fn,
+            tokenizer, chunker, args, info
         )
 
 
