@@ -159,21 +159,6 @@ class VAEEncoderCausalLayer(LlamaDecoderLayer):
 
 class VAEDecoderLayer(LlamaDecoderLayer):
     offload_name = "vae_decoder_input"
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        latent: torch.Tensor,
-        **kwargs,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        hidden_states = super().forward(
-            hidden_states,
-            latent=latent,
-            **kwargs,
-        )
-        return hidden_states, latent
-
-
 class VAEModel(nn.Module):
     """Single-matrix VAE with independent encoder and causal decoder stacks."""
 
@@ -432,8 +417,9 @@ class VAEModel(nn.Module):
         hidden_states = maybe_shard_with_gradients(hidden_states)
         latent = maybe_shard_with_gradients(latent)
         kwargs = self._causal_kwargs(hidden_states)
+        kwargs["latent"] = latent
         hidden_states, _ = self.decoder_layers(
-            hidden_states, latent, **kwargs
+            hidden_states, **kwargs
         )
         if logits_to_keep is not None:
             hidden_states = hidden_states[:, logits_to_keep]
