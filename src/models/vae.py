@@ -28,6 +28,7 @@ from utils.torch_utils import (
     unsqueeze_to_batch,
     unsqueeze_to_channel,
 )
+from utils.sharding_utils import maybe_shard_with_gradients
 
 
 class LatentWriter(nn.Module):
@@ -420,6 +421,8 @@ class VAEModel(nn.Module):
             unsqueeze_to_channel(radius, hidden_states)
         )
         hidden_states = hidden_states + radius_emb
+        hidden_states = maybe_shard_with_gradients(hidden_states)
+        latent = maybe_shard_with_gradients(latent)
         kwargs = self._causal_kwargs(hidden_states)
         hidden_states, _ = self.decoder_layers(
             hidden_states, latent, **kwargs
