@@ -5,7 +5,7 @@ advanced:
         - VAEEncoderCausalLayer
       optimization_barrier_layers:
         - VAEEncoderCausalLayer
-      scan_layers: layers
+      # scan_layers: layers
       is_layer_pure: true
 
   - name: encoder_noncausal
@@ -14,7 +14,7 @@ advanced:
         - BidirectionalDecoderLayer
       optimization_barrier_layers:
         - BidirectionalDecoderLayer
-      scan_layers: layers.layers
+      # scan_layers: layers.layers
       is_layer_pure: true
 
   - name: decoder_layers
@@ -23,6 +23,6 @@ advanced:
         - VAEDecoderLayer
       optimization_barrier_layers:
         - VAEDecoderLayer
-      scan_layers: layers
+      # scan_layers: layers
       is_layer_pure: true
 
