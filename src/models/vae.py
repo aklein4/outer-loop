@@ -276,6 +276,7 @@ class VAEModel(nn.Module):
             and torch.is_grad_enabled()
         ):
             return x.requires_grad_(True)
+        return x
 
 
     def sample_latent(
