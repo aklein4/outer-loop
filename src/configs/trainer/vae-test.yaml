@@ -9,3 +9,4 @@ use_autocast: false
 
 noise_warmup_steps: 4
 num_logit_iterations: 1
+gradient_accumulation_steps: 1

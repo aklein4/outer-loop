@@ -16,5 +16,5 @@ decoder_layers.layers.*.mlp.down_proj.weight: [fsdp, null]
 # Preserve batch sharding through all three stacks and the matrix latent.
 encoder_causal_layers.layers.*: [[data, fsdp], null, null]
 encoder_noncausal.layers.layers.*: [[data, fsdp], null, null]
-# decoder_layers.layers.*: [[data, fsdp], null, null]
+decoder_layers.layers.*: [[data, fsdp], null, null]
 

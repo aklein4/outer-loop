@@ -2,7 +2,7 @@ type: vae_trainer.VAETrainer
 
 # The collator returns 64 episodes per trajectory.  Flattening two trajectories
 # gives 128 independent sequences per global step, with no episode inner loop.
-global_batch_size: 16
+global_batch_size: 32
 
 max_steps: 1000000
 
@@ -19,7 +19,7 @@ multiple_optimizers:
       type: muon.ScaledMuon
 
       kwargs:
-        lr: 1.0e-4
+        lr: 3.0e-4
         betas: [0.9, 0.95]
         eps: 1.0e-6
         weight_decay: 0.01
@@ -41,7 +41,7 @@ multiple_optimizers:
       type: adamw.AdamW
 
       kwargs:
-        lr: 1.0e-5
+        lr: 3.0e-5
         betas: [0.9, 0.95]
         eps: 1.0e-6
         weight_decay: 0.0
@@ -67,6 +67,8 @@ reconstruction_loss_threshold: 0.5
 noise_warmup_steps: 500
 log_alpha_decrement: 1.0e-3
 
+num_logit_iterations: 4
+gradient_accumulation_steps: 8
+
 # HorizonCollator emits [trajectory, episode, token].
 input_sharding_spec: [[data, fsdp], null, null]
-num_logit_iterations: 16
