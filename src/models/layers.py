@@ -178,7 +178,7 @@ class BidirectionalDecoderLayer(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        if constants.XLA_AVAILABLE and self.offload_name is not None:
+        if constants.XLA_AVAILABLE:
             hidden_states = offloading.offload_name(
                 hidden_states,
                 self.offload_name,
