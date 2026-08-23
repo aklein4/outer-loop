@@ -419,7 +419,7 @@ class VAEModel(nn.Module):
         latent = maybe_shard_with_gradients(latent)
         kwargs = self._causal_kwargs(hidden_states)
         kwargs["latent"] = latent
-        hidden_states, _ = self.decoder_layers(
+        hidden_states = self.decoder_layers(
             hidden_states, **kwargs
         )
         if logits_to_keep is not None:
