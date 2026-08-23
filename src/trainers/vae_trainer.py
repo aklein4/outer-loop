@@ -210,9 +210,10 @@ class VAETrainer(BaseTrainer):
         )
 
         losses = []
+        dummy = torch.zeros_like(weights.flatten()[0])
         for index in range(num_iter):
             logits = maybe_shard_with_gradients(
-                self.model.lm_head(lm_states_leaf[:, index]).float()
+                self.model.lm_head(lm_states_leaf[:, index]).float() + dummy
             )
             token_nll = F.cross_entropy(
                 logits,
@@ -220,8 +221,9 @@ class VAETrainer(BaseTrainer):
                 reduction="none",
             )
             chunk_loss = (token_nll * weights[:, index]).sum()
+            dummy = dummy + chunk_loss.detach()*0  # Ensure dummy is used to avoid in-place operation issues
             chunk_loss.backward()
-            xm.optimization_barrier_([lm_states_leaf.grad])
+            xm.optimization_barrier_([dummy])
             losses.append(chunk_loss.detach())
 
         reconstruction_loss = torch.stack(losses).sum()
