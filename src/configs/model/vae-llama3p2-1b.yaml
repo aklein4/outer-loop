@@ -13,7 +13,7 @@ num_noncausal_layers: 6
 num_decoder_layers: ${.num_hidden_layers}
 
 # One matrix is produced per independent sequence and read by every decoder MLP.
-latent_size: 2048
+latent_size: 1024
 
 # Independent per-sequence decoder signal scale, sampled uniformly in this range.
 radius_min: 0.0
