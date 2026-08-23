@@ -154,11 +154,11 @@ class LatentDecoderMLP(nn.Module):
 
 
 class VAEEncoderCausalLayer(LlamaDecoderLayer):
-    offload_name = "vae_encoder_causal_input"
+    offload_name = None
 
 
 class VAEDecoderLayer(LlamaDecoderLayer):
-    offload_name = "vae_decoder_input"
+    offload_name = None
 
     def forward(
         self,
@@ -210,6 +210,8 @@ class VAEModel(nn.Module):
             eps=config.rms_norm_eps,
             elementwise_affine=False,
         )
+        for layer in self.encoder_causal_layers._iter_layers():
+            layer.offload_name = None
         self.encoder_state_shift = nn.Parameter(
             torch.zeros(config.hidden_size)
         )

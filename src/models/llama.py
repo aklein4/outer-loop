@@ -315,7 +315,7 @@ class LlamaDecoderLayer(nn.Module):
         # to offload this tensor to host RAM to save memory. This is not a standard
         # torch API because there is no such feature in PyTorch. Instead, the name
         # becomes node metadata during FX graph capture.
-        if constants.XLA_AVAILABLE:
+        if constants.XLA_AVAILABLE and self.offload_name is not None:
             hidden_states = offloading.offload_name(hidden_states, self.offload_name)
 
         residual = hidden_states
