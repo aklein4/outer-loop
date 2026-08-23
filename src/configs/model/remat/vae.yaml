@@ -1,0 +1,28 @@
+advanced:
+  - name: encoder_causal_layers
+    settings:
+      activation_checkpoint_layers:
+        - VAEEncoderCausalLayer
+      optimization_barrier_layers:
+        - VAEEncoderCausalLayer
+      scan_layers: layers
+      is_layer_pure: true
+
+  - name: encoder_noncausal
+    settings:
+      activation_checkpoint_layers:
+        - BidirectionalDecoderLayer
+      optimization_barrier_layers:
+        - BidirectionalDecoderLayer
+      scan_layers: layers.layers
+      is_layer_pure: true
+
+  - name: decoder_layers
+    settings:
+      activation_checkpoint_layers:
+        - VAEDecoderLayer
+      optimization_barrier_layers:
+        - VAEDecoderLayer
+      scan_layers: layers
+      is_layer_pure: true
+

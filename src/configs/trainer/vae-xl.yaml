@@ -1,0 +1,71 @@
+type: vae_trainer.VAETrainer
+
+# The collator returns 64 episodes per trajectory.  Flattening two trajectories
+# gives 128 independent sequences per global step, with no episode inner loop.
+global_batch_size: 32
+
+max_steps: 1000000
+
+checkpoint_interval: 2000
+use_autocast: true
+
+
+multiple_optimizers:
+  
+  # Ridge writer, non-causal encoder head, and matrix-latent readers.
+  fast:
+
+    optimizer:
+      type: muon.ScaledMuon
+
+      kwargs:
+        lr: 3.0e-4
+        betas: [0.9, 0.95]
+        eps: 1.0e-6
+        weight_decay: 0.01
+
+    lr_scheduler:
+      type: warmup_stable_decay
+      num_warmup_steps: 500
+      kwargs:
+        num_stable_steps: 1000000
+        num_decay_steps: 2500
+        min_lr_ratio: 0.0
+        warmup_type: linear
+        decay_type: linear
+
+  # Pretrained causal encoder/decoder transformer weights.
+  slow:
+
+    optimizer:
+      type: adamw.AdamW
+
+      kwargs:
+        lr: 3.0e-5
+        betas: [0.9, 0.95]
+        eps: 1.0e-6
+        weight_decay: 0.0
+
+    lr_scheduler:
+      type: warmup_stable_decay
+      num_warmup_steps: 500
+      kwargs:
+        num_stable_steps: 1000000
+        num_decay_steps: 2500
+        min_lr_ratio: 0.0
+        warmup_type: linear
+        decay_type: linear
+
+  # No embeddings optimizer defined -> embeddings frozen
+
+max_grad_norm: 1.0
+max_grad_value: null
+
+# VAE schedule. init_kl is nats per assistant token in the first batch.
+init_kl: 4.0
+reconstruction_loss_threshold: 0.5
+noise_warmup_steps: 500
+log_alpha_decrement: 1.0e-3
+
+# HorizonCollator emits [trajectory, episode, token].
+input_sharding_spec: [[data, fsdp], null, null]

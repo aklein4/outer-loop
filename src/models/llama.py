@@ -350,6 +350,7 @@ class LlamaModel(nn.Module):
 
     layer_type = LlamaDecoderLayer
     do_norm = True
+    no_muon_patterns = ("embed_tokens",)
 
     def __init__(self, config: DictConfig):
         super().__init__()
@@ -461,6 +462,7 @@ class LlamaModel(nn.Module):
 class LlamaForCausalLM(nn.Module):
 
     transformer_type = LlamaModel
+    no_muon_patterns = ("lm_head",)
 
     
     def __init__(self, config):

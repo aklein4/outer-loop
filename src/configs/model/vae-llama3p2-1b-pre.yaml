@@ -1,0 +1,8 @@
+defaults:
+  - vae-llama3p2-1b
+  - _self_
+
+pretrained_url: aklein4/vae-init
+pretrained_step: 0
+pretrained_strict: true
+

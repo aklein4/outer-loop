@@ -204,14 +204,14 @@ class BidirectionalDecoderLayer(nn.Module):
 class BidirectionalHead(nn.Module):
     """Llama head with full attention and flash-compatible padding masks."""
 
-    def __init__(self, config: DictConfig):
+    def __init__(self, config: DictConfig, num_layers: int | None = None):
         super().__init__()
 
         self.config = config
         self.layers = LayerStack(
             config,
             BidirectionalDecoderLayer,
-            config.num_bidirectional_layers,
+            config.num_bidirectional_layers if num_layers is None else num_layers,
         )
         self.norm = LlamaRMSNorm(
             config.hidden_size,

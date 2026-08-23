@@ -1,0 +1,20 @@
+# Replicate small/special parameters and shard the conventional MLP matrices.
+replicate_default: true
+
+encoder_causal_layers.layers.*.mlp.gate_proj.weight: [fsdp, null]
+encoder_causal_layers.layers.*.mlp.up_proj.weight: [fsdp, null]
+encoder_causal_layers.layers.*.mlp.down_proj.weight: [fsdp, null]
+
+encoder_noncausal.layers.layers.*.mlp.gate_proj.weight: [fsdp, null]
+encoder_noncausal.layers.layers.*.mlp.up_proj.weight: [fsdp, null]
+encoder_noncausal.layers.layers.*.mlp.down_proj.weight: [fsdp, null]
+
+decoder_layers.layers.*.mlp.gate_proj.weight: [fsdp, null]
+decoder_layers.layers.*.mlp.up_proj.weight: [fsdp, null]
+decoder_layers.layers.*.mlp.down_proj.weight: [fsdp, null]
+
+# Preserve batch sharding through all three stacks and the matrix latent.
+encoder_causal_layers.layers.*: [[data, fsdp], null, null]
+encoder_noncausal.layers.layers.*: [[data, fsdp], null, null]
+decoder_layers.layers.*: [[data, fsdp], null, null]
+

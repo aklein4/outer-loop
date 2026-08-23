@@ -1,0 +1,11 @@
+defaults:
+  - default
+  - override model: vae-llama3p2-test
+  - override data: 300k-horizons-llama3
+  - override trainer: vae-test
+  - _self_
+
+debug: true
+project: outer-loop-vae
+name: matrix-vae-test
+

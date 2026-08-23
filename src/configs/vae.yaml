@@ -1,0 +1,9 @@
+defaults:
+  - default
+  - override model: vae-llama3p2-1b-pre
+  - override data: 300k-horizons-llama3
+  - override trainer: vae-xl
+  - _self_
+
+project: meta-vae
+name: default

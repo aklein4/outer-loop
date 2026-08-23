@@ -1,0 +1,11 @@
+defaults:
+  - vae-xl
+  - _self_
+
+global_batch_size: 1
+max_steps: 10
+checkpoint_interval: 10
+use_autocast: false
+
+noise_warmup_steps: 4
+
