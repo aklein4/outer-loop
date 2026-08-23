@@ -19,7 +19,7 @@ multiple_optimizers:
       type: muon.ScaledMuon
 
       kwargs:
-        lr: 3.0e-4
+        lr: 1.0e-4
         betas: [0.9, 0.95]
         eps: 1.0e-6
         weight_decay: 0.01
@@ -41,7 +41,7 @@ multiple_optimizers:
       type: adamw.AdamW
 
       kwargs:
-        lr: 3.0e-5
+        lr: 1.0e-5
         betas: [0.9, 0.95]
         eps: 1.0e-6
         weight_decay: 0.0
