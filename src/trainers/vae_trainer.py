@@ -3,6 +3,7 @@
 import torch
 import torch.nn.functional as F
 import torch_xla
+import torch_xla.core.xla_model as xm
 
 from models.vae import VAEModel
 from trainers.base_trainer import BaseTrainer
@@ -164,14 +165,14 @@ class VAETrainer(BaseTrainer):
 
     @torch_xla.compile(full_graph=False)
     def train_step(self, batch: dict) -> tuple[torch.Tensor, dict, torch.Tensor]:
-        
-        with torch.autocast('xla', dtype=torch.bfloat16, enabled=self.config.trainer.use_autocast):
-            loss, aux = self.forward(**batch)
 
-        loss.backward()
-        
+        with torch.autocast('xla', dtype=torch.bfloat16, enabled=self.config.trainer.use_autocast):
+            loss, aux, lm_states, lm_grad = self.forward_with_lm_grad(**batch)
+
+        torch.autograd.backward(lm_states, lm_grad)
+
         grad_norm = self.clip_gradients()
-        
+
         aux.update(self.optimization_step())
 
         self.model.zero_grad(set_to_none=False)
@@ -179,11 +180,59 @@ class VAETrainer(BaseTrainer):
         return loss, aux, grad_norm
 
 
-    def forward(self, input_ids, assistant_mask, attention_mask):
+    def loss_and_lm_grad(
+        self,
+        lm_states: torch.Tensor,
+        labels: torch.LongTensor,
+        target_mask: torch.BoolTensor,
+        denominator: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Backpropagate the LM head in bounded-logit chunks."""
+        num_iter = self.config.trainer.num_logit_iterations
+        token_count = labels.numel()
+        if token_count % num_iter != 0:
+            raise ValueError(
+                f"{token_count} prediction tokens must be divisible by "
+                f"num_logit_iterations={num_iter}"
+            )
+
+        lm_states_leaf = maybe_shard_with_gradients(
+            lm_states.detach().reshape(
+                -1, num_iter, lm_states.shape[-1]
+            )
+        ).detach().requires_grad_(True)
+        labels = maybe_shard_with_gradients(
+            labels.reshape(-1, num_iter).contiguous()
+        )
+        weights = maybe_shard_with_gradients(
+            target_mask.reshape(-1, num_iter).to(torch.float32)
+            / denominator
+        )
+
+        losses = []
+        for index in range(num_iter):
+            logits = maybe_shard_with_gradients(
+                self.model.lm_head(lm_states_leaf[:, index]).float()
+            )
+            token_nll = F.cross_entropy(
+                logits,
+                labels[:, index].contiguous(),
+                reduction="none",
+            )
+            chunk_loss = (token_nll * weights[:, index]).sum()
+            chunk_loss.backward()
+            xm.optimization_barrier_([lm_states_leaf.grad])
+            losses.append(chunk_loss.detach())
+
+        reconstruction_loss = torch.stack(losses).sum()
+        lm_grad = lm_states_leaf.grad.reshape_as(lm_states).to(lm_states.dtype)
+        return reconstruction_loss, lm_grad.detach()
+
+
+    def forward_with_lm_grad(self, input_ids, assistant_mask, attention_mask):
         input_ids, assistant_mask, valid_mask = self.flatten_episodes(
             input_ids, assistant_mask, attention_mask
         )
-
         target_mask = assistant_mask[:, 1:] & valid_mask[:, 1:]
         assistant_count = target_mask.long().sum()
         denominator = assistant_count.clamp_min(1).float()
@@ -196,52 +245,32 @@ class VAETrainer(BaseTrainer):
             self.config.trainer.noise_warmup_steps,
         )
 
-        logits, mu, radius = self.model(
+        lm_states, mu, radius = self.model(
             input_ids=input_ids,
             valid_mask=valid_mask,
             noise_scale=noise_scale,
             alpha=alpha,
             logits_to_keep=slice(0, -1),
+            skip_logits=True,
+        )
+        reconstruction_loss, lm_grad = self.loss_and_lm_grad(
+            lm_states,
+            input_ids[:, 1:],
+            target_mask,
+            denominator,
         )
 
-        labels = input_ids[:, 1:]
-        # Flattening batch and sequence can lose the leading batch constraint.
-        # Reapply it to logits and all aligned operands immediately around CE;
-        # the vocabulary dimension stays replicated, avoiding logit all-gathers.
-        flat_logits = maybe_shard_with_gradients(
-            logits.reshape(-1, logits.shape[-1])
-        )
-        flat_labels = maybe_shard_with_gradients(
-            labels.reshape(-1).contiguous()
-        )
-        flat_target_mask = maybe_shard_with_gradients(
-            target_mask.reshape(-1)
-        )
-        token_nll = F.cross_entropy(
-            flat_logits,
-            flat_labels,
-            reduction="none",
-        )
-        token_nll = maybe_shard_with_gradients(token_nll)
-        reconstruction_loss = (
-            token_nll * flat_target_mask.to(token_nll.dtype)
-        ).sum() / denominator
-
-        # q(z|x, radius) = N(radius * mu, I), so each sequence contributes
-        # latent_size^2 * alpha^2 * radius^2 / 2 nats.
         sequence_kl = (
             0.5
             * self.model.latent_size**2
             * alpha.square()
             * radius.float().square()
         )
-        total_kl = sequence_kl.sum()
-        kl_per_assistant_token = total_kl / denominator
+        kl_per_assistant_token = sequence_kl.sum() / denominator
         loss = reconstruction_loss + kl_per_assistant_token
-
         self._advance_vae_schedule(reconstruction_loss)
 
-        return loss, {
+        aux = {
             "reconstruction_loss": reconstruction_loss,
 
             "kl": sequence_kl.mean(),
@@ -259,3 +288,4 @@ class VAETrainer(BaseTrainer):
             "assistant_token_count": assistant_count,
             "atom_count": valid_mask.long().sum(),
         }
+        return loss, aux, lm_states, lm_grad

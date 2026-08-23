@@ -8,4 +8,4 @@ checkpoint_interval: 10
 use_autocast: false
 
 noise_warmup_steps: 4
-
+num_logit_iterations: 1

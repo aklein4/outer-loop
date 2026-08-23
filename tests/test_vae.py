@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from hydra import compose, initialize_config_dir
 
 
@@ -142,7 +143,7 @@ def test_encoder_scale_and_shift_precede_bidirectional_layers():
     torch.testing.assert_close(conditioned[0], expected)
 
 
-def test_masked_encoder_tokens_do_not_change_ridge_latent():
+def test_masked_encoder_tokens_do_not_change_latent():
     torch.manual_seed(1)
     config = tiny_config()
     model = VAEModel(config)
@@ -158,7 +159,7 @@ def test_masked_encoder_tokens_do_not_change_ridge_latent():
     torch.testing.assert_close(actual, expected)
 
 
-def test_ridge_correlation_uses_post_gate_value_magnitudes():
+def test_latent_writer_uses_normalized_keys_and_gated_values():
     torch.manual_seed(4)
     config = tiny_config()
     writer = VAEModel(config).latent_writer
@@ -168,16 +169,16 @@ def test_ridge_correlation_uses_post_gate_value_magnitudes():
     )
 
     actual = writer(hidden, mask)
-    keys = writer.key_norm(writer.key_proj(hidden))
-    values = writer.value_norm(writer.value_proj(hidden))
+    keys = F.rms_norm(
+        writer.key_proj(hidden).float(), (writer.latent_size,), eps=writer.eps
+    )
+    values = F.rms_norm(
+        writer.value_proj(hidden).float(), (writer.latent_size,), eps=writer.eps
+    )
     gate = 2.0 * torch.sigmoid(writer.value_gate_proj(hidden).float())
     assert torch.all((gate > 0.0) & (gate < 2.0))
 
-    values_h = values.reshape(
-        2, 5, writer.num_value_heads, writer.value_head_size
-    ) * gate[..., None]
-    gated_values = values_h.reshape(2, 5, writer.latent_size)
-    magnitudes = gated_values.float().square().mean(dim=-1).sqrt()
+    gated_values = values * gate
     float_mask = mask[..., None].float()
     count = float_mask.sum(dim=1).clamp_min(1.0)
     masked_keys = keys.float() * float_mask
@@ -185,24 +186,7 @@ def test_ridge_correlation_uses_post_gate_value_magnitudes():
     cross = torch.einsum(
         "bso,bsi->boi", masked_values, masked_keys
     ) / count[:, None]
-    keys_h = masked_keys.reshape(
-        2, 5, writer.num_key_heads, writer.key_head_size
-    )
-    corr = torch.einsum(
-        "bshd,bshe->bhde",
-        keys_h * magnitudes[..., None, None],
-        keys_h,
-    ) / count[:, None, None]
-    matrix = corr + torch.diag_embed(writer.get_lambda().float())[None]
-    rhs = cross.reshape(
-        2, writer.latent_size, writer.num_key_heads, writer.key_head_size
-    ).permute(0, 2, 3, 1)
-    expected = torch.linalg.solve(matrix, rhs).permute(0, 3, 1, 2).reshape(
-        2, writer.latent_size, writer.latent_size
-    )
-    torch.testing.assert_close(actual, expected)
-
-    assert writer.num_key_heads != writer.num_value_heads
+    torch.testing.assert_close(actual, cross)
 
 
 def test_plain_llama_checkpoint_is_replicated_into_vae_stacks():
@@ -274,8 +258,9 @@ def test_shared_no_muon_patterns_cover_embeddings_and_latent_scalars():
     model = set_no_muon(VAEModel(tiny_config()))
     assert model.embed_tokens.weight.no_muon
     assert model.lm_head.weight.no_muon
-    assert model.latent_writer.log_lambda.no_muon
-    assert model.latent_writer.value_gate_proj.weight.no_muon
+    assert not getattr(
+        model.latent_writer.value_gate_proj.weight, "no_muon", False
+    )
     assert all(module.odot.no_muon for module in model.latent_modules())
     assert all(
         layer.mlp.latent_mlp is latent

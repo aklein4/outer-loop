@@ -69,3 +69,4 @@ log_alpha_decrement: 1.0e-3
 
 # HorizonCollator emits [trajectory, episode, token].
 input_sharding_spec: [[data, fsdp], null, null]
+num_logit_iterations: 4

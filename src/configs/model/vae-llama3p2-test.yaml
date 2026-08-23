@@ -11,9 +11,6 @@ num_noncausal_layers: 1
 num_decoder_layers: ${.num_hidden_layers}
 
 latent_size: 32
-num_latent_key_heads: 4
-num_latent_value_heads: 8
-init_mse_lambda: 0.1
 radius_min: 0.0
 radius_max: 1.0
 latent_rms_norm_eps: 1.0e-12
