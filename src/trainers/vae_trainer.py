@@ -2,6 +2,7 @@
 
 import torch
 import torch.nn.functional as F
+import torch_xla
 
 from models.vae import VAEModel
 from trainers.base_trainer import BaseTrainer
@@ -159,6 +160,23 @@ class VAETrainer(BaseTrainer):
             self.model.log_alpha.sub_(
                 decrement * self.config.trainer.log_alpha_decrement
             )
+
+
+    @torch_xla.compile(full_graph=False)
+    def train_step(self, batch: dict) -> tuple[torch.Tensor, dict, torch.Tensor]:
+        
+        with torch.autocast('xla', dtype=torch.bfloat16, enabled=self.config.trainer.use_autocast):
+            loss, aux = self.forward(**batch)
+
+        loss.backward()
+        
+        grad_norm = self.clip_gradients()
+        
+        aux.update(self.optimization_step())
+
+        self.model.zero_grad(set_to_none=False)
+
+        return loss, aux, grad_norm
 
 
     def forward(self, input_ids, assistant_mask, attention_mask):
