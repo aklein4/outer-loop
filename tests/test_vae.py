@@ -180,12 +180,11 @@ def test_latent_writer_uses_normalized_keys_and_gated_values():
 
     gated_values = values * gate
     float_mask = mask[..., None].float()
-    count = float_mask.sum(dim=1).clamp_min(1.0)
     masked_keys = keys.float() * float_mask
     masked_values = gated_values.float() * float_mask
     cross = torch.einsum(
         "bso,bsi->boi", masked_values, masked_keys
-    ) / count[:, None]
+    )
     torch.testing.assert_close(actual, cross)
 
 

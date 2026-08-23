@@ -69,7 +69,7 @@ class LayerStack(nn.Module):
         return tree_map(tensorize, kwargs)
 
 
-    def forward(self, carry, **kwargs):
+    def forward(self, *carry, **kwargs):
 
         kwargs = self._tensorize_scalars(carry, kwargs)
 
@@ -79,17 +79,18 @@ class LayerStack(nn.Module):
             and torch.is_grad_enabled()
         ):
             for layer in self._iter_layers():
-                carry = torch.utils.checkpoint.checkpoint(
+                output = torch.utils.checkpoint.checkpoint(
                     layer,
-                    carry,
+                    *carry,
                     use_reentrant=False,
                     **kwargs,
                 )
+                carry = output if isinstance(output, tuple) else (output,)
+
+            return carry[0] if len(carry) == 1 else carry
 
         else:
-            carry = self.layers(carry, **kwargs)
-
-        return carry
+            return self.layers(*carry, **kwargs)
 
 
 class ScaledEmbedding(nn.Module):
