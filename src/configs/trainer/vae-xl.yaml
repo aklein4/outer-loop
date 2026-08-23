@@ -2,7 +2,7 @@ type: vae_trainer.VAETrainer
 
 # The collator returns 64 episodes per trajectory.  Flattening two trajectories
 # gives 128 independent sequences per global step, with no episode inner loop.
-global_batch_size: 32
+global_batch_size: 16
 
 max_steps: 1000000
 
