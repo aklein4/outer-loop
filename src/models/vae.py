@@ -285,6 +285,13 @@ class VAEModel(nn.Module):
             log_alpha = self.log_alpha
         return torch.sqrt(torch.exp(log_alpha.float()))
 
+    def require_grad(self, x: torch.FloatTensor) -> torch.FloatTensor:
+        if (
+            self.training
+            and torch.is_grad_enabled()
+        ):
+            return x.requires_grad_(True)
+
 
     def sample_latent(
         self,
@@ -377,6 +384,7 @@ class VAEModel(nn.Module):
         alpha: torch.Tensor | None = None,
     ) -> torch.Tensor:
         hidden_states = self.embed_tokens(input_ids)
+        hidden_states = self.require_grad(hidden_states)
         hidden_states = self.encoder_causal_layers(
             hidden_states, **self._causal_kwargs(hidden_states)
         )

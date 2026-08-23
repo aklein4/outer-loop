@@ -6,6 +6,11 @@ defaults:
 
 type: vae.VAEModel
 
+pure_modules:
+  - VAEEncoderCausalLayer
+  - BidirectionalDecoderLayer
+  - VAEDecoderLayer
+
 # The encoder uses the first N pretrained layers before a new non-causal head.
 # The decoder is a distinct, complete copy of the pretrained causal backbone.
 num_encoder_causal_layers: 10
