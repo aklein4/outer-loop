@@ -97,10 +97,21 @@ def load_config_defaults(config_path, config):
                         config[k] = v
 
 
-def load_fresh_model(config_path: str, base_lr: float | None, step, device: torch.device, return_info=False):
+def load_fresh_model(
+    config_path: str,
+    base_lr: float | None,
+    step,
+    device: torch.device,
+    return_info=False,
+    config_overrides: dict | None = None,
+):
     config = OmegaConf.load(constants.CONFIG_PATH(config_path))
     load_config_defaults(config_path, config)
 
+    for key, value in (config_overrides or {}).items():
+        if not isinstance(key, str) or not key or key.startswith("_"):
+            raise ValueError(f"invalid model config override key: {key!r}")
+        OmegaConf.update(config, key, value, merge=True)
     if base_lr is not None:
         config.base_lr = base_lr
     if step is not None:
