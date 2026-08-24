@@ -407,7 +407,7 @@ class VAEModel(nn.Module):
         # meaning: radius is also supplied explicitly through decoder inputs.
         latent = self.frobenius_rms_norm(
             latent,
-            self.config.get("latent_rms_norm_eps", self.config.rms_norm_eps),
+            self.config.rms_norm_eps,
         )
         hidden_states = self.embed_tokens(input_ids)
         radius_emb = (

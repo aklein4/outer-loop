@@ -2,7 +2,6 @@
 
 import argparse
 import json
-import math
 import sys
 import tempfile
 from functools import partial
@@ -74,6 +73,22 @@ def random_orthogonal(size: int, device: torch.device) -> torch.Tensor:
     return q * signs[None]
 
 
+def isotropic_output_weight(
+    target_covariance: torch.Tensor,
+    input_size: int,
+    scale: float,
+) -> torch.Tensor:
+    """Color isotropic inputs with the target's leading covariance spectrum."""
+    if scale < 0.0:
+        raise ValueError("latent_mlp_init_scale must be non-negative")
+    target_values, target_vectors = torch.linalg.eigh(target_covariance.float())
+    rank = min(input_size, target_values.numel())
+    target_values = target_values[-rank:].clamp_min(0.0)
+    target_vectors = target_vectors[:, -rank:]
+    rotation = random_orthogonal(input_size, target_covariance.device)[:rank]
+    return scale * (target_vectors * torch.sqrt(target_values)[None]) @ rotation
+
+
 @torch.no_grad()
 def initialize_latent_input(
     module: torch.nn.Module,
@@ -108,17 +123,21 @@ def initialize_latent_input(
 
 @torch.no_grad()
 def initialize_latent_output(
-    module: torch.nn.Module,
+    reader: torch.nn.Module,
+    _module: torch.nn.Module,
     _inputs: tuple[torch.Tensor, ...],
     output: torch.Tensor,
     mask: torch.Tensor,
+    scale: float,
 ) -> None:
-    """Match Piano's random output scale to the decoder layer's base RMS."""
-    _, _, global_std = masked_statistics(output, mask)
-    reader = module.latent_mlp
+    """Color an assumed-isotropic latent read like the base MLP output."""
+    _, target_covariance, _ = masked_statistics(output, mask)
     reader.down_latent.weight.copy_(
-        torch.randn_like(reader.down_latent.weight)
-        * (global_std / math.sqrt(reader.latent_size))
+        isotropic_output_weight(
+            target_covariance,
+            input_size=reader.latent_size,
+            scale=scale,
+        ).to(reader.down_latent.weight.dtype)
     )
 
 
@@ -201,8 +220,13 @@ def main() -> None:
             )
         )
         handles.append(
-            module.register_forward_hook(
-                partial(initialize_latent_output, mask=valid_mask)
+            module.down_proj.register_forward_hook(
+                partial(
+                    initialize_latent_output,
+                    module.latent_mlp,
+                    mask=valid_mask,
+                    scale=config.model.latent_mlp_init_scale,
+                )
             )
         )
     handles.append(

@@ -14,11 +14,11 @@ num_decoder_layers: ${.num_hidden_layers}
 
 # One matrix is produced per independent sequence and read by every decoder MLP.
 latent_size: 2048
+latent_mlp_init_scale: 0.1
 
 # Independent per-sequence decoder signal scale, sampled uniformly in this range.
 radius_min: 0.0
 radius_max: 1.0
-latent_rms_norm_eps: 1.0e-12
 
 mixer_kernel_size: 5
 pad_attention_bias_value: -1000.0

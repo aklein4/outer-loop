@@ -77,7 +77,7 @@ def test_radius_scaled_sampling_and_decoder_frobenius_normalization():
         radius[:, None, None] * mu + 0.5 * noise,
     )
     normalized = model.frobenius_rms_norm(
-        sampled, config.latent_rms_norm_eps
+        sampled, config.rms_norm_eps
     )
     torch.testing.assert_close(
         normalized.square().mean(dim=(-2, -1)).sqrt(),
