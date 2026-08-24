@@ -163,7 +163,7 @@ class VAETrainer(BaseTrainer):
             )
 
 
-    @torch_xla.compile(full_graph=False)
+    @torch_xla.compile(full_graph=True)
     def train_step(self, batch: dict) -> tuple[torch.Tensor, dict, torch.Tensor]:
 
         with torch.autocast('xla', dtype=torch.bfloat16, enabled=self.config.trainer.use_autocast):
