@@ -67,8 +67,8 @@ reconstruction_loss_threshold: 0.5
 noise_warmup_steps: 500
 log_alpha_decrement: 1.0e-3
 
-real_batch_size: 512
-num_logit_iterations: 8
+real_batch_size: 256
+num_logit_iterations: 4
 
 # HorizonCollator emits [trajectory, episode, token].
 input_sharding_spec: [[data, fsdp], null, null]
