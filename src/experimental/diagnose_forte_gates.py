@@ -205,26 +205,28 @@ def first_pass(model, ids, assistant, mask, collector, final=False):
     else:
         torch.autograd.backward(states, grad, inputs=model.grad_containers())
     with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
-        model.update_state(embeddings, mask,
-                           ForteMode.TRAIN_SECOND if final else ForteMode.TRAIN_FIRST)
+        model.update_state(
+            ForteMode.TRAIN_SECOND if final else ForteMode.TRAIN_FIRST
+        )
     collector.record_state()
     return loss.item()
 
 
 def second_pass(model, ids, assistant, mask, collector):
     with torch.autocast("cuda", dtype=torch.bfloat16):
+        double_ids = torch.repeat_interleave(ids, 2, dim=0)
         inferred = model.forward_backbone(ids, mode=ForteMode.INFERENCE)
         embeddings = model.forward_embeddings(inferred, mask)
-        hidden = model.forward_backbone(ids, mode=ForteMode.TRAIN_SECOND,
-                                        embeddings=embeddings, embedding_mask=mask,
-                                        future_loss_scale=1.)
+        double_embeddings = torch.repeat_interleave(embeddings, 2, dim=0)
+        hidden = model.forward_backbone(double_ids, mode=ForteMode.TRAIN_SECOND,
+                                        embeddings=double_embeddings, embedding_mask=mask)
         states = model.forward_lm_states(hidden, mode=ForteMode.TRAIN_SECOND,
-                                        logits_to_keep=slice(0, -1), embeddings=embeddings,
-                                        embedding_mask=mask, future_loss_scale=1.)
+                                        logits_to_keep=slice(0, -1), embeddings=double_embeddings,
+                                        embedding_mask=mask)[::2]
         loss, grad = loss_and_lm_grad(model, states, ids, assistant)
     torch.autograd.backward(states, grad)
     with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
-        model.update_state(embeddings, mask, ForteMode.TRAIN_SECOND)
+        model.update_state(ForteMode.TRAIN_SECOND)
     collector.record_state()
     return loss.item()
 

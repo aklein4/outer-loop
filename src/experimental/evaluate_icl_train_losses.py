@@ -96,9 +96,7 @@ def make_step_fns(model, args, device):
             )
         loss.backward()
         model.update_state(
-            embeddings,
-            attention_mask,
-            mode=ForteMode.TRAIN_FIRST,
+            ForteMode.TRAIN_FIRST,
             lr_scale=lr_scale,
         )
         return pre_losses

@@ -18,20 +18,25 @@ DATA_DIR = REPO_ROOT / "src/local_data/icl_acc_results"
 DEFAULT_OUTPUT = REPO_ROOT / "figures/acc_plot.png"
 
 REFERENCE_RUN = (
-    "fresh_frozen/oloop-lora-llama3p2-1b-pre/base_lr_1e-04.json",
-    "LoRA lr=1e-4",
+    "fresh/oloop-lora-llama3p2-1b-pre/000000001600.json",
+    "LoRA lr=3e-4",
 )
 RUNS = [
     (
-        "aklein4/horizon-v2_piano",
+        "aklein4--horizon-v2_piano-scaled",
         "Piano",
-        [50, 100, 150, 200, 250, 300, 350, 400],
+        [50] + [100*x for x in range(1, 17)]
     ),
     (
-        "aklein4/horizon-v2_oloop",
-        "OLoop",
-        [100, 200, 300, 400, 500, 600, 700, 1500, 1900],
+        "fresh/oloop-lora-llama3p2-1b-pre",
+        "LoRA",
+        [50] + [100*x for x in range(1, 17)]
     ),
+    # (
+    #     "aklein4/horizon-v2_oloop",
+    #     "OLoop",
+    #     [100, 200, 300, 400, 500, 600, 700, 1500, 1900],
+    # ),
 ]
 
 REFERENCE_EXAMPLES = (16, 64, 384)
@@ -42,7 +47,7 @@ def resolve_run_path(path: str, step: int | None) -> Path:
         return DATA_DIR / path
     if step is None:
         raise ValueError(f"A step is required for run directory {path!r}")
-    return DATA_DIR / path.replace("/", "--") / f"{step:012d}.json"
+    return DATA_DIR / path / f"{step:012d}.json"
 
 
 def load_scores(path: str, step: int | None, metric: str) -> tuple[list[int], list[float]]:
@@ -144,7 +149,7 @@ def make_figure(metric: str, max_examples: int | None, ylabel: str, title: str):
     axes[0].set_xscale("log")
     axes[0].set_title("Log scale")
     axes[1].set_title("Linear scale")
-    axes[1].legend()
+    # axes[1].legend()
 
     summaries = checkpoint_summaries(runs)
     cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
