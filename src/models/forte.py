@@ -31,6 +31,7 @@ def _get_G(
     token_gate_logits: torch.FloatTensor,
     valid_mask: torch.BoolTensor,
     eps: float,
+    lr: torch.FloatTensor,
 ) -> torch.FloatTensor:
 
     # use float32 to avoid gradient accumulation drift
@@ -60,10 +61,11 @@ def _get_G(
     # learned token gate
     a_gated = a_gated * unit_softplus(token_gate_logits.float())
 
-    return (
-        torch.einsum("blo,bli->boi", g, activations),
-        torch.einsum("blo,bli->boi", g_gated, a_gated),
-    )
+    G = torch.einsum("blo,bli->boi", g, activations)
+    update = torch.einsum("blo,bli->boi", g_gated, a_gated)
+    update = -update * lr.float()
+
+    return G, update
 
 
 def _sequence_rms(
@@ -141,24 +143,21 @@ class ForteFastWeightFunction(torch.autograd.Function):
         valid_mask: torch.BoolTensor,
         grad_buffer: torch.FloatTensor,
         state: torch.FloatTensor,
-        lr: torch.FloatTensor | None,
-        future_loss_scale: torch.FloatTensor,
+        lr: torch.FloatTensor,
         grad_eps: float,
         mode: str,
     ) -> torch.FloatTensor:
 
-        to_save = (
+        ctx.save_for_backward(
             activations,
             down_weight,
             activation_gate_logits,
             gradient_gate_logits,
             token_gate_logits,
             valid_mask,
+            grad_buffer,
+            lr,
         )
-        if mode == ForteMode.TRAIN_SECOND:
-            to_save += (grad_buffer, lr, future_loss_scale)
-
-        ctx.save_for_backward(*to_save)
         ctx.grad_eps = grad_eps
         ctx.mode = mode
 
@@ -181,6 +180,8 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 gradient_gate_logits,
                 token_gate_logits,
                 valid_mask,
+                grad_buffer,
+                lr,
             ) = ctx.saved_tensors
 
             G, update = _get_G(
@@ -192,6 +193,7 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 token_gate_logits,
                 valid_mask,
                 grad_eps,
+                lr,
             )
 
             return ( 
@@ -205,7 +207,6 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 G, # grad_buffer
                 update, # state
                 None, # lr
-                None, # future_loss_scale
                 None, # grad_eps
                 None, # mode
             )
@@ -222,7 +223,6 @@ class ForteFastWeightFunction(torch.autograd.Function):
             valid_mask,
             grad_buffer,
             lr,
-            future_loss_scale,
         ) = ctx.saved_tensors
 
         with torch.enable_grad():
@@ -242,6 +242,7 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 token_gate_logits_leaf,
                 valid_mask,
                 grad_eps,
+                lr_leaf,
             )
 
             future_grad = (
@@ -253,11 +254,9 @@ class ForteFastWeightFunction(torch.autograd.Function):
                 dtype=torch.bfloat16,
             ):
 
-                state_update = -lr_leaf * update
-
                 local_loss = (
-                    future_grad * state_update
-                ).sum() * future_loss_scale.detach()
+                    future_grad * update
+                ).sum()
 
             (
                 activation_grad,
@@ -287,9 +286,8 @@ class ForteFastWeightFunction(torch.autograd.Function):
             token_gate_logits_grad.to(token_gate_logits.dtype),
             None, # valid_mask
             G, # grad_buffer
-            state_update.detach(), # state (already scaled by -lr)
+            update.detach(), # state (already scaled by -lr)
             lr_grad.to(lr.dtype),
-            None, # future_loss_scale
             None, # grad_eps
             None, # mode
         )
@@ -299,9 +297,6 @@ class DynamicLR(nn.Module):
 
     no_muon_patterns = (
         "log_lr",
-        # "activation_gate_proj",
-        # "gradient_gate_proj",
-        "token_gate_proj",
     )
 
     def __init__(self, config: DictConfig):
@@ -322,18 +317,18 @@ class DynamicLR(nn.Module):
         self.activation_gate_proj = nn.Linear(
             config.hidden_size,
             self.fast_weight_size,
-            bias=False,
+            bias=True,
         )
         self.gradient_gate_proj = nn.Linear(
             config.hidden_size,
             self.fast_weight_size,
-            bias=False,
+            bias=True,
         )
 
         self.token_gate_proj = nn.Linear(
             config.hidden_size,
             1,
-            bias=False,
+            bias=True,
         )
 
 
@@ -392,7 +387,7 @@ class ForteFastWeightMLP(nn.Module):
         self.up_fast = nn.Linear(
             config.hidden_size,
             self.fast_weight_size,
-            bias=True,
+            bias=False,
         )
         self.gate_fast = nn.Linear(
             config.hidden_size,
@@ -425,62 +420,87 @@ class ForteFastWeightMLP(nn.Module):
         fast_weight_mode: torch.Tensor | None = None,
         lr_embeddings: torch.FloatTensor | None = None,
         lr_embedding_mask: torch.BoolTensor | None = None,
-        future_loss_scale: torch.FloatTensor | float = 1,
     ) -> torch.FloatTensor:
 
         mode = ForteMode.INFERENCE
         if fast_weight_mode is not None:
             mode = _tensor_to_mode(fast_weight_mode)
-        if not isinstance(future_loss_scale, torch.Tensor):
-            future_loss_scale = x.new_tensor(future_loss_scale)
 
         # fast mlp
         h = self.fast_act_fn(self.up_fast(x), self.gate_fast(x))
-        value = torch.einsum(
-            "boi,bli->blo", self.state.detach(), h
+
+        if mode == ForteMode.INFERENCE:
+            value = torch.einsum(
+                "boi,bli->blo", self.state.detach(), h
+            )
+            return self.standard_forward(x) + self.down_fast(value)
+
+        if lr_embeddings is None or lr_embedding_mask is None:
+            raise ValueError(
+                "lr_embeddings and mask are required while training fast weights"
+            )
+
+        if mode == ForteMode.TRAIN_FIRST:
+            value = torch.einsum(
+                "boi,bli->blo", self.state.detach(), h
+            )
+            output = self.down_fast(value)
+            activations_prop = h
+
+        elif mode == ForteMode.TRAIN_SECOND:
+            if x.shape[0] % 2 != 0:
+                raise ValueError(
+                    "train-second inputs and embeddings must have the same "
+                    "even batch size"
+                )
+            if lr_embeddings.shape[0] != x.shape[0] // 2:
+                raise ValueError(
+                    "train-second lr_embeddings must have half the batch size of inputs"
+                )
+            activations_replay = maybe_shard_with_gradients(h[::2])
+            activations_prop = maybe_shard_with_gradients(h[1::2])
+
+            value_replay = torch.einsum(
+                "boi,bli->blo", self.state.detach(), activations_replay
+            )
+            value_prop = torch.einsum(
+                "boi,bli->blo", self.state.detach(), activations_prop
+            )
+            output = self.down_fast(value_replay)
+            output_prop = self.down_fast(value_prop)
+
+        else:
+            raise ValueError(f"invalid fast weight mode: {mode}")
+
+        activation_gate_logits = self.fast_dynamic_lr.activation_gate_proj(
+            lr_embeddings
         )
-        output = self.down_fast(value)
+        gradient_gate_logits = self.fast_dynamic_lr.gradient_gate_proj(
+            lr_embeddings
+        )
+        token_gate_logits = self.fast_dynamic_lr.token_gate_proj(lr_embeddings)
+        lr = self.fast_dynamic_lr(lr_embeddings, lr_embedding_mask)
 
-        activation_gate_logits = None
-        gradient_gate_logits = None
-        token_gate_logits = None
-        if mode != ForteMode.INFERENCE:
-            activation_gate_logits = (
-                self.fast_dynamic_lr.activation_gate_proj(lr_embeddings)
-            )
-            gradient_gate_logits = (
-                self.fast_dynamic_lr.gradient_gate_proj(lr_embeddings)
-            )
-            token_gate_logits = (
-                self.fast_dynamic_lr.token_gate_proj(lr_embeddings)
-            )
+        output = ForteFastWeightFunction.apply(
+            activations_prop,
+            output,
+            self.down_fast.weight,
+            activation_gate_logits,
+            gradient_gate_logits,
+            token_gate_logits,
+            lr_embedding_mask,
+            self.grad_buffer,
+            self.state,
+            lr,
+            self.grad_eps,
+            mode,
+        )
 
-        activations = h.detach()
-        lr = None
         if mode == ForteMode.TRAIN_SECOND:
-
-            x_d = x.detach()
-            activations = self.fast_act_fn(
-                self.up_fast(x_d), self.gate_fast(x_d)
-            )
-
-            lr = self.fast_dynamic_lr(lr_embeddings, lr_embedding_mask)
-
-        if mode != ForteMode.INFERENCE:
-            output = ForteFastWeightFunction.apply(
-                activations,
-                output,
-                self.down_fast.weight,
-                activation_gate_logits,
-                gradient_gate_logits,
-                token_gate_logits,
-                lr_embedding_mask,
-                self.grad_buffer,
-                self.state,
-                lr,
-                future_loss_scale,
-                self.grad_eps,
-                mode,
+            output = maybe_shard_with_gradients(
+                torch.stack([output, output_prop], dim=1).reshape(
+                    -1, *output.shape[1:]
+                )
             )
 
         return self.standard_forward(x) + output
@@ -524,23 +544,14 @@ class ForteFastWeightMLP(nn.Module):
     @torch.no_grad()
     def update_state(
         self,
-        embeddings: torch.FloatTensor,
-        embedding_mask: torch.BoolTensor,
         mode: ForteMode,
-        state_update_is_scaled: bool = False,
         lr_scale: float = 1.0
     ) -> None:
 
         G = self.grad_buffer.grad
         update = self.state.grad
         
-        if state_update_is_scaled:
-            state_update = update
-        else:
-            lr = self.fast_dynamic_lr(embeddings, embedding_mask)
-            state_update = -lr * update
-
-        self.state.add_(state_update * lr_scale)
+        self.state.add_(update * lr_scale)
 
         if mode == ForteMode.TRAIN_FIRST:
             self.grad_buffer.add_(G)
@@ -708,7 +719,6 @@ class ForteModel(nn.Module):
         embeddings: torch.FloatTensor | None = None,
         embedding_mask: torch.BoolTensor | None = None,
         mode: torch.Tensor | None = None,
-        future_loss_scale: torch.FloatTensor | float | None = None,
         **kwargs,
     ) -> dict:
         seq_length = hidden_states.shape[1]
@@ -745,9 +755,6 @@ class ForteModel(nn.Module):
                 mode,
                 self.embed_tokens.weight,
             )
-        if future_loss_scale is not None:
-            kwargs["future_loss_scale"] = future_loss_scale
-
         return kwargs
 
 
@@ -757,7 +764,6 @@ class ForteModel(nn.Module):
         embeddings: torch.FloatTensor | None = None,
         embedding_mask: torch.BoolTensor | None = None,
         mode: ForteMode | None = None,
-        future_loss_scale: torch.FloatTensor | float | None = None,
     ) -> torch.FloatTensor:
 
         hidden_states = self.embed_tokens(input_ids)
@@ -766,7 +772,6 @@ class ForteModel(nn.Module):
             embeddings=embeddings,
             embedding_mask=embedding_mask,
             mode=mode,
-            future_loss_scale=future_loss_scale,
         )
 
         return self.backbone_layers(
@@ -782,7 +787,6 @@ class ForteModel(nn.Module):
         embedding_mask: torch.BoolTensor | None = None,
         mode: ForteMode | None = None,
         logits_to_keep: slice | None = None,
-        future_loss_scale: torch.FloatTensor | float | None = None,
     ) -> torch.FloatTensor:
 
         kwargs = self._layer_kwargs(
@@ -790,7 +794,6 @@ class ForteModel(nn.Module):
             embeddings=embeddings,
             embedding_mask=embedding_mask,
             mode=mode,
-            future_loss_scale=future_loss_scale,
         )
 
         hidden_states = self.output_layers(
@@ -811,14 +814,12 @@ class ForteModel(nn.Module):
         embedding_mask: torch.BoolTensor | None = None,
         mode: ForteMode | None = None,
         logits_to_keep: slice | None = None,
-        future_loss_scale: torch.FloatTensor | float | None = None,
     ) -> torch.FloatTensor:
         hidden_states = self.forward_backbone(
             input_ids,
             embeddings=embeddings,
             embedding_mask=embedding_mask,
             mode=mode,
-            future_loss_scale=future_loss_scale,
         )
         hidden_states = self.forward_lm_states(
             hidden_states,
@@ -826,7 +827,6 @@ class ForteModel(nn.Module):
             embedding_mask=embedding_mask,
             mode=mode,
             logits_to_keep=logits_to_keep,
-            future_loss_scale=future_loss_scale,
         )
         return self.lm_head(hidden_states)
 
@@ -873,6 +873,11 @@ class ForteModel(nn.Module):
         ]
 
 
+    def state_containers(self):
+        for mlp in self.fast_modules():
+            yield mlp.state
+
+
     @torch.no_grad()
     def init_state(self, bs: int, device: torch.device) -> None:
         for mlp in self.fast_modules():
@@ -882,18 +887,11 @@ class ForteModel(nn.Module):
     @torch.no_grad()
     def update_state(
         self,
-        embeddings: torch.FloatTensor,
-        embedding_mask: torch.BoolTensor,
         mode: ForteMode,
         **kwargs
     ) -> None:
         for mlp in self.fast_modules():
-            mlp.update_state(
-                embeddings,
-                embedding_mask,
-                mode,
-                **kwargs
-            )
+            mlp.update_state(mode, **kwargs)
 
 
     @torch.no_grad()

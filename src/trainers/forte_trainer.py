@@ -233,13 +233,9 @@ class ForteTrainer(BaseTrainer):
 
         with self._autocast():
             self.model.update_state(
-                embeddings,
-                valid_mask,
-                mode=(
-                    ForteMode.TRAIN_SECOND
-                    if update_second_mode
-                    else ForteMode.TRAIN_FIRST
-                ),
+                ForteMode.TRAIN_SECOND
+                if update_second_mode
+                else ForteMode.TRAIN_FIRST
             )
         
         return loss, aux_loss
@@ -255,21 +251,24 @@ class ForteTrainer(BaseTrainer):
 
         with self._autocast():
 
-            with torch.set_grad_enabled(self.config.trainer.propagate_embedding_grads):
-                infer_hidden_states = self.model.forward_backbone(
-                    input_ids, mode=ForteMode.INFERENCE
+            double_ids = maybe_shard_with_gradients(
+                torch.repeat_interleave(
+                    input_ids, 2, dim=0
                 )
+            )
+            infer_hidden_states = self.model.forward_backbone(
+                input_ids, mode=ForteMode.INFERENCE
+            )
             embeddings = self.model.forward_embeddings(
                 infer_hidden_states,
                 valid_mask,
             )
 
             hidden_states = self.model.forward_backbone(
-                input_ids,
+                double_ids,
                 embeddings,
                 valid_mask,
                 mode=ForteMode.TRAIN_SECOND,
-                future_loss_scale=self.config.trainer.future_loss_scale,
             )
 
             lm_states = self.model.forward_lm_states(
@@ -278,7 +277,9 @@ class ForteTrainer(BaseTrainer):
                 valid_mask,
                 mode=ForteMode.TRAIN_SECOND,
                 logits_to_keep=slice(0, -1),
-                future_loss_scale=self.config.trainer.future_loss_scale,
+            )
+            lm_states = maybe_shard_with_gradients(
+                lm_states[::2]
             )
             loss, aux_loss, lm_grad = self.loss_and_lm_grad(
                 lm_states,
@@ -292,12 +293,7 @@ class ForteTrainer(BaseTrainer):
         )
 
         with self._autocast():
-            self.model.update_state(
-                embeddings,
-                valid_mask,
-                mode=ForteMode.TRAIN_SECOND,
-                state_update_is_scaled=True,
-            )
+            self.model.update_state(ForteMode.TRAIN_SECOND)
         
         return loss, aux_loss
 

@@ -48,6 +48,18 @@ def masked_statistics(
     return mean, torch.sqrt(variance), covariance, global_std
 
 
+def masked_cross_correlation(
+    x: torch.Tensor,
+    mask: torch.Tensor,
+) -> torch.Tensor:
+    """Return the uncentered cross-correlation over unmasked tokens."""
+
+    x = x.float()
+    mask = mask.to(device=x.device, dtype=x.dtype)[..., None]
+    count = mask.sum().clamp_min(1.0)
+    return torch.einsum("bsi,bsj->ij", x * mask, x) / count
+
+
 def cut_inv_sqrt(
     x: torch.Tensor,
     quantile: float,
@@ -87,15 +99,25 @@ def initialize_fast_input(
     x = inputs[0].float()
     mean, _, covariance, _ = masked_statistics(x, mask)
     whitening = cut_inv_sqrt(covariance, inv_quantile)
+    cross_whitening = cut_inv_sqrt(
+        masked_cross_correlation(x, mask), inv_quantile
+    )
 
-    for projection in (module.up_fast, module.gate_fast):
-        weight = (
+    module.up_fast.weight.copy_(
+        (
+            random_orthogonal(x.shape[-1], x.device) @ cross_whitening
+        )[:module.fast_weight_size].to(module.up_fast.weight.dtype)
+    )
+
+    projection = module.gate_fast
+    projection.weight.copy_(
+        (
             random_orthogonal(x.shape[-1], x.device) @ whitening
-        )[:module.fast_weight_size]
-        projection.weight.copy_(weight.to(projection.weight.dtype))
-        projection.bias.copy_(
-            -fixed_linear(mean, projection.weight).to(projection.bias.dtype)
-        )
+        )[:module.fast_weight_size].to(projection.weight.dtype)
+    )
+    projection.bias.copy_(
+        -fixed_linear(mean, projection.weight).to(projection.bias.dtype)
+    )
 
 
 @torch.no_grad()

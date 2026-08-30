@@ -6,4 +6,6 @@ defaults:
 # This checkpoint was created using scripts/convert_hf_checkpoint.py
 pretrained_url: aklein4/forte-init
 pretrained_step: 0
-pretrained_strict: true
+# The port adds controller biases and removes up_fast biases. Older forte-init
+# checkpoints therefore need non-strict loading until a new init is published.
+pretrained_strict: false

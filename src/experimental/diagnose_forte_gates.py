@@ -217,11 +217,10 @@ def second_pass(model, ids, assistant, mask, collector):
         double_ids = torch.repeat_interleave(ids, 2, dim=0)
         inferred = model.forward_backbone(ids, mode=ForteMode.INFERENCE)
         embeddings = model.forward_embeddings(inferred, mask)
-        double_embeddings = torch.repeat_interleave(embeddings, 2, dim=0)
         hidden = model.forward_backbone(double_ids, mode=ForteMode.TRAIN_SECOND,
-                                        embeddings=double_embeddings, embedding_mask=mask)
+                                        embeddings=embeddings, embedding_mask=mask)
         states = model.forward_lm_states(hidden, mode=ForteMode.TRAIN_SECOND,
-                                        logits_to_keep=slice(0, -1), embeddings=double_embeddings,
+                                        logits_to_keep=slice(0, -1), embeddings=embeddings,
                                         embedding_mask=mask)[::2]
         loss, grad = loss_and_lm_grad(model, states, ids, assistant)
     torch.autograd.backward(states, grad)

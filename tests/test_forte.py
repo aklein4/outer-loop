@@ -1,4 +1,5 @@
 import sys
+from functools import partial
 from pathlib import Path
 
 import torch
@@ -8,11 +9,8 @@ from omegaconf import OmegaConf
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
-from models.forte import ForteMode, ForteModel, _get_G
-from scripts.initialize_forte import (
-    initialize_controller_input,
-    initialize_fast_input,
-)
+from models.forte import ForteMode, ForteModel
+from scripts.initialize_forte import initialize_embedding_state
 
 
 def tiny_config():
@@ -44,92 +42,57 @@ def tiny_config():
     )
 
 
-def test_get_G_returns_learning_rate_scaled_update():
-    torch.manual_seed(0)
-    activations = torch.randn(2, 4, 3)
-    output_grad = torch.randn(2, 4, 5)
-    down_weight = torch.randn(5, 3)
-    activation_gate_logits = torch.randn(2, 4, 3)
-    gradient_gate_logits = torch.randn(2, 4, 3)
-    token_gate_logits = torch.randn(2, 4, 1)
-    mask = torch.ones(2, 4, dtype=torch.bool)
-    lr = torch.rand(1, 3, 3)
-
-    raw_G, update = _get_G(
-        activations,
-        output_grad,
-        down_weight,
-        activation_gate_logits,
-        gradient_gate_logits,
-        token_gate_logits,
-        mask,
-        1e-12,
-        lr,
+def test_forte_matches_piano_shared_hyperparameters_and_sharding():
+    piano_model = OmegaConf.load(
+        SRC / "configs/model/piano-llama3p2-1b.yaml"
     )
-    doubled_G, doubled_update = _get_G(
-        activations,
-        output_grad,
-        down_weight,
-        activation_gate_logits,
-        gradient_gate_logits,
-        token_gate_logits,
-        mask,
-        1e-12,
-        2 * lr,
+    forte_model = OmegaConf.load(
+        SRC / "configs/model/forte-llama3p2-1b.yaml"
     )
+    for name in ("fast_weight_size", "base_lr", "grad_rms_eps"):
+        assert forte_model[name] == piano_model[name]
 
-    torch.testing.assert_close(doubled_G, raw_G)
-    torch.testing.assert_close(doubled_update, 2 * update)
-
-
-def test_piano_initialization_conventions_are_applied_to_forte_components():
-    torch.manual_seed(2)
-    model = ForteModel(tiny_config())
-    mlp = model.fast_modules()[0]
-    inputs = torch.randn(3, 7, model.config.hidden_size) + 0.5
-    embeddings = torch.randn_like(inputs) - 0.25
-    mask = torch.tensor(
-        [[1] * 7, [1] * 5 + [0] * 2, [1] * 4 + [0] * 3],
-        dtype=torch.bool,
+    piano_trainer = OmegaConf.to_container(
+        OmegaConf.load(SRC / "configs/trainer/piano-xl.yaml"),
+        resolve=True,
     )
-
-    initialize_fast_input(mlp, (inputs,), mask, 0.25)
-    initialize_controller_input(
-        mlp.fast_dynamic_lr,
-        embeddings,
-        mask,
-        0.25,
+    forte_trainer = OmegaConf.to_container(
+        OmegaConf.load(SRC / "configs/trainer/forte-xl.yaml"),
+        resolve=True,
     )
+    piano_trainer.pop("type")
+    forte_trainer.pop("type")
+    assert forte_trainer == piano_trainer
 
-    assert mlp.up_fast.bias is None
-    projections_and_inputs = (
-        (mlp.gate_fast, inputs),
-        (mlp.fast_dynamic_lr.activation_gate_proj, embeddings),
-        (mlp.fast_dynamic_lr.gradient_gate_proj, embeddings),
-        (mlp.fast_dynamic_lr.token_gate_proj, embeddings),
+    piano_sharding = OmegaConf.load(
+        SRC / "configs/model/sharding/piano-fsdp.yaml"
     )
-    for projection, values in projections_and_inputs:
-        assert projection.bias is not None
-        projected = projection(values)[mask]
-        torch.testing.assert_close(
-            projected.mean(dim=0),
-            torch.zeros(projected.shape[-1]),
-            atol=2e-5,
-            rtol=2e-5,
-        )
+    forte_sharding = OmegaConf.load(
+        SRC / "configs/model/sharding/forte-fsdp.yaml"
+    )
+    assert forte_sharding.replicate_default == piano_sharding.replicate_default
+    weight_spec = ["fsdp", None]
+    for stack in (
+        "backbone_layers.layers.*.mlp",
+        "output_layers.layers.*.mlp",
+        "bidirectional_head.layers.layers.*.mlp",
+    ):
+        for projection in ("gate_proj", "up_proj", "down_proj"):
+            assert forte_sharding[f"{stack}.{projection}.weight"] == weight_spec
+
+    activation_spec = [["data", "fsdp"], None, None]
+    for stack in (
+        "backbone_layers.layers.*",
+        "output_layers.layers.*",
+        "bidirectional_head.layers.layers.*",
+    ):
+        assert forte_sharding[stack] == activation_spec
 
 
-def test_double_pass_propagates_controller_grads_and_manages_scaled_state():
-    torch.manual_seed(1)
-    model = ForteModel(tiny_config())
-    batch_size, sequence_length = 2, 5
-    input_ids = torch.randint(0, model.vocab_size, (batch_size, sequence_length))
-    mask = torch.ones_like(input_ids, dtype=torch.bool)
-    model.init_state(batch_size, torch.device("cpu"))
-
+def first_pass(model, input_ids, mask, output_gradient):
     with torch.no_grad():
-        inferred = model.forward_backbone(input_ids, mode=ForteMode.INFERENCE)
-        embeddings = model.forward_embeddings(inferred, mask).detach()
+        hidden = model.forward_backbone(input_ids, mode=ForteMode.INFERENCE)
+        embeddings = model.forward_embeddings(hidden, mask).detach()
     hidden = model.forward_backbone(
         input_ids, embeddings, mask, mode=ForteMode.TRAIN_FIRST
     )
@@ -138,10 +101,35 @@ def test_double_pass_propagates_controller_grads_and_manages_scaled_state():
     )
     torch.autograd.backward(
         states,
-        torch.randn_like(states),
+        output_gradient,
         inputs=model.grad_containers(),
     )
+    return states
 
+
+def second_pass(model, input_ids, mask, output_gradient):
+    doubled_ids = torch.repeat_interleave(input_ids, 2, dim=0)
+    hidden = model.forward_backbone(input_ids, mode=ForteMode.INFERENCE)
+    embeddings = model.forward_embeddings(hidden, mask)
+    hidden = model.forward_backbone(
+        doubled_ids, embeddings, mask, mode=ForteMode.TRAIN_SECOND
+    )
+    states = model.forward_lm_states(
+        hidden, embeddings, mask, mode=ForteMode.TRAIN_SECOND
+    )[::2]
+    states.backward(output_gradient)
+    return states
+
+
+def test_scaled_state_update_and_single_controller_double_causal_pass():
+    torch.manual_seed(1)
+    model = ForteModel(tiny_config())
+    input_ids = torch.randint(0, model.vocab_size, (2, 5))
+    mask = torch.ones_like(input_ids, dtype=torch.bool)
+    model.init_state(input_ids.shape[0], torch.device("cpu"))
+
+    output_gradient = torch.randn(2, 5, model.config.hidden_size)
+    first_pass(model, input_ids, mask, output_gradient)
     expected_updates = [mlp.state.grad.detach().clone() for mlp in model.fast_modules()]
     model.update_state(ForteMode.TRAIN_FIRST)
     for mlp, expected in zip(model.fast_modules(), expected_updates):
@@ -149,29 +137,58 @@ def test_double_pass_propagates_controller_grads_and_manages_scaled_state():
 
     model.finalize_state()
     model.zero_grad(set_to_none=False)
-
-    doubled_ids = torch.repeat_interleave(input_ids, 2, dim=0)
-    inferred = model.forward_backbone(input_ids, mode=ForteMode.INFERENCE)
-    embeddings = model.forward_embeddings(inferred, mask)
-    doubled_embeddings = torch.repeat_interleave(embeddings, 2, dim=0)
-    hidden = model.forward_backbone(
-        doubled_ids,
-        doubled_embeddings,
-        mask,
-        mode=ForteMode.TRAIN_SECOND,
-    )
-    states = model.forward_lm_states(
-        hidden,
-        doubled_embeddings,
-        mask,
-        mode=ForteMode.TRAIN_SECOND,
-    )[::2]
-    states.backward(torch.randn_like(states))
+    second_pass(model, input_ids, mask, torch.randn_like(output_gradient))
 
     assert model.embedding_state_shift.grad is not None
     assert model.embedding_state_shift.grad.abs().sum() > 0
     assert model.embed_tokens.weight.grad is not None
     assert model.embed_tokens.weight.grad.abs().sum() > 0
-    assert all(mlp.state.grad.abs().sum() > 0 for mlp in model.fast_modules())
 
+
+def test_identical_passes_cancel_raw_gradient_buffer():
+    torch.manual_seed(2)
+    model = ForteModel(tiny_config())
+    input_ids = torch.randint(0, model.vocab_size, (2, 5))
+    mask = torch.ones_like(input_ids, dtype=torch.bool)
+    model.init_state(input_ids.shape[0], torch.device("cpu"))
+
+    output_gradient = torch.randn(2, 5, model.config.hidden_size)
+    first_states = first_pass(model, input_ids, mask, output_gradient)
+    model.update_state(ForteMode.TRAIN_FIRST)
+    model.finalize_state()
+    model.zero_grad(set_to_none=False)
+
+    second_states = second_pass(model, input_ids, mask, output_gradient)
+    torch.testing.assert_close(
+        second_states,
+        first_states.detach(),
+        atol=1e-6,
+        rtol=1e-5,
+    )
     model.update_state(ForteMode.TRAIN_SECOND)
+
+    max_error = max(
+        float(mlp.relative_grad_error().max())
+        for mlp in model.fast_modules()
+    )
+    assert max_error < 1e-4
+
+
+def test_embedding_calibration_hook_is_exercised():
+    torch.manual_seed(3)
+    model = ForteModel(tiny_config())
+    hidden_states = torch.randn(3, 7, model.config.hidden_size)
+    mask = torch.tensor(
+        [[1] * 7, [1] * 5 + [0] * 2, [1] * 4 + [0] * 3],
+        dtype=torch.bool,
+    )
+    handle = model.embedding_norm.register_forward_hook(
+        partial(initialize_embedding_state, model, mask=mask)
+    )
+    try:
+        model.forward_embeddings(hidden_states, mask)
+    finally:
+        handle.remove()
+
+    assert model.embedding_state_shift.abs().sum() > 0
+    assert model.embedding_state_scale.abs().sum() > 0
