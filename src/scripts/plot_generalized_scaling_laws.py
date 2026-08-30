@@ -17,7 +17,7 @@ DEFAULT_META_RUN = RESULTS_DIR / "aklein4--horizon-v2_piano-scaled"
 DEFAULT_LORA_RUN = RESULTS_DIR / "fresh/oloop-lora-llama3p2-1b-pre"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "figures/scaling_laws"
 REFERENCE_STEP = 50.0
-MAX_FIT_STEP = 1600
+MAX_FIT_STEP = 2300
 MAX_EXAMPLES = 64
 EXAMPLE_LEVELS = (0, 1, 2, 4, 8, 16, 32, 64)
 EFFICIENCY_LEVELS = (8, 16, 32, 64)
@@ -338,6 +338,7 @@ def plot_loss_fits(
                 zorder=2,
             )
         axis.set_xscale("log")
+        axis.set_yscale("log")
         axis.set_xlim(REFERENCE_STEP / 1.12, max_step * 1.12)
         axis.set_title(f"num_examples = {num_examples}")
         axis.grid(True, which="both", alpha=0.3)
@@ -354,7 +355,7 @@ def plot_loss_fits(
 
 
 def examples_at_loss(examples: list[int], losses: list[float], target: float) -> float:
-    """Interpolate the first observed crossing linearly in log(examples + 1)."""
+    """Interpolate the first observed crossing in log-log space."""
     for index in range(len(examples) - 1):
         left_loss, right_loss = losses[index : index + 2]
         if not min(left_loss, right_loss) <= target <= max(left_loss, right_loss):
@@ -363,7 +364,9 @@ def examples_at_loss(examples: list[int], losses: list[float], target: float) ->
             return float(examples[index])
         if target == right_loss:
             return float(examples[index + 1])
-        fraction = (target - left_loss) / (right_loss - left_loss)
+        fraction = (math.log(target) - math.log(left_loss)) / (
+            math.log(right_loss) - math.log(left_loss)
+        )
         return math.expm1(
             math.log1p(examples[index])
             + fraction

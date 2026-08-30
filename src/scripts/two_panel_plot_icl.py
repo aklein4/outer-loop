@@ -32,7 +32,7 @@ def load_scores(filename: str, metric: str) -> tuple[list[int], list[float]]:
 
 def make_figure(metric: str):
     fig, axes = plt.subplots(
-        1, 2, figsize=(12, 5), constrained_layout=True, sharey=True
+        1, 2, figsize=(12, 5), constrained_layout=True
     )
     colors = plt.get_cmap("viridis_r")([0.1, 0.28, 0.46, 0.64, 0.82])
 
@@ -43,7 +43,8 @@ def make_figure(metric: str):
         axes[1].plot(x, y, ".-", markersize=10, label=label, color=color)
 
     axes[0].axvline(65, color="black", linestyle="--")
-    axes[0].set(xscale="log", title="Log scale", ylabel="Loss (cross-entropy)")
+    axes[0].set(xscale="log", yscale="log", title="Log scale",
+                ylabel="Loss (cross-entropy)")
     axes[1].axvline(64, color="black", linestyle="--")
     axes[1].set_title("Linear scale")
     axes[1].legend()

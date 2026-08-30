@@ -58,7 +58,7 @@ def load_scores(path: str, step: int | None, metric: str) -> tuple[list[int], li
 
 
 def y_at_x(x: list[int], y: list[float], target: float) -> float:
-    """Interpolate y linearly in log(x + 1)."""
+    """Interpolate y linearly in log-log space, using log(x + 1)."""
     if not x or target < x[0] or target > x[-1]:
         raise ValueError(f"x={target:g} is outside [{x[0]}, {x[-1]}]")
     for index in range(len(x) - 1):
@@ -70,14 +70,17 @@ def y_at_x(x: list[int], y: list[float], target: float) -> float:
             fraction = (math.log1p(target) - math.log1p(x[index])) / (
                 math.log1p(x[index + 1]) - math.log1p(x[index])
             )
-            return y[index] + fraction * (y[index + 1] - y[index])
+            return math.exp(
+                math.log(y[index])
+                + fraction * (math.log(y[index + 1]) - math.log(y[index]))
+            )
     if len(x) == 1 and target == x[0]:
         return y[0]
     raise ValueError(f"Could not interpolate x={target:g}")
 
 
 def x_at_y(x: list[int], y: list[float], target: float) -> float:
-    """Interpolate x for a target y linearly in log(x + 1)."""
+    """Interpolate x for a target y in log-log space, using log(x + 1)."""
     for index in range(len(x) - 1):
         left, right = y[index], y[index + 1]
         if not min(left, right) <= target <= max(left, right):
@@ -86,7 +89,9 @@ def x_at_y(x: list[int], y: list[float], target: float) -> float:
             return float(x[index])
         if target == right:
             return float(x[index + 1])
-        fraction = (target - left) / (right - left)
+        fraction = (math.log(target) - math.log(left)) / (
+            math.log(right) - math.log(left)
+        )
         return math.expm1(
             math.log1p(x[index])
             + fraction * (math.log1p(x[index + 1]) - math.log1p(x[index]))

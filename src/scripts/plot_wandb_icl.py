@@ -71,22 +71,26 @@ def range_curves(frame, numbered, ranges):
 
 
 def y_at_x(x, y, target):
-    valid = np.isfinite(x) & np.isfinite(y)
+    valid = np.isfinite(x) & np.isfinite(y) & (y > 0)
     x, y = x[valid], y[valid]
     if target < x.min() or target > x.max():
         raise ValueError(f"c'={target:g} is outside [{x.min():g}, {x.max():g}]")
-    return float(np.interp(math.log1p(target), np.log1p(x), y))
+    return float(np.exp(
+        np.interp(math.log1p(target), np.log1p(x), np.log(y))
+    ))
 
 
 def x_at_y(x, y, target):
-    valid = np.isfinite(x) & np.isfinite(y)
+    valid = np.isfinite(x) & np.isfinite(y) & (y > 0)
     x, y = x[valid], y[valid]
     for index in range(len(x) - 1):
         left, right = y[index], y[index + 1]
         if min(left, right) <= target <= max(left, right):
             if left == right:
                 return float(x[index])
-            fraction = (target - left) / (right - left)
+            fraction = (math.log(target) - math.log(left)) / (
+                math.log(right) - math.log(left)
+            )
             return float(np.expm1(
                 np.log1p(x[index])
                 + fraction * (np.log1p(x[index + 1]) - np.log1p(x[index]))
@@ -230,7 +234,8 @@ def make_figure(curves, fit, run_name):
         label = f"steps {curve['start']}-{curve['end']}"
         axes[0].plot(curve["episodes"], curve["losses"], color=color, label=label)
         axes[1].plot(curve["episodes"], curve["losses"], color=color, label=label)
-    axes[0].set(xscale="log", title="Log scale", xlabel="Task examples seen", ylabel="Loss")
+    axes[0].set(xscale="log", yscale="log", title="Log scale",
+                xlabel="Task examples seen", ylabel="Loss")
     axes[1].set(title="Linear scale", xlabel="Task examples seen")
     axes[1].legend(fontsize="small", ncols=2)
 
@@ -241,7 +246,7 @@ def make_figure(curves, fit, run_name):
         [y_at_x(curve["episodes"], curve["losses"], 1) for curve in curves],
         ".-", markersize=10,
     )
-    axes[2].set(xscale="log", title="First-example performance",
+    axes[2].set(xscale="log", yscale="log", title="First-example performance",
                 xlabel="Meta-training step", ylabel="Loss")
 
     smooth_steps = np.geomspace(

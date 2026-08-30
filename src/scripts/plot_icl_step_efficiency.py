@@ -45,7 +45,7 @@ def loss_at_n(examples: list[int], losses: list[float], target: int) -> float:
 
 
 def examples_at_loss(examples: list[int], losses: list[float], target: float) -> float:
-    """Find the first loss crossing, interpolating linearly in log(examples + 1)."""
+    """Find the first loss crossing in log-log space, using log(examples + 1)."""
     for index in range(len(examples) - 1):
         left_loss, right_loss = losses[index : index + 2]
         if not min(left_loss, right_loss) <= target <= max(left_loss, right_loss):
@@ -54,7 +54,9 @@ def examples_at_loss(examples: list[int], losses: list[float], target: float) ->
             return float(examples[index])
         if target == right_loss:
             return float(examples[index + 1])
-        fraction = (target - left_loss) / (right_loss - left_loss)
+        fraction = (math.log(target) - math.log(left_loss)) / (
+            math.log(right_loss) - math.log(left_loss)
+        )
         return math.expm1(
             math.log1p(examples[index])
             + fraction

@@ -69,6 +69,7 @@ def make_figure(run_dirs: list[Path]):
                     marker="o", label=label,
                 )
         axis.set_xscale("log")
+        axis.set_yscale("log")
         axis.set_title(f"num_examples = {num_examples}")
         axis.grid(True, which="both", alpha=0.3)
 

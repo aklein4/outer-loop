@@ -26,7 +26,7 @@ RUNS = [
     (
         "aklein4--horizon-v2_piano-scaled",
         "Learned",
-        [50] + [100*x for x in range(1, 17)]
+        [50] + [100*x for x in range(1, 24)]
     ),
 ]
 
@@ -49,7 +49,7 @@ def load_scores(path: str, step: int | None, metric: str) -> tuple[list[int], li
 
 
 def y_at_x(x: list[int], y: list[float], target: float) -> float:
-    """Interpolate y linearly in log(x + 1)."""
+    """Interpolate y linearly in log-log space, using log(x + 1)."""
     if not x or target < x[0] or target > x[-1]:
         raise ValueError(f"x={target:g} is outside [{x[0]}, {x[-1]}]")
     for index in range(len(x) - 1):
@@ -61,14 +61,17 @@ def y_at_x(x: list[int], y: list[float], target: float) -> float:
             fraction = (math.log1p(target) - math.log1p(x[index])) / (
                 math.log1p(x[index + 1]) - math.log1p(x[index])
             )
-            return y[index] + fraction * (y[index + 1] - y[index])
+            return math.exp(
+                math.log(y[index])
+                + fraction * (math.log(y[index + 1]) - math.log(y[index]))
+            )
     if len(x) == 1 and target == x[0]:
         return y[0]
     raise ValueError(f"Could not interpolate x={target:g}")
 
 
 def x_at_y(x: list[int], y: list[float], target: float) -> float:
-    """Interpolate x for a target y linearly in log(x + 1)."""
+    """Interpolate x for a target y in log-log space, using log(x + 1)."""
     for index in range(len(x) - 1):
         left, right = y[index], y[index + 1]
         if not min(left, right) <= target <= max(left, right):
@@ -77,7 +80,9 @@ def x_at_y(x: list[int], y: list[float], target: float) -> float:
             return float(x[index])
         if target == right:
             return float(x[index + 1])
-        fraction = (target - left) / (right - left)
+        fraction = (math.log(target) - math.log(left)) / (
+            math.log(right) - math.log(left)
+        )
         return math.expm1(
             math.log1p(x[index])
             + fraction * (math.log1p(x[index + 1]) - math.log1p(x[index]))
@@ -121,7 +126,6 @@ def make_figure(metric: str, max_examples: int | None, ylabel: str, title: str):
     fig, axes = plt.subplots(3, 3, figsize=(18, 15), constrained_layout=True)
     fig.set_constrained_layout_pads(h_pad=0.08, hspace=0.08)
     axes = axes.flatten()
-    axes[1].sharey(axes[0])
     runs = load_runs(metric, max_examples)
 
     axes[0].axvline(65, color="black", linestyle="--")
@@ -132,6 +136,7 @@ def make_figure(metric: str, max_examples: int | None, ylabel: str, title: str):
         axes[1].plot(x, y, marker=".", linestyle=line_style, markersize=10,
                      label=label, color=color)
     axes[0].set_xscale("log")
+    axes[0].set_yscale("log")
     axes[0].set_title("Log scale")
     axes[1].set_title("Linear scale")
     axes[1].legend()
@@ -147,7 +152,7 @@ def make_figure(metric: str, max_examples: int | None, ylabel: str, title: str):
             axis.plot([p[0] for p in points], [p[2][reference] for p in points],
                       ".-", markersize=10, label=name, color=color)
 
-    axes[2].set(xscale="log", title="Zero-shot performance",
+    axes[2].set(xscale="log", yscale="log", title="Zero-shot performance",
                 xlabel="Meta-training steps", ylabel=ylabel)
     axes[2].grid(True, which="both", alpha=0.3)
     if summaries:

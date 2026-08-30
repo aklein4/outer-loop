@@ -44,7 +44,7 @@ def plot_run(axes, filename: str, label: str, metric: str, color: str, **kwargs)
 
 def make_figure(metric: str):
     fig, axes = plt.subplots(
-        1, 2, figsize=(13, 5.5), constrained_layout=True, sharey=True
+        1, 2, figsize=(13, 5.5), constrained_layout=True
     )
 
     plot_run(
@@ -56,7 +56,8 @@ def make_figure(metric: str):
         plot_run(axes, filename, label, metric, color)
 
     axes[0].axvline(65, color="0.4", linestyle="--")
-    axes[0].set(xscale="log", title="Log scale", ylabel="Loss (cross-entropy)")
+    axes[0].set(xscale="log", yscale="log", title="Log scale",
+                ylabel="Loss (cross-entropy)")
     axes[1].axvline(64, color="0.4", linestyle="--")
     axes[1].set_title("Linear scale")
     axes[1].legend(ncol=2)
