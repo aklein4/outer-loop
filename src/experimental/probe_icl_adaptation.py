@@ -210,9 +210,10 @@ def adapt_and_measure(
             for layer, mlp in enumerate(fast_modules):
                 state = mlp.state
                 raw_g = mlp.grad_buffer.grad
+                # state.grad already contains the signed, learning-rate-scaled
+                # update. Keep the legacy metric key for output compatibility.
                 pre_lr_update = state.grad
-                lr = mlp.fast_dynamic_lr(embeddings, attention_mask)
-                applied_update = -lr * pre_lr_update * args.lr_scale
+                applied_update = pre_lr_update * args.lr_scale
                 applied_updates.append(applied_update)
 
                 state_norm = norm_per_batch(state)
@@ -236,9 +237,7 @@ def adapt_and_measure(
                 metrics["cos_applied_update_vs_raw_G"][step, :, layer] = cos_applied_raw.detach().cpu().numpy()
 
             model.update_state(
-                embeddings,
-                attention_mask,
-                mode=ForteMode.TRAIN_FIRST,
+                ForteMode.TRAIN_FIRST,
                 lr_scale=args.lr_scale,
             )
             for layer, (mlp, applied_update) in enumerate(zip(fast_modules, applied_updates)):
@@ -497,8 +496,8 @@ def write_report(
         "",
         "- `state_norm`: Frobenius norm of each fast-weight state immediately before the current adaptation update.",
         "- `raw_G_norm`: Frobenius norm of the current raw `G` in `grad_buffer.grad`, before it is accumulated into the gradient buffer.",
-        "- `pre_lr_update_norm`: norm of `state.grad`, i.e. the normalized/gated update before applying the dynamic learning-rate matrix.",
-        "- `applied_update_norm`: norm of the actual update `-lr * state.grad * lr_scale` added to the state.",
+        "- `pre_lr_update_norm`: legacy key for the norm of `state.grad`, which now already contains the signed, learning-rate-scaled update.",
+        "- `applied_update_norm`: norm of the actual update `state.grad * lr_scale` added to the state.",
         "- Update/state cosines use the state immediately before the update. The first step is undefined because the state starts at zero and is stored as `NaN`; an after-update cosine is also included for reference.",
         "- All reported values are per trajectory and per fast layer; plots show the median across trajectories with colored layer traces.",
         "",
@@ -510,7 +509,7 @@ def write_report(
     for name, label in (
         ("state_norm", "state norm"),
         ("raw_G_norm", "raw G norm"),
-        ("pre_lr_update_norm", "pre-LR update norm"),
+        ("pre_lr_update_norm", "scaled update norm (legacy key)"),
         ("applied_update_norm", "applied update norm"),
     ):
         summary = global_stat(name)

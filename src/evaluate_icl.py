@@ -259,7 +259,7 @@ def make_fns(model, args, device):
             loss = adaptation_loss(input_ids, assistant_mask, attention_mask, logits, args.aux_weight)
         loss.backward()
         if is_forte:
-            model.update_state(embeddings, attention_mask, mode=ForteMode.TRAIN_FIRST, lr_scale=lr_scale)
+            model.update_state(ForteMode.TRAIN_FIRST, lr_scale=lr_scale)
         elif is_oloop:
             model.update_state(lr_scale=lr_scale)
         elif is_piano:

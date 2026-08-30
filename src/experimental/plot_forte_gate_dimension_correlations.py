@@ -122,7 +122,7 @@ def first_pass(model, ids, assistant, attention, collector):
         loss, grad = loss_and_lm_grad(model, states, ids, assistant)
     torch.autograd.backward(states, grad, inputs=model.grad_containers())
     with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
-        model.update_state(embeddings, attention, ForteMode.TRAIN_FIRST)
+        model.update_state(ForteMode.TRAIN_FIRST)
     return loss.item()
 
 

@@ -1,0 +1,83 @@
+{
+  "model": {
+    "loss": "L_inf + (L0(M) - L_inf) * [1 + (g(M) * n / n0)^gamma]^-delta",
+    "L0": "L0(inf) + A0 * ((M + M_offset) / (M0 + M_offset))^-alpha0",
+    "g": "g_inf + (1 - g_inf) * ((M + M_g_offset) / (M0 + M_g_offset))^-alpha_g",
+    "M0": 50.0,
+    "constraints": [
+      "A0 > 0",
+      "alpha0 > 0",
+      "n0 > 0",
+      "gamma > 0",
+      "delta > 0",
+      "0 <= L_inf <= L0(inf)",
+      "M_offset >= 0",
+      "g_inf > 0",
+      "alpha_g > 0",
+      "M_g_offset >= 0"
+    ]
+  },
+  "fit_scope": {
+    "max_training_step": 1600,
+    "max_num_examples": 64,
+    "num_example_levels": [
+      0,
+      1,
+      2,
+      4,
+      8,
+      16,
+      32,
+      64
+    ],
+    "loss_weighting": "unweighted"
+  },
+  "fits": {
+    "meta-learning": {
+      "source_run": "src/local_data/icl_results/aklein4--horizon-v2_piano-scaled",
+      "parameters": {
+        "L_inf": 8.530754603132988e-09,
+        "A0": 0.09171038342638581,
+        "alpha0": 1.1596146749777256,
+        "M_offset": 8.22791389629156e-08,
+        "g_inf": 2664.0414645802316,
+        "alpha_g": 0.0008656446592754233,
+        "M_g_offset": 17289.70233059726,
+        "n0": 1.5511326725501249,
+        "gamma": 0.6695648178785827,
+        "delta": 0.25707765104335095,
+        "L0(inf)": 1.7163686969241025
+      },
+      "metrics": {
+        "observations": 136,
+        "rmse": 0.006706090016473581,
+        "mae": 0.005089646337226672,
+        "bias": 4.945762821769467e-06,
+        "bic": -1307.2498607661191
+      }
+    },
+    "LoRA": {
+      "source_run": "src/local_data/icl_results/fresh/oloop-lora-llama3p2-1b-pre",
+      "parameters": {
+        "L_inf": 1.0304381021216484e-13,
+        "A0": 1.7724267939297573,
+        "alpha0": 700.7615842977829,
+        "M_offset": 188831807.6767753,
+        "g_inf": 0.9314305829885264,
+        "alpha_g": 213418.5591712698,
+        "M_g_offset": 19573954.935351476,
+        "n0": 1.7890961642210599,
+        "gamma": 1.171864059073308,
+        "delta": 0.13745548054308426,
+        "L0(inf)": 1.0304381069418114e-08
+      },
+      "metrics": {
+        "observations": 136,
+        "rmse": 0.006315071829967225,
+        "mae": 0.005343982147540253,
+        "bias": 8.002948906251378e-07,
+        "bic": -1323.5907887153844
+      }
+    }
+  }
+}

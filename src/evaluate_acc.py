@@ -19,7 +19,7 @@ from models.piano import PianoMode, PianoModel
 from utils.import_utils import import_model
 import utils.constants as constants
 from utils.torch_modules import enable_gradient_checkpointing
-from evaluate_icl import load_fresh_model
+from evaluate_icl import load_fresh_model, lr_label
 
 
 DEFAULT_CHECKPOINT = "aklein4/Horizon-TPU_forte-v2-1b"
@@ -192,7 +192,7 @@ def make_fns(model, args, device):
             loss = adaptation_loss(input_ids, assistant_mask, attention_mask, logits, args.aux_weight)
         loss.backward()
         if is_forte:
-            model.update_state(embeddings, attention_mask, mode=ForteMode.TRAIN_FIRST, lr_scale=lr_scale)
+            model.update_state(ForteMode.TRAIN_FIRST, lr_scale=lr_scale)
         elif is_oloop:
             model.update_state(lr_scale=lr_scale)
         elif is_piano:
@@ -343,11 +343,6 @@ def save_results(args, label: int | str, results):
     print(f"Wrote {path}")
 
 
-def lr_label(base_lr: float | None, model) -> str:
-    lr = model.config.base_lr if base_lr is None else base_lr
-    return f"base_lr_{lr:.0e}".replace("+", "")
-
-
 def main():
     args = parse_args()
     if args.fresh_config is None and args.checkpoint_steps is None:
@@ -366,11 +361,12 @@ def main():
 
     if args.fresh_config is not None:
         for base_lr in args.base_lrs or [None]:
-            model = load_fresh_model(args.fresh_config, base_lr, device)
-            tokenizer = load_tokenizer(args.tokenizer)
-            train_fn, logits_fn = make_fns(model, args, device)
-            results = evaluate_rows(model, train_fn, logits_fn, tokenizer, rows, args, device)
-            save_results(args, lr_label(base_lr, model), results)
+            for step in args.checkpoint_steps or [None]:
+                model = load_fresh_model(args.fresh_config, base_lr, step, device)
+                tokenizer = load_tokenizer(args.tokenizer)
+                train_fn, logits_fn = make_fns(model, args, device)
+                results = evaluate_rows(model, train_fn, logits_fn, tokenizer, rows, args, device)
+                save_results(args, lr_label(base_lr, model, step), results)
         return
 
     for step in args.checkpoint_steps:

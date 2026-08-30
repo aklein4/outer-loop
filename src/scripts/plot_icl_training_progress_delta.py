@@ -1,62 +1,64 @@
 #!/usr/bin/env python3
-"""Plot average ICL loss over training for each number of task examples."""
+"""Plot each N-shot loss relative to zero-shot loss over training."""
 
 import argparse
-import json
 import math
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 
+from plot_icl_training_progress import RESULTS_DIR, load_run, run_label
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-RESULTS_DIR = REPO_ROOT / "src/local_data/icl_results"
 DEFAULT_RUNS = (
     RESULTS_DIR / "fresh/oloop-lora-llama3p2-1b-pre",
     RESULTS_DIR / "aklein4--horizon-v2_piano-scaled",
 )
-DEFAULT_OUTPUT = REPO_ROOT / "figures/icl_training_progress.png"
+DEFAULT_OUTPUT = REPO_ROOT / "figures/icl_training_progress_delta.png"
 
 
-def run_label(run_dir: Path) -> str:
-    if run_dir.parent.name == "baseline_progress":
-        return f"{run_dir.name} (baseline)"
-    return run_dir.name.removeprefix("aklein4--")
+def subtract_zero_shot(
+    curves: dict[int, list[tuple[int, float]]],
+) -> dict[int, list[tuple[int, float]]]:
+    """Return {num_examples: [(step, loss_n - loss_0), ...]}."""
+    if 0 not in curves:
+        raise ValueError("Run has no num_examples=0 observations")
 
-
-def load_run(run_dir: Path) -> dict[int, list[tuple[int, float]]]:
-    """Return {num_examples: [(training_step, average_loss), ...]}."""
-    curves: dict[int, list[tuple[int, float]]] = {}
-    files = sorted(run_dir.glob("*.json"))
-    if not files:
-        raise ValueError(f"No JSON checkpoints found in {run_dir}")
-
-    for path in files:
-        try:
-            step = int(path.stem)
-        except ValueError as error:
+    zero_shot_by_step = dict(curves[0])
+    differences: dict[int, list[tuple[int, float]]] = {}
+    for num_examples, points in curves.items():
+        if num_examples == 0:
             continue
-            # raise ValueError(f"Checkpoint filename is not an integer: {path.name}") from error
-        with path.open() as file:
-            rows = json.load(file)
-        for row in rows:
-            curves.setdefault(int(row["num_examples"]), []).append(
-                (step, float(row["average"]))
-            )
+        matched = [
+            (step, loss - zero_shot_by_step[step])
+            for step, loss in points
+            if step in zero_shot_by_step
+        ]
+        if matched:
+            differences[num_examples] = matched
 
-    for points in curves.values():
-        points.sort()
-    return curves
+    if not differences:
+        raise ValueError("Run has no nonzero-shot observations paired with zero-shot")
+    return differences
 
 
 def make_figure(run_dirs: list[Path]):
-    runs = [(run_label(path), load_run(path)) for path in run_dirs]
+    runs = [
+        (run_label(path), subtract_zero_shot(load_run(path)))
+        for path in run_dirs
+    ]
     levels = sorted(set().union(*(curves.keys() for _, curves in runs)))
     columns = 4
     rows = math.ceil(len(levels) / columns)
     fig, axes = plt.subplots(
-        rows, columns, figsize=(16, 3.6 * rows), sharex=True,
-        constrained_layout=True, squeeze=False,
+        rows,
+        columns,
+        figsize=(16, 3.6 * rows),
+        sharex=True,
+        sharey=False,
+        constrained_layout=True,
+        squeeze=False,
     )
 
     for axis, num_examples in zip(axes.flat, levels):
@@ -65,23 +67,27 @@ def make_figure(run_dirs: list[Path]):
             if points:
                 axis.plot(
                     [step for step, _ in points],
-                    [loss for _, loss in points],
-                    marker="o", label=label,
+                    [difference for _, difference in points],
+                    marker="o",
+                    label=label,
                 )
         axis.set_xscale("log")
         axis.set_title(f"num_examples = {num_examples}")
         axis.grid(True, which="both", alpha=0.3)
 
-    for axis in list(axes.flat)[len(levels):]:
+    for axis in list(axes.flat)[len(levels) :]:
         axis.set_visible(False)
     for axis in axes[-1, :]:
         if axis.get_visible():
             axis.set_xlabel("Training step (log scale)")
     for axis in axes[:, 0]:
-        axis.set_ylabel("Average loss")
+        axis.set_ylabel(r"Loss difference $L(M,n)-L(M,0)$")
 
     axes.flat[0].legend(fontsize="small")
-    fig.suptitle("ICL average loss over training")
+    fig.suptitle(
+        "ICL loss relative to zero-shot loss over training\n"
+        "More-negative values indicate greater improvement from task examples"
+    )
     return fig
 
 

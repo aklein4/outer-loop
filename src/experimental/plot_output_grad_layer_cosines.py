@@ -129,7 +129,7 @@ def first_pass(model, ids, assistant, mask, collector, sums, counts):
         sums, counts,
     )
     with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
-        model.update_state(embeddings, mask, ForteMode.TRAIN_FIRST)
+        model.update_state(ForteMode.TRAIN_FIRST)
     return loss.item()
 
 

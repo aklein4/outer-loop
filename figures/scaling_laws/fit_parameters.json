@@ -1,0 +1,73 @@
+{
+  "model": {
+    "loss": "L_inf + (L0(M) - L_inf) * [1 + (g(M) * n / n0)^gamma]^-delta",
+    "L0": "L0(inf) + A0 * (M / M0)^-alpha0",
+    "g": "(M / M0)^beta",
+    "M0": 50.0,
+    "constraints": [
+      "A0 > 0",
+      "alpha0 > 0",
+      "n0 > 0",
+      "gamma > 0",
+      "delta > 0",
+      "0 <= L_inf <= L0(inf)"
+    ]
+  },
+  "fit_scope": {
+    "max_training_step": 1600,
+    "max_num_examples": 64,
+    "num_example_levels": [
+      0,
+      1,
+      2,
+      4,
+      8,
+      16,
+      32,
+      64
+    ],
+    "loss_weighting": "unweighted"
+  },
+  "fits": {
+    "meta-learning": {
+      "source_run": "src/local_data/icl_results/aklein4--horizon-v2_piano-scaled",
+      "parameters": {
+        "L0(inf)": 1.7141757289090316,
+        "A0": 0.08346550209787955,
+        "alpha0": 0.9228237226418955,
+        "L_inf": 2.2791133631010917e-24,
+        "beta": 0.06006295888610109,
+        "n0": 1.6447533707008553,
+        "gamma": 0.6691004774655384,
+        "delta": 0.25740188925528834
+      },
+      "metrics": {
+        "observations": 136,
+        "rmse": 0.0069818928559684515,
+        "mae": 0.005163656773740934,
+        "bias": 2.9753612742456457e-06,
+        "bic": -1311.025139711743
+      }
+    },
+    "LoRA": {
+      "source_run": "src/local_data/icl_results/fresh/oloop-lora-llama3p2-1b-pre",
+      "parameters": {
+        "L0(inf)": 8.15572180861493e-12,
+        "A0": 1.7717919257615584,
+        "alpha0": 0.0009896148310742966,
+        "L_inf": 1.2727074196984362e-31,
+        "beta": -0.009348362597782269,
+        "n0": 1.8654449623669138,
+        "gamma": 1.170615536322583,
+        "delta": 0.13767300510169886
+      },
+      "metrics": {
+        "observations": 136,
+        "rmse": 0.00680151371570644,
+        "mae": 0.005555466421401079,
+        "bias": 5.160029643659228e-07,
+        "bic": -1318.144704393696
+      }
+    }
+  }
+}

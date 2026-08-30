@@ -18,37 +18,18 @@ DATA_DIR = REPO_ROOT / "src/local_data/icl_results"
 DEFAULT_OUTPUT = REPO_ROOT / "figures/icl_plot.png"
 
 REFERENCE_RUN = (
-    "fresh/oloop-lora-llama3p2-1b-pre/base_lr_3e-04.json",
+    "fresh/oloop-lora-llama3p2-1b-pre/000000001600.json",
     "LoRA lr=3e-4",
-
-    # "aklein4--horizon-v2_alpha/000000000050.json",
-    # "Reference"
 )
 
 RUNS = [
-    # (
-    #     "aklein4/horizon-v2_piano",
-    #     "Piano",
-    #     [50, 100, 150, 200, 250, 300, 350, 400],
-    # ),
-    # (
-    #     "aklein4/horizon-v2_oloop",
-    #     "OLoop",
-    #     [100, 200, 300, 400, 500, 600, 700, 1500, 1900],
-    # ),
     (
-        "aklein4/horizon-v2_alpha",
-        "Alpha",
-        [50, 100, 150, 200, 250, 300, 350, 400, 450],
-    ),
-    (
-        "aklein4/horizon-v2_piano-scaled",
-        "Piano",
-        [50, 100, 200, 300, 400, 500]
+        "aklein4--horizon-v2_piano-scaled",
+        "Learned",
+        [50] + [100*x for x in range(1, 17)]
     ),
 ]
 
-REFERENCE_STEP = 50
 REFERENCE_EXAMPLES = (8, 16, 32, 64, 256, 1024)
 
 
@@ -57,7 +38,7 @@ def resolve_run_path(path: str, step: int | None) -> Path:
         return DATA_DIR / path
     if step is None:
         raise ValueError(f"A step is required for run directory {path!r}")
-    return DATA_DIR / path.replace("/", "--") / f"{step:012d}.json"
+    return DATA_DIR / path / f"{step:012d}.json"
 
 
 def load_scores(path: str, step: int | None, metric: str) -> tuple[list[int], list[float]]:
