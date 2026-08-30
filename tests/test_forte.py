@@ -35,6 +35,8 @@ def tiny_config():
             "attention_kernel": None,
             "fast_weight_size": 8,
             "base_lr": 1e-3,
+            "offset_alpha": 0.25,
+            "num_fast_weight_heads": 2,
             "grad_rms_eps": 1e-12,
             "mixer_kernel_size": 3,
             "pad_attention_bias_value": -1000.0,
