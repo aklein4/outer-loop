@@ -40,6 +40,7 @@ def _get_G(
     output_grad = output_grad.float() * mask
     down_weight = down_weight.float()
     (
+        Mx,
         offset,
         lr,
         offset_lr,
@@ -66,9 +67,9 @@ def _get_G(
     update = -update * lr
     
     # offset-based update
-    offset_gated = gate_heads(offset, unit_softplus(offset_gate_logits))
-    offset_update = torch.einsum("blo,bli->boi", offset_gated, a_norm)
-    offset_update = -offset_update * offset_lr
+    offset_delta = (offset - Mx) * unit_softplus(offset_gate_logits)
+    offset_update = torch.einsum("blo,bli->boi", offset_delta, a_norm)
+    offset_update = offset_update * offset_lr
 
     # cap the RMS of the offset to ensure descent
     update_rms = torch.norm(update, dim=(-2, -1), keepdim=True)
@@ -78,7 +79,8 @@ def _get_G(
     offset_update_scaled = (
         offset_update
         * offset_alpha
-        * (update_rms / (offset_update_rms + eps))
+        * torch.tanh(offset_update_rms / (update_rms + eps))
+        * update_rms / (offset_update_rms + eps)
     )
 
     update = update + offset_update_scaled
@@ -289,11 +291,9 @@ class ForteFastWeightFunction(torch.autograd.Function):
 class DynamicLR(nn.Module):
 
     no_muon_patterns = (
-        "offset_proj",
         "log_lr",
         "offset_log_lr",
         "gradient_gate_proj",
-        "offset_gate_proj",
     )
 
     def __init__(self, config: DictConfig):
@@ -315,29 +315,21 @@ class DynamicLR(nn.Module):
         )
 
         self.log_lr = nn.Parameter(
-            torch.randn(self.fast_weight_size, self.fast_weight_size)
-            / (2 * self.scalar_scaler)
+            torch.zeros(self.fast_weight_size, self.fast_weight_size)
         )
         self.offset_log_lr = nn.Parameter(
-            torch.randn(self.fast_weight_size, self.fast_weight_size)
-            / (2 * self.scalar_scaler)
+            torch.zeros(self.fast_weight_size, self.fast_weight_size)
         )
 
         self.gradient_gate_proj = nn.Linear(
             config.hidden_size,
-            self.num_fast_weight_heads,
+            1,
             bias=False,
         )
         self.offset_gate_proj = nn.Linear(
             config.hidden_size,
-            self.num_fast_weight_heads,
+            self.fast_weight_size,
             bias=False,
-        )
-
-        self.token_gate_proj = nn.Linear(
-            config.hidden_size,
-            1,
-            bias=True,
         )
 
 
@@ -351,6 +343,7 @@ class DynamicLR(nn.Module):
 
     def forward(
         self,
+        value_prop: torch.FloatTensor,
         embeddings: torch.FloatTensor,
         embedding_mask: torch.BoolTensor,
     ) -> torch.FloatTensor:
@@ -363,7 +356,7 @@ class DynamicLR(nn.Module):
         gradient_gate_logits = self.gradient_gate_proj(embeddings)
         offset_gate_logits = self.offset_gate_proj(embeddings)
 
-        return offset, lr, offset_lr, gradient_gate_logits, offset_gate_logits
+        return value_prop,offset, lr, offset_lr, gradient_gate_logits, offset_gate_logits
 
 
 class UnitGLU(nn.Module):
@@ -461,10 +454,10 @@ class ForteFastWeightMLP(nn.Module):
             )
 
         if mode == ForteMode.TRAIN_FIRST:
-            value = torch.einsum(
+            value_prop = torch.einsum(
                 "boi,bli->blo", self.state.detach(), h
             )
-            output = self.down_fast(value)
+            output = self.down_fast(value_prop)
             activations_prop = h
 
         elif mode == ForteMode.TRAIN_SECOND:
@@ -504,7 +497,7 @@ class ForteFastWeightMLP(nn.Module):
                 "eps": self.grad_eps,
                 "offset_alpha": self.offset_alpha,
             },
-            *self.fast_dynamic_lr(lr_embeddings, lr_embedding_mask),
+            *self.fast_dynamic_lr(value_prop, lr_embeddings, lr_embedding_mask),
         )
 
         if mode == ForteMode.TRAIN_SECOND:
