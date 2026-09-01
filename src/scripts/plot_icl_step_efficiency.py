@@ -11,10 +11,10 @@ from matplotlib.ticker import FixedLocator, NullFormatter, ScalarFormatter
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-RESULTS_DIR = REPO_ROOT / "src/local_data/icl_results"
+RESULTS_DIR = REPO_ROOT / "src/local_data/persona_results"
 DEFAULT_BASELINE = RESULTS_DIR / "fresh/oloop-lora-llama3p2-1b-pre"
 DEFAULT_RUN = RESULTS_DIR / "aklein4--horizon-v2_piano-scaled"
-DEFAULT_OUTPUT = REPO_ROOT / "figures/icl_step_efficiency.png"
+DEFAULT_OUTPUT = REPO_ROOT / "figures/persona_step_efficiency.png"
 
 
 def load_run(run_dir: Path) -> dict[int, tuple[list[int], list[float]]]:

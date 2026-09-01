@@ -14,8 +14,8 @@ LINE_STYLES = ["-", "--", ":", "-."]
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-DATA_DIR = REPO_ROOT / "src/local_data/icl_results"
-DEFAULT_OUTPUT = REPO_ROOT / "figures/icl_plot.png"
+DATA_DIR = REPO_ROOT / "src/local_data/persona_results"
+DEFAULT_OUTPUT = REPO_ROOT / "figures/persona_plot.png"
 
 REFERENCE_RUN = (
     "fresh/oloop-lora-llama3p2-1b-pre/000000001600.json",
@@ -28,9 +28,14 @@ RUNS = [
         "Learned",
         [50] + [100*x for x in range(1, 24)]
     ),
+    (
+        "aklein4--horizon-v2_forte-delta",
+        "Learned-Forte",
+        [50] + [100*x for x in range(1, 3)]
+    ),
 ]
 
-REFERENCE_EXAMPLES = (8, 16, 32, 64, 256, 1024)
+REFERENCE_EXAMPLES = (8, 16, 32, 64, 128, 256)
 
 
 def resolve_run_path(path: str, step: int | None) -> Path:
@@ -187,6 +192,7 @@ def main() -> None:
     args = parser.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     figure = make_figure(args.metric, args.max_steps, args.y_axis, args.title)
+    print(f"Saving figure to {args.output}")
     figure.savefig(args.output, dpi=args.dpi)
     plt.close(figure)
 

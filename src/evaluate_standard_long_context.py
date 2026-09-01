@@ -109,7 +109,7 @@ def masked_update(model, mask, *args, **kwargs):
         )
 
 
-def make_compiled_fns(model, args):
+def make_compiled_fns(model, args, dynamic=False):
     is_piano = isinstance(model, PianoModel)
 
     def train_fn(input_ids, assistant_mask, attention_mask, active_rows):
@@ -154,8 +154,8 @@ def make_compiled_fns(model, args):
 
     if args.compile:
         return (
-            torch.compile(train_fn, fullgraph=False),
-            torch.compile(logits_fn, fullgraph=True),
+            torch.compile(train_fn, fullgraph=False, dynamic=dynamic),
+            torch.compile(logits_fn, fullgraph=True, dynamic=dynamic),
         )
     return (
         train_fn,

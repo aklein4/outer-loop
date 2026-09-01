@@ -10,12 +10,12 @@ import matplotlib.pyplot as plt
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-RESULTS_DIR = REPO_ROOT / "src/local_data/icl_results"
+RESULTS_DIR = REPO_ROOT / "src/local_data/persona_results"
 DEFAULT_RUNS = (
     RESULTS_DIR / "fresh/oloop-lora-llama3p2-1b-pre",
     RESULTS_DIR / "aklein4--horizon-v2_piano-scaled",
 )
-DEFAULT_OUTPUT = REPO_ROOT / "figures/icl_training_progress.png"
+DEFAULT_OUTPUT = REPO_ROOT / "figures/persona_training_progress.png"
 
 
 def run_label(run_dir: Path) -> str:
@@ -55,7 +55,7 @@ def make_figure(run_dirs: list[Path]):
     columns = 4
     rows = math.ceil(len(levels) / columns)
     fig, axes = plt.subplots(
-        rows, columns, figsize=(16, 3.6 * rows), sharex=True,
+        rows, columns, figsize=(16, 3.6 * rows), sharex=True, sharey=True,
         constrained_layout=True, squeeze=False,
     )
 
@@ -77,12 +77,12 @@ def make_figure(run_dirs: list[Path]):
         axis.set_visible(False)
     for axis in axes[-1, :]:
         if axis.get_visible():
-            axis.set_xlabel("Training step (log scale)")
+            axis.set_xlabel("Meta-training step (log scale)")
     for axis in axes[:, 0]:
         axis.set_ylabel("Average loss")
 
     axes.flat[0].legend(fontsize="small")
-    fig.suptitle("ICL average loss over training")
+    fig.suptitle("PersonaBench Losses Across Meta-training for Different Task Example Counts")
     return fig
 
 

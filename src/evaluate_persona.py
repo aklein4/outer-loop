@@ -257,20 +257,31 @@ def make_fns(model, args, device):
             else:
                 logits = model(input_ids, logits_to_keep=slice(0, -1))[0]
             loss = adaptation_loss(input_ids, assistant_mask, attention_mask, logits, args.aux_weight)
-        loss.backward()
         if is_forte:
+            # Forte's adaptation backward pass only writes its ephemeral state
+            # and gradient buffers.  Restricting autograd to those leaves keeps
+            # slow-model gradients from being materialized during evaluation,
+            # matching the model's first-pass training API.
+            torch.autograd.backward(loss, inputs=model.grad_containers())
             model.update_state(ForteMode.TRAIN_FIRST, lr_scale=lr_scale)
-        elif is_oloop:
-            model.update_state(lr_scale=lr_scale)
-        elif is_piano:
-            model.update_state(PianoMode.TRAIN_FIRST, lr_scale=lr_scale)
         else:
-            model.update_state()
+            loss.backward()
+            if is_oloop:
+                model.update_state(lr_scale=lr_scale)
+            elif is_piano:
+                model.update_state(PianoMode.TRAIN_FIRST, lr_scale=lr_scale)
+            else:
+                model.update_state()
 
     def logits_fn(input_ids):
         with autocast(device, args.dtype):
-            logits = model(input_ids, logits_to_keep=slice(0, -1))
-            return logits if is_forte else logits[0]
+            if is_forte:
+                return model(
+                    input_ids,
+                    mode=ForteMode.INFERENCE,
+                    logits_to_keep=slice(0, -1),
+                )
+            return model(input_ids, logits_to_keep=slice(0, -1))[0]
 
     if args.compile:
         train_fn = torch.compile(train_fn, fullgraph=False)
@@ -410,11 +421,17 @@ def save_results(args, label: int | str, results):
     print(f"Wrote {path}")
 
 
-def lr_label(base_lr: float | None, model, step) -> str:
+def lr_label(base_lr, model, step) -> str:
+    parts = []
     if step is not None:
-        return f"{step:012d}"
-    lr = model.config.base_lr if base_lr is None else base_lr
-    return f"base_lr_{lr:.0e}".replace("+", "")
+        parts.append(f"{step:012d}")
+    if base_lr is not None:
+        parts.append(f"base_lr_{base_lr:.0e}".replace("+", ""))
+
+    if len(parts) == 0:
+        return f"{model.config.pretrained_step:012d}"
+
+    return "_".join(parts)
 
 
 def main():
