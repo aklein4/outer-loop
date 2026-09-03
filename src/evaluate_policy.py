@@ -24,7 +24,7 @@ DEFAULT_NUM_TEST = 100
 LETTERS = ("A", "B", "C", "D")
 
 
-def parse_args():
+def make_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT)
     parser.add_argument("--checkpoint-steps", type=int, nargs="+", default=None)
@@ -58,7 +58,11 @@ def parse_args():
         help="Weight for non-assistant loss in adaptation gradients only (default: 0)",
     )
     parser.add_argument("--save-name", default=None, help="Name for saving results (default: checkpoint name)")
-    return parser.parse_args()
+    return parser
+
+
+def parse_args():
+    return make_parser().parse_args()
 
 
 def format_user_message(item: dict) -> str:
