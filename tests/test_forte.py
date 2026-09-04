@@ -1,7 +1,10 @@
 import sys
 from functools import partial
+from importlib import import_module
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 import torch
 from omegaconf import OmegaConf
 
@@ -194,3 +197,56 @@ def test_embedding_calibration_hook_is_exercised():
 
     assert model.embedding_state_shift.abs().sum() > 0
     assert model.embedding_state_scale.abs().sum() > 0
+
+
+@pytest.mark.parametrize(
+    "evaluator_name",
+    ["evaluate_icl", "evaluate_persona", "evaluate_policy"],
+)
+def test_evaluator_uses_forte_first_pass_and_inference_modes(evaluator_name):
+    torch.manual_seed(4)
+    evaluator = import_module(evaluator_name)
+    model = ForteModel(tiny_config())
+    for parameter in model.parameters():
+        parameter.requires_grad_(False)
+    model.embed_tokens.requires_grad_(True)
+
+    device = torch.device("cpu")
+    batch_size, sequence_length = 2, 5
+    model.init_state(batch_size, device)
+    args = SimpleNamespace(dtype="float32", aux_weight=0.0, compile=False)
+    train_fn, inference_fn = evaluator.make_fns(model, args, device)
+
+    input_ids = torch.randint(0, model.vocab_size, (batch_size, sequence_length))
+    assistant_mask = torch.zeros_like(input_ids, dtype=torch.bool)
+    assistant_mask[:, -2:] = True
+    attention_mask = torch.ones_like(input_ids, dtype=torch.bool)
+    old_states = [state.detach().clone() for state in model.state_containers()]
+
+    train_fn(
+        input_ids,
+        assistant_mask,
+        attention_mask,
+        torch.ones(1, 1, 1),
+    )
+
+    assert any(
+        not torch.equal(old_state, new_state)
+        for old_state, new_state in zip(old_states, model.state_containers())
+    )
+    assert all(parameter.grad is None for parameter in model.parameters())
+    if evaluator_name == "evaluate_policy":
+        prompt_indices = torch.full((batch_size,), sequence_length - 1)
+        token_ids = torch.arange(4)
+        assert inference_fn(
+            input_ids,
+            attention_mask,
+            prompt_indices,
+            token_ids,
+        ).shape == (batch_size, 4)
+    else:
+        assert inference_fn(input_ids).shape == (
+            batch_size,
+            sequence_length - 1,
+            model.vocab_size,
+        )

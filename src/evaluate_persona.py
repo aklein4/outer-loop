@@ -21,7 +21,7 @@ import utils.constants as constants
 from utils.torch_modules import enable_gradient_checkpointing
 
 
-DEFAULT_CHECKPOINT = "aklein4/Horizon-TPU_forte-v2-1b"
+DEFAULT_CHECKPOINT = "aklein4/Horizon-TPU_forte-v3-1b"
 DEFAULT_TOKENIZER = "meta-llama/Llama-3.2-1B-Instruct"
 DEFAULT_DATASET = "aklein4/PersonaBench"
 

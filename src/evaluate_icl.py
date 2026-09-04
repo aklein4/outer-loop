@@ -21,7 +21,7 @@ import utils.constants as constants
 from utils.torch_modules import enable_gradient_checkpointing
 
 
-DEFAULT_CHECKPOINT = "aklein4/Horizon-TPU_forte-v2-1b"
+DEFAULT_CHECKPOINT = "aklein4/Horizon-TPU_forte-v3-1b"
 DEFAULT_TOKENIZER = "meta-llama/Llama-3.2-1B-Instruct"
 DEFAULT_DATASET = "aklein4/Bitext-SmolLM2-1024-natural-instructions-format"
 
@@ -257,20 +257,29 @@ def make_fns(model, args, device):
             else:
                 logits = model(input_ids, logits_to_keep=slice(0, -1))[0]
             loss = adaptation_loss(input_ids, assistant_mask, attention_mask, logits, args.aux_weight)
-        loss.backward()
         if is_forte:
+            # A Forte first pass only needs gradients for its ephemeral fast
+            # state. Avoid materializing gradients for the frozen slow model.
+            torch.autograd.backward(loss, inputs=model.grad_containers())
             model.update_state(ForteMode.TRAIN_FIRST, lr_scale=lr_scale)
-        elif is_oloop:
-            model.update_state(lr_scale=lr_scale)
-        elif is_piano:
-            model.update_state(PianoMode.TRAIN_FIRST, lr_scale=lr_scale)
         else:
-            model.update_state()
+            loss.backward()
+            if is_oloop:
+                model.update_state(lr_scale=lr_scale)
+            elif is_piano:
+                model.update_state(PianoMode.TRAIN_FIRST, lr_scale=lr_scale)
+            else:
+                model.update_state()
 
     def logits_fn(input_ids):
         with autocast(device, args.dtype):
-            logits = model(input_ids, logits_to_keep=slice(0, -1))
-            return logits if is_forte else logits[0]
+            if is_forte:
+                return model(
+                    input_ids,
+                    mode=ForteMode.INFERENCE,
+                    logits_to_keep=slice(0, -1),
+                )
+            return model(input_ids, logits_to_keep=slice(0, -1))[0]
 
     if args.compile:
         train_fn = torch.compile(train_fn, fullgraph=False)

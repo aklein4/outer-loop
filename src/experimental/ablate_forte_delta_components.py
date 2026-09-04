@@ -63,8 +63,9 @@ def row_cos(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
 
 
 class ComponentRule:
-    def __init__(self, model, logical_batch: int):
+    def __init__(self, model, logical_batch: int, scenarios=SCENARIOS):
         self.model, self.logical_batch = model, logical_batch
+        self.scenarios = tuple(scenarios)
         self.original = forte._get_G
         self.layer_by_weight = {m.down_fast.weight.data_ptr(): (i, m)
                                 for i, m in enumerate(model.fast_modules())}
@@ -100,7 +101,7 @@ class ComponentRule:
         nominal_lr = module.fast_dynamic_lr.base_lr/module.fast_weight_size
         b = self.logical_batch
         updates = []
-        for scenario_i, scenario in enumerate(SCENARIOS):
+        for scenario_i, scenario in enumerate(self.scenarios):
             sl = slice(scenario_i*b, (scenario_i+1)*b)
             gg = gradient_gate[sl]
             if scenario == "gradient_gate_one":
@@ -133,7 +134,7 @@ class ComponentRule:
                 total = base+off_realized
             updates.append(total)
 
-            if scenario_i == 0:
+            if scenario == "baseline":
                 with torch.no_grad():
                     target_norm = target[sl].float().square().sum(-1).sqrt()
                     mx_norm = Mx[sl].float().square().sum(-1).sqrt()
@@ -290,9 +291,15 @@ def main():
     ap.add_argument("--output-dir", type=Path, default=SRC/"local_data/horizon_v2_forte_delta_step200_ablation")
     ap.add_argument("--aux-loss-weight", type=float, default=.1)
     ap.add_argument("--num-logit-iterations", type=int, default=4)
+    ap.add_argument(
+        "--scenario-group-size", type=int, default=len(SCENARIOS),
+        help="Run this many scenarios concurrently; smaller groups reduce peak CUDA memory.",
+    )
     args = ap.parse_args()
     if args.trajectories % args.batch_size:
         raise ValueError("trajectories must be divisible by batch size")
+    if not 1 <= args.scenario_group_size <= len(SCENARIOS):
+        raise ValueError(f"scenario-group-size must be in [1, {len(SCENARIOS)}]")
     assert torch.cuda.is_available()
     torch.manual_seed(42); np.random.seed(42); torch.set_float32_matmul_precision("high")
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -307,35 +314,41 @@ def main():
     for start in range(0, args.trajectories, args.batch_size):
         batch = collator(raw[start:start+args.batch_size])
         base_ids, base_assistant, base_valid = (batch[k].cuda() for k in ("input_ids", "assistant_mask", "attention_mask"))
-        ids = torch.cat([base_ids]*len(SCENARIOS), 0)
-        assistant = torch.cat([base_assistant]*len(SCENARIOS), 0)
-        valid = torch.cat([base_valid]*len(SCENARIOS), 0)
-        model.init_state(args.batch_size*len(SCENARIOS), torch.device("cuda"))
-        rule = ComponentRule(model, args.batch_size); rule.install()
-        try:
-            for chunk in range(args.chunks):
-                rule.chunk = chunk
-                al, nl = recurrent_step(model, ids[:, chunk], assistant[:, chunk], valid[:, chunk],
-                                        args.batch_size, args.num_logit_iterations, args.aux_loss_weight)
-                for si, scenario in enumerate(SCENARIOS):
-                    for t in range(args.batch_size):
-                        idx = si*args.batch_size+t
-                        loss_rows.append({
-                            "trajectory": start+t, "batch": start//args.batch_size, "chunk": chunk,
-                            "scenario": scenario, "assistant_loss": float(al[idx]),
-                            "nonassistant_loss": float(nl[idx]),
-                            "weighted_total_loss": float(al[idx]+args.aux_loss_weight*nl[idx]),
-                            "valid_tokens": int(base_valid[t, chunk].sum()),
-                            "assistant_tokens": int(base_assistant[t, chunk].sum()),
-                        })
-                print(f"batch {start//args.batch_size+1}/{args.trajectories//args.batch_size} "
-                      f"chunk {chunk+1}/{args.chunks} baseline assistant={al[:args.batch_size].mean():.5f}", flush=True)
-        finally:
-            rule.remove()
-        for r in rule.rows:
-            r["trajectory"] = start+r.pop("trajectory_in_batch")
-        diagnostic_rows.extend(rule.rows)
-        del ids, assistant, valid, base_ids, base_assistant, base_valid, batch
+        scenario_groups = [SCENARIOS[i:i+args.scenario_group_size]
+                           for i in range(0, len(SCENARIOS), args.scenario_group_size)]
+        for group_i, scenarios in enumerate(scenario_groups):
+            ids = torch.cat([base_ids]*len(scenarios), 0)
+            assistant = torch.cat([base_assistant]*len(scenarios), 0)
+            valid = torch.cat([base_valid]*len(scenarios), 0)
+            model.init_state(args.batch_size*len(scenarios), torch.device("cuda"))
+            rule = ComponentRule(model, args.batch_size, scenarios); rule.install()
+            try:
+                for chunk in range(args.chunks):
+                    rule.chunk = chunk
+                    al, nl = recurrent_step(model, ids[:, chunk], assistant[:, chunk], valid[:, chunk],
+                                            args.batch_size, args.num_logit_iterations, args.aux_loss_weight)
+                    for si, scenario in enumerate(scenarios):
+                        for t in range(args.batch_size):
+                            idx = si*args.batch_size+t
+                            loss_rows.append({
+                                "trajectory": start+t, "batch": start//args.batch_size, "chunk": chunk,
+                                "scenario": scenario, "assistant_loss": float(al[idx]),
+                                "nonassistant_loss": float(nl[idx]),
+                                "weighted_total_loss": float(al[idx]+args.aux_loss_weight*nl[idx]),
+                                "valid_tokens": int(base_valid[t, chunk].sum()),
+                                "assistant_tokens": int(base_assistant[t, chunk].sum()),
+                            })
+                    print(f"batch {start//args.batch_size+1}/{args.trajectories//args.batch_size} "
+                          f"group {group_i+1}/{len(scenario_groups)} chunk {chunk+1}/{args.chunks} "
+                          f"{scenarios[0]} assistant={al[:args.batch_size].mean():.5f}", flush=True)
+            finally:
+                rule.remove()
+            for r in rule.rows:
+                r["trajectory"] = start+r.pop("trajectory_in_batch")
+            diagnostic_rows.extend(rule.rows)
+            del ids, assistant, valid
+            torch.cuda.empty_cache()
+        del base_ids, base_assistant, base_valid, batch
     write_csv(args.output_dir/"ablation_losses.csv", loss_rows)
     summary = paired_summary(loss_rows); write_csv(args.output_dir/"ablation_summary.csv", summary)
     write_csv(args.output_dir/"ablation_by_chunk_range.csv", chunk_summary(loss_rows))
@@ -347,6 +360,7 @@ def main():
         "batch_size": args.batch_size, "chunks": args.chunks, "max_length": cfg.collator.kwargs.max_length,
         "scenarios": list(SCENARIOS), "aux_loss_weight": args.aux_loss_weight,
         "num_logit_iterations": args.num_logit_iterations, "gradient_checkpointing": True,
+        "scenario_group_size": args.scenario_group_size,
         "torch_xla_used": False, "cuda_device": torch.cuda.get_device_name(),
         "peak_cuda_gb": torch.cuda.max_memory_allocated()/2**30,
         "only_offset_definition": "retain realized offset contribution with cap computed against the original base branch, but omit base contribution",
